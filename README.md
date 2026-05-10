@@ -146,16 +146,14 @@ allbot/
 - **授权验证系统**（设备绑定 + License 管理）
 
 ⏳ **待实现**（Phase 3）：
-- 市场服务器模板
-- CLI 工具
-- 支付集成
-- 完整的 Vue 3 + Element Plus 前端
-- 授权验证
+- 完整的 Vue 3 + Element Plus 前端（开发者后台）
+- 支付集成完善（支付宝/微信/Stripe SDK）
 
-⏳ **待实现**（Phase 3）：
-- 市场服务器模板
-- CLI 工具
-- 支付集成
+✅ **Phase 3 已完成**：
+- **市场服务器模板**（FastAPI + PostgreSQL）
+- **CLI 工具**（插件创建、发布、安装）
+- **Docker 一键部署**
+- **完整 API 文档**
 
 ## 插件开发
 
