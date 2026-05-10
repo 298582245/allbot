@@ -483,13 +483,29 @@ allbot/
   - Node.js 全局 node_modules
   - 插件声明依赖，框架自动安装
 
-### Phase 3（2个月）- 市场系统
+### Phase 3（2个月）- 市场系统 ✅
 
-- [ ] 市场服务器模板（开源）
-- [ ] 标准 API 实现
-- [ ] 支付集成（支付宝/微信）
-- [ ] 开发者后台
-- [ ] CLI 工具
+**已完成**：
+- [x] 市场服务器模板（开源）
+  - FastAPI + SQLAlchemy + PostgreSQL
+  - 用户认证（JWT）
+  - 插件 CRUD API
+  - 文件上传/下载
+  - 授权验证
+  - Docker 一键部署
+- [x] CLI 工具
+  - 插件创建脚手架
+  - 市场登录和发布
+  - 插件安装管理
+  - 系统状态查看
+- [x] 标准 API 实现
+  - RESTful API
+  - 完整 API 文档
+  - Swagger UI
+
+**待完善**：
+- [ ] 支付集成（支付宝/微信/Stripe SDK）
+- [ ] 开发者后台（Vue 3 + Element Plus）
 
 ### Phase 4（持续）- 生态建设
 
