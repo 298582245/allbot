@@ -9,14 +9,16 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/allbot/allbot/core/deps"
 	"github.com/allbot/allbot/core/types"
 )
 
 // Manager 插件管理器
 type Manager struct {
-	plugins   map[string]*PluginProcess
-	mu        sync.RWMutex
-	pluginDir string
+	plugins    map[string]*PluginProcess
+	mu         sync.RWMutex
+	pluginDir  string
+	depsManager *deps.Manager // 依赖管理器
 }
 
 // PluginProcess 插件进程
@@ -28,10 +30,11 @@ type PluginProcess struct {
 }
 
 // NewManager 创建插件管理器
-func NewManager(pluginDir string) *Manager {
+func NewManager(pluginDir string, depsManager *deps.Manager) *Manager {
 	return &Manager{
-		plugins:   make(map[string]*PluginProcess),
-		pluginDir: pluginDir,
+		plugins:     make(map[string]*PluginProcess),
+		pluginDir:   pluginDir,
+		depsManager: depsManager,
 	}
 }
 
@@ -51,6 +54,22 @@ func (m *Manager) LoadPlugin(pluginPath string) (*types.Plugin, error) {
 
 	// 生成插件ID（使用目录名）
 	pluginID := filepath.Base(pluginPath)
+
+	// 安装依赖
+	if len(config.Dependencies) > 0 {
+		log.Printf("Installing dependencies for plugin: %s", config.Name)
+
+		switch config.Runtime {
+		case "python":
+			if err := m.depsManager.InstallPythonDeps(config.Dependencies); err != nil {
+				return nil, fmt.Errorf("failed to install Python dependencies: %w", err)
+			}
+		case "nodejs":
+			if err := m.depsManager.InstallNodeDeps(config.Dependencies); err != nil {
+				return nil, fmt.Errorf("failed to install Node.js dependencies: %w", err)
+			}
+		}
+	}
 
 	plugin := &types.Plugin{
 		ID:        pluginID,
@@ -83,15 +102,25 @@ func (m *Manager) StartPlugin(plugin *types.Plugin, pluginPath string) error {
 
 	switch plugin.Runtime {
 	case "python":
-		cmd = exec.Command("python", entryPath, fmt.Sprintf("--port=%d", port))
+		// 使用全局虚拟环境的 Python
+		pythonPath := m.depsManager.GetPythonPath()
+		cmd = exec.Command(pythonPath, entryPath, fmt.Sprintf("--port=%d", port))
 	case "nodejs":
+		// 使用 Node.js，设置 NODE_PATH 指向全局 node_modules
 		cmd = exec.Command("node", entryPath, fmt.Sprintf("--port=%d", port))
+		nodePath := m.depsManager.GetNodePath()
+		cmd.Env = append(os.Environ(),
+			fmt.Sprintf("NODE_PATH=%s", nodePath),
+		)
 	default:
 		return fmt.Errorf("unsupported runtime: %s", plugin.Runtime)
 	}
 
 	// 设置环境变量
-	cmd.Env = append(os.Environ(),
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = append(cmd.Env,
 		fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", plugin.ID),
 		fmt.Sprintf("ALLBOT_GRPC_PORT=%d", port),
 	)

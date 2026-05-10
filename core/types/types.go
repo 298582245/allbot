@@ -26,10 +26,11 @@ type Plugin struct {
 
 // PluginConfig 插件配置文件结构
 type PluginConfig struct {
-	Name      string   `json:"name"`
-	Version   string   `json:"version"`
-	Runtime   string   `json:"runtime"`
-	Entry     string   `json:"entry"`
-	Platforms []string `json:"platforms"`
-	Trigger   string   `json:"trigger"`
+	Name         string            `json:"name"`
+	Version      string            `json:"version"`
+	Runtime      string            `json:"runtime"`
+	Entry        string            `json:"entry"`
+	Platforms    []string          `json:"platforms"`
+	Trigger      string            `json:"trigger"`
+	Dependencies map[string]string `json:"dependencies"` // 依赖包: 版本
 }
