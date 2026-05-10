@@ -47,17 +47,30 @@ func main() {
 	// 4. 创建插件管理器
 	pluginManager := plugin.NewManager(*pluginDir, depsManager)
 
-	// 5. 加载所有插件
+	// 5. 连接路由器和插件管理器
+	messageRouter.SetPluginManager(pluginManager)
+
+	// 6. 加载所有插件
 	plugins, err := pluginManager.LoadAllPlugins()
 	if err != nil {
 		log.Printf("警告：加载插件失败: %v", err)
 	}
 
-	// 5. 注册插件到路由器并启动插件进程
+	// 7. 注册插件到路由器并启动插件进程
 	for _, p := range plugins {
 		if err := messageRouter.RegisterPlugin(p); err != nil {
 			log.Printf("警告：注册插件失败 %s: %v", p.Name, err)
 			continue
+		}
+
+		pluginPath := filepath.Join(*pluginDir, p.ID)
+		if err := pluginManager.StartPlugin(p, pluginPath); err != nil {
+			log.Printf("警告：启动插件失败 %s: %v", p.Name, err)
+			continue
+		}
+	}
+
+	// 8. 创建平台适配器
 		}
 
 		pluginPath := filepath.Join(*pluginDir, p.ID)

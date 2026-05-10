@@ -12,7 +12,7 @@
 - **Web UI 管理**：可视化管理插件和系统 ✨
 - **一键安装**：自动安装所有依赖 ✨
 - **去中心化市场**：开发者自建市场，无平台抽成（Phase 3）
-- **源码保护**：AES-256 加密（Phase 2 待完成）
+- **源码保护**：AES-256 加密 + RSA 签名 ✅
 
 ## 快速开始
 
@@ -104,11 +104,16 @@ allbot/
 │   ├─ session/             # 会话管理器 ✅
 │   ├─ deps/                # 依赖管理器 ✅
 │   ├─ web/                 # Web UI 服务 ✅
+│   ├─ grpc/                # HTTP 通信客户端 ✅
+│   ├─ crypto/              # 加密和授权 ✅
+│   ├─ vfs/                 # 虚拟文件系统 ✅
 │   └─ types/               # 数据类型 ✅
 ├─ sdk/
 │   ├─ python/              # Python SDK ✅
 │   └─ nodejs/              # Node.js SDK ✅
-├─ proto/                   # gRPC 协议 ✅
+├─ proto/                   # gRPC 协议定义 ✅
+├─ web/                     # Web UI 前端 ✅
+│   └─ index.html           # 管理界面
 ├─ examples/weather/        # 示例插件 ✅
 ├─ runtime/                 # 运行时环境
 │   ├─ .venv/               # Python 虚拟环境
@@ -128,20 +133,23 @@ allbot/
 
 ✅ **已完成**：
 - Go 核心框架（消息路由、会话管理、插件管理）
-- gRPC 通信协议定义
-- Python SDK（Context API）
+- HTTP 通信协议（核心框架 ↔ 插件）
+- Python SDK（Context API + HTTP 服务器）
 - Node.js SDK（Context API）
 - QQ 平台适配器（基于 go-cqhttp）
 - 示例插件（天气插件）
 - **全局依赖管理系统**（Python + Node.js）
 - **自动化安装脚本**（Windows + Linux/Mac）
-- **Web UI 管理界面**（基础 API）
+- **Web UI 管理界面**（基础版 + API）
+- **插件加密系统**（AES-256 + RSA 签名）
+- **虚拟文件系统**（内存文件系统）
+- **授权验证系统**（设备绑定 + License 管理）
 
-⏳ **待实现**（Phase 2 剩余）：
-- gRPC 服务端/客户端实现
-- Web UI 前端（Vue 3 + Element Plus）
-- 插件加密系统
-- 虚拟文件系统
+⏳ **待实现**（Phase 3）：
+- 市场服务器模板
+- CLI 工具
+- 支付集成
+- 完整的 Vue 3 + Element Plus 前端
 - 授权验证
 
 ⏳ **待实现**（Phase 3）：
@@ -268,8 +276,7 @@ plugins:
 ## 开发路线图
 
 - [x] Phase 1（3个月）- 核心框架
-- [x] Phase 2（部分）- 依赖管理 + 自动化安装 + Web API
-- [ ] Phase 2（剩余）- gRPC 实现 + 加密系统
+- [x] Phase 2（2个月）- 依赖管理 + 自动化安装 + Web UI + 加密系统
 - [ ] Phase 3（2个月）- 市场系统
 - [ ] Phase 4（持续）- 生态建设
 

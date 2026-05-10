@@ -1,19 +1,17 @@
 """
-插件启动和 gRPC 服务
+插件启动和 HTTP 服务
 """
 import os
 import sys
-import asyncio
 import argparse
 import importlib.util
-from concurrent import futures
-import grpc
+from .server import PluginServer
 
 
 def start_plugin():
-    """启动插件 gRPC 服务"""
+    """启动插件 HTTP 服务"""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=50051, help="gRPC 端口")
+    parser.add_argument("--port", type=int, default=50051, help="HTTP 端口")
     args = parser.parse_args()
 
     plugin_id = os.environ.get("ALLBOT_PLUGIN_ID", "unknown")
@@ -38,19 +36,20 @@ def start_plugin():
 
     handle_func = plugin_module.handle
 
-    # 启动 gRPC 服务器
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    # TODO: 添加 gRPC 服务实现
-    server.add_insecure_port(f"[::]:{port}")
+    # 启动 HTTP 服务器
+    server = PluginServer(port, handle_func)
     server.start()
 
     print(f"Plugin {plugin_id} started successfully on port {port}")
 
     try:
-        server.wait_for_termination()
+        # 保持运行
+        import time
+        while True:
+            time.sleep(1)
     except KeyboardInterrupt:
         print(f"Plugin {plugin_id} shutting down...")
-        server.stop(0)
+        server.stop()
 
 
 if __name__ == "__main__":

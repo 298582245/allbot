@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"sync"
 
+	"github.com/allbot/allbot/core/grpc"
+	"github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/session"
 	"github.com/allbot/allbot/core/types"
 )
@@ -12,6 +14,7 @@ import (
 // Router 消息路由器
 type Router struct {
 	plugins        map[string]*types.Plugin
+	pluginManager  *plugin.Manager
 	sessionManager *session.Manager
 	mu             sync.RWMutex
 }
@@ -22,6 +25,11 @@ func NewRouter(sessionManager *session.Manager) *Router {
 		plugins:        make(map[string]*types.Plugin),
 		sessionManager: sessionManager,
 	}
+}
+
+// SetPluginManager 设置插件管理器
+func (r *Router) SetPluginManager(pm *plugin.Manager) {
+	r.pluginManager = pm
 }
 
 // RegisterPlugin 注册插件
@@ -109,11 +117,43 @@ func (r *Router) supportsPlatform(plugin *types.Plugin, platform string) bool {
 	return false
 }
 
-// callPlugin 调用插件（通过 gRPC）
+// callPlugin 调用插件（通过 HTTP）
 func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
-	// TODO: 通过 gRPC 调用插件进程
-	// 这里需要插件管理器提供的 gRPC 客户端
-	log.Printf("Calling plugin: %s for message: %s", plugin.Name, msg.Content)
+	// 获取插件进程
+	if r.pluginManager == nil {
+		log.Printf("Plugin manager not set")
+		return
+	}
+
+	process := r.pluginManager.GetPlugin(plugin.ID)
+	if process == nil {
+		log.Printf("Plugin process not found: %s", plugin.ID)
+		return
+	}
+
+	// 创建 HTTP 客户端
+	client := grpc.NewClient(process.Port)
+
+	// 调用插件
+	req := &grpc.MessageRequest{
+		PluginID:  plugin.ID,
+		Platform:  msg.Platform,
+		UserID:    msg.UserID,
+		GroupID:   msg.GroupID,
+		Content:   msg.Content,
+		MessageID: msg.ID,
+		Metadata:  msg.Metadata,
+	}
+
+	resp, err := client.Handle(req)
+	if err != nil {
+		log.Printf("Failed to call plugin %s: %v", plugin.Name, err)
+		return
+	}
+
+	if !resp.(*grpc.MessageResponse).Success {
+		log.Printf("Plugin %s returned error: %s", plugin.Name, resp.(*grpc.MessageResponse).Error)
+	}
 }
 
 // GetPlugins 获取所有插件

@@ -136,9 +136,13 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleIndex 首页
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	// TODO: 返回 Vue 构建的 index.html
-	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(`
+	// 读取 HTML 文件
+	htmlPath := "web/index.html"
+	htmlContent, err := os.ReadFile(htmlPath)
+	if err != nil {
+		// 如果文件不存在，返回简单的 HTML
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`
 <!DOCTYPE html>
 <html>
 <head>
@@ -147,7 +151,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
     <h1>AllBot 管理界面</h1>
-    <p>Web UI 开发中...</p>
+    <p>Web UI 文件未找到，请确保 web/index.html 存在</p>
     <p>API 端点：</p>
     <ul>
         <li>POST /api/login - 登录</li>
@@ -156,7 +160,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
     </ul>
 </body>
 </html>
-	`))
+		`))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	w.Write(htmlContent)
+}
 }
 
 // authMiddleware 认证中间件
