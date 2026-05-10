@@ -1,0 +1,89 @@
+package main
+
+import (
+	"flag"
+	"log"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+
+	"github.com/allbot/allbot/core/adapter"
+	"github.com/allbot/allbot/core/plugin"
+	"github.com/allbot/allbot/core/router"
+	"github.com/allbot/allbot/core/session"
+	"github.com/allbot/allbot/core/types"
+)
+
+func main() {
+	// 命令行参数
+	pluginDir := flag.String("plugins", "./plugins", "插件目录")
+	qqAPIURL := flag.String("qq-api", "http://localhost:5700", "go-cqhttp API 地址")
+	flag.Parse()
+
+	log.Println("AllBot 启动中...")
+
+	// 1. 创建会话管理器
+	sessionManager := session.NewManager()
+
+	// 2. 创建消息路由器
+	messageRouter := router.NewRouter(sessionManager)
+
+	// 3. 创建插件管理器
+	pluginManager := plugin.NewManager(*pluginDir)
+
+	// 4. 加载所有插件
+	plugins, err := pluginManager.LoadAllPlugins()
+	if err != nil {
+		log.Printf("警告：加载插件失败: %v", err)
+	}
+
+	// 5. 注册插件到路由器并启动插件进程
+	for _, p := range plugins {
+		if err := messageRouter.RegisterPlugin(p); err != nil {
+			log.Printf("警告：注册插件失败 %s: %v", p.Name, err)
+			continue
+		}
+
+		pluginPath := filepath.Join(*pluginDir, p.ID)
+		if err := pluginManager.StartPlugin(p, pluginPath); err != nil {
+			log.Printf("警告：启动插件失败 %s: %v", p.Name, err)
+			continue
+		}
+	}
+
+	// 6. 创建平台适配器
+	qqAdapter := adapter.NewQQAdapter(*qqAPIURL, ":8080")
+
+	// 设置消息处理器
+	qqAdapter.SetMessageHandler(func(msg *types.Message) {
+		messageRouter.HandleMessage(msg)
+	})
+
+	// 启动适配器
+	if err := qqAdapter.Start(); err != nil {
+		log.Fatalf("启动 QQ 适配器失败: %v", err)
+	}
+
+	log.Println("AllBot 启动成功！")
+	log.Printf("- 插件目录: %s", *pluginDir)
+	log.Printf("- 已加载插件: %d 个", len(plugins))
+	log.Printf("- QQ 适配器: %s", *qqAPIURL)
+
+	// 7. 等待退出信号
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	log.Println("AllBot 关闭中...")
+
+	// 8. 清理资源
+	qqAdapter.Stop()
+
+	// 停止所有插件
+	for _, p := range pluginManager.GetAllPlugins() {
+		pluginManager.StopPlugin(p.Plugin.ID)
+	}
+
+	log.Println("AllBot 已关闭")
+}
