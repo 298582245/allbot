@@ -70,11 +70,15 @@ class PluginServer:
                     import asyncio
                     asyncio.run(server.handle_func(ctx))
 
-                    # 返回成功响应
-                    self._send_json({'success': True, 'error': ''})
+                    # 返回成功响应，包含收集的回复消息
+                    self._send_json({
+                        'success': True,
+                        'error': '',
+                        'replies': ctx._replies
+                    })
 
                 except Exception as e:
-                    self._send_json({'success': False, 'error': str(e)})
+                    self._send_json({'success': False, 'error': str(e), 'replies': []})
 
             def _handle_listen(self):
                 """处理 listen 请求"""

@@ -25,6 +25,7 @@ class Context:
         self.plugin_id = plugin_id
         self._channel = grpc_channel
         self._stub = None  # gRPC stub，延迟初始化
+        self._replies = []  # 收集要发送的回复消息
 
     async def reply(self, text: str) -> bool:
         """回复消息
@@ -35,7 +36,7 @@ class Context:
         Returns:
             是否成功
         """
-        # TODO: 调用 gRPC ReplyRequest
+        self._replies.append(text)
         print(f"[Reply] {text}")
         return True
 

@@ -38,8 +38,9 @@ type MessageRequest struct {
 
 // MessageResponse 消息响应
 type MessageResponse struct {
-	Success bool   `json:"success"`
-	Error   string `json:"error"`
+	Success bool     `json:"success"`
+	Error   string   `json:"error"`
+	Replies []string `json:"replies"` // 要发送的回复消息列表
 }
 
 // ListenRequest 等待消息请求

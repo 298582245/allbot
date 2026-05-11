@@ -98,6 +98,9 @@ func main() {
 		log.Printf("警告：加载适配器失败: %v", err)
 	}
 
+	// 将适配器传递给Router，以便插件可以发送消息
+	messageRouter.SetAdapters(adapterManager.GetAllAdapters())
+
 	// 10. 启动 Web UI 服务器
 	webServer := web.NewServer("3000", pluginManager, messageRouter, adapterManager, "admin", "admin123")
 	go func() {

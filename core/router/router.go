@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sync"
 
+	"github.com/allbot/allbot/core/adapter"
 	"github.com/allbot/allbot/core/grpc"
 	"github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/session"
@@ -16,6 +17,7 @@ type Router struct {
 	plugins        map[string]*types.Plugin
 	pluginManager  *plugin.Manager
 	sessionManager *session.Manager
+	adapters       map[string]adapter.Adapter // platform -> adapter
 	mu             sync.RWMutex
 }
 
@@ -24,12 +26,20 @@ func NewRouter(sessionManager *session.Manager) *Router {
 	return &Router{
 		plugins:        make(map[string]*types.Plugin),
 		sessionManager: sessionManager,
+		adapters:       make(map[string]adapter.Adapter),
 	}
 }
 
 // SetPluginManager 设置插件管理器
 func (r *Router) SetPluginManager(pm *plugin.Manager) {
 	r.pluginManager = pm
+}
+
+// SetAdapters 设置适配器映射
+func (r *Router) SetAdapters(adapters map[string]adapter.Adapter) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.adapters = adapters
 }
 
 // RegisterPlugin 注册插件
@@ -153,6 +163,34 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 
 	if !resp.Success {
 		log.Printf("Plugin %s returned error: %s", plugin.Name, resp.Error)
+		return
+	}
+
+	// 发送插件返回的回复消息
+	if len(resp.Replies) > 0 {
+		r.mu.RLock()
+		adp, ok := r.adapters[msg.Platform]
+		r.mu.RUnlock()
+
+		if !ok {
+			log.Printf("Adapter not found for platform: %s", msg.Platform)
+			return
+		}
+
+		// 确定发送目标（群组或私聊）
+		target := msg.UserID
+		if msg.GroupID != "" {
+			target = msg.GroupID
+		}
+
+		// 发送所有回复消息
+		for _, reply := range resp.Replies {
+			if err := adp.SendMessage(target, reply); err != nil {
+				log.Printf("Failed to send reply: %v", err)
+			} else {
+				log.Printf("Sent reply to %s: %s", target, reply)
+			}
+		}
 	}
 }
 
