@@ -134,7 +134,7 @@ func (a *TelegramAdapter) pollUpdates() {
 		default:
 			updates, err := a.getUpdates()
 			if err != nil {
-				log.Printf("获取 Telegram 更新失败: %v", err)
+				log.Printf("[ERROR][Telegram] 获取更新失败: %v", err)
 				time.Sleep(3 * time.Second)
 				continue
 			}
@@ -230,7 +230,7 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 		chatInfo = fmt.Sprintf("群组%s", chatID)
 	}
 
-	log.Printf("[Telegram %s(%s) 接收] %s", userID, chatInfo, text)
+	log.Printf("[接收][Telegram][%s(%s)]：%s", userID, chatInfo, text)
 
 	msg := &types.Message{
 		ID:       messageID,
@@ -270,13 +270,8 @@ func (a *TelegramAdapter) SendMessage(target string, text string) error {
 		"text":    text,
 	}
 
-	// 发送前记录日志（格式：[平台 user_id(群组id/私聊) 发送]消息内容）
-	chatInfo := "私聊"
-	if target != "" {
-		// 这里无法区分是群组还是私聊，统一标记为目标ID
-		chatInfo = fmt.Sprintf("目标%s", target)
-	}
-	log.Printf("[Telegram %s 发送] %s", chatInfo, text)
+	// 发送前记录日志
+	log.Printf("[发送][Telegram][%s]：%s", target, text)
 
 	return a.callAPI("/sendMessage", data)
 }
