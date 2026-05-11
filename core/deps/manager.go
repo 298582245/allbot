@@ -150,7 +150,8 @@ func (m *Manager) InstallNodeDeps(deps map[string]string) error {
 	// 执行 npm install
 	fmt.Println("正在安装 Node.js 依赖...")
 	runtimeDir := filepath.Dir(m.nodeModules)
-	cmd := exec.Command("npm", "install", "--prefix", runtimeDir)
+	cmd := exec.Command("npm", "install")
+	cmd.Dir = runtimeDir // 设置工作目录为 runtime 目录
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
