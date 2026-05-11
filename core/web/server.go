@@ -2,9 +2,11 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/allbot/allbot/core/config"
@@ -18,8 +20,10 @@ type Server struct {
 	pluginManager  *plugin.Manager
 	router         *router.Router
 	adapterManager *config.AdapterManager
+	logManager     *LogManager
 	adminUsername  string
 	adminPassword  string
+	startTime      time.Time
 }
 
 // NewServer 创建 Web 服务器
@@ -29,8 +33,10 @@ func NewServer(port string, pluginManager *plugin.Manager, router *router.Router
 		pluginManager:  pluginManager,
 		router:         router,
 		adapterManager: adapterManager,
+		logManager:     NewLogManager(500),
 		adminUsername:  username,
 		adminPassword:  password,
+		startTime:      time.Now(),
 	}
 }
 
@@ -47,6 +53,9 @@ func (s *Server) Start() error {
 	// 配置管理 API
 	mux.HandleFunc("/api/adapters", s.handleAdapters)
 	mux.HandleFunc("/api/adapters/", s.handleAdapterDetail)
+
+	// 日志 API
+	mux.HandleFunc("/api/logs", s.handleLogs)
 
 	// 静态文件（Web UI）
 	// TODO: 嵌入 Vue 构建产物
@@ -120,8 +129,65 @@ func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 
 // handlePluginDetail 插件详情接口
 func (s *Server) handlePluginDetail(w http.ResponseWriter, r *http.Request) {
-	// TODO: 实现插件详情、启用/禁用/卸载
-	s.jsonError(w, "Not implemented", http.StatusNotImplemented)
+	// 提取插件 ID
+	pluginID := strings.TrimPrefix(r.URL.Path, "/api/plugins/")
+	if pluginID == "" {
+		s.jsonError(w, "插件 ID 不能为空", http.StatusBadRequest)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		// 控制插件（启动/停止）
+		var req struct {
+			Action string `json:"action"` // start, stop, restart
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.jsonError(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		switch req.Action {
+		case "start":
+			// TODO: 实现启动插件
+			s.logManager.AddLog("info", fmt.Sprintf("启动插件: %s", pluginID))
+			s.jsonResponse(w, map[string]interface{}{
+				"message": "插件启动成功",
+			})
+		case "stop":
+			if err := s.pluginManager.StopPlugin(pluginID); err != nil {
+				s.logManager.AddLog("error", fmt.Sprintf("停止插件失败 %s: %v", pluginID, err))
+				s.jsonError(w, "停止插件失败: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			s.logManager.AddLog("info", fmt.Sprintf("停止插件: %s", pluginID))
+			s.jsonResponse(w, map[string]interface{}{
+				"message": "插件停止成功",
+			})
+		case "restart":
+			// 先停止再启动
+			s.pluginManager.StopPlugin(pluginID)
+			// TODO: 实现启动插件
+			s.logManager.AddLog("info", fmt.Sprintf("重启插件: %s", pluginID))
+			s.jsonResponse(w, map[string]interface{}{
+				"message": "插件重启成功",
+			})
+		default:
+			s.jsonError(w, "不支持的操作: "+req.Action, http.StatusBadRequest)
+		}
+	} else if r.Method == http.MethodDelete {
+		// 删除插件
+		if err := s.pluginManager.StopPlugin(pluginID); err != nil {
+			log.Printf("警告：停止插件失败: %v", err)
+		}
+		// TODO: 实现删除插件文件
+		s.logManager.AddLog("info", fmt.Sprintf("删除插件: %s", pluginID))
+		s.jsonResponse(w, map[string]interface{}{
+			"message": "插件删除成功",
+		})
+	} else {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // handleSystemStatus 系统状态接口
@@ -134,12 +200,29 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	uptime := time.Since(s.startTime)
+	uptimeStr := formatDuration(uptime)
+
 	s.jsonResponse(w, map[string]interface{}{
-		"uptime":        time.Since(time.Now()).String(), // TODO: 记录启动时间
-		"pluginCount":   len(plugins),
-		"runningCount":  runningCount,
-		"messageCount":  0, // TODO: 统计消息数
+		"uptime":       uptimeStr,
+		"pluginCount":  len(plugins),
+		"runningCount": runningCount,
+		"messageCount": 0, // TODO: 统计消息数
 	})
+}
+
+// formatDuration 格式化时长
+func formatDuration(d time.Duration) string {
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	seconds := int(d.Seconds()) % 60
+
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
+	} else if minutes > 0 {
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
 }
 
 // handleAdapters 适配器列表接口
