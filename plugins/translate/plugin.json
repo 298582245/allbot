@@ -1,0 +1,12 @@
+{
+  "name": "翻译插件",
+  "version": "1.0.0",
+  "runtime": "nodejs",
+  "entry": "main.js",
+  "platforms": ["qq", "wechat", "telegram"],
+  "trigger": "翻译.*",
+  "enabled": true,
+  "dependencies": {
+    "axios": "^1.6.0"
+  }
+}

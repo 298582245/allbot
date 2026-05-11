@@ -38,7 +38,19 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="依赖" min-width="150">
+          <template #default="{ row }">
+            <el-tag
+              v-if="row.dependencies && Object.keys(row.dependencies).length > 0"
+              size="small"
+              type="info"
+            >
+              {{ Object.keys(row.dependencies).length }} 个依赖
+            </el-tag>
+            <span v-else style="color: #999">无依赖</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
             <el-button
               v-if="row.enabled"
@@ -55,6 +67,12 @@
               @click="handleEnable(row)"
             >
               启用
+            </el-button>
+            <el-button type="primary" size="small" @click="handleReload(row)">
+              重新加载
+            </el-button>
+            <el-button type="info" size="small" @click="handleConfig(row)">
+              配置
             </el-button>
             <el-button type="danger" size="small" @click="handleDelete(row)">
               删除
@@ -117,6 +135,22 @@ const handleDisable = async (plugin) => {
     console.error('禁用插件失败:', error)
     ElMessage.error('禁用插件失败')
   }
+}
+
+const handleReload = async (plugin) => {
+  try {
+    await controlPlugin(plugin.id, 'reload')
+    ElMessage.success(`插件 ${plugin.name} 已重新加载`)
+    await loadPlugins()
+  } catch (error) {
+    console.error('重新加载插件失败:', error)
+    ElMessage.error('重新加载插件失败')
+  }
+}
+
+const handleConfig = async (plugin) => {
+  ElMessage.info('配置功能开发中...')
+  // TODO: 实现配置编辑对话框
 }
 
 const handleDelete = async (plugin) => {

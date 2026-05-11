@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -64,6 +65,9 @@ func (s *Server) Start() error {
 
 	// 插件 API（供插件调用）
 	mux.HandleFunc("/api/plugin/listen", s.handlePluginListen)
+
+	// 插件配置 API
+	mux.HandleFunc("/api/plugins/config/", s.handlePluginConfig)
 
 	// 静态文件服务（assets目录）
 	fs := http.FileServer(http.Dir("web"))
@@ -505,4 +509,78 @@ func (s *Server) handlePluginListen(w http.ResponseWriter, r *http.Request) {
 	s.jsonResponse(w, map[string]interface{}{
 		"content": content,
 	})
+}
+
+// handlePluginConfig 处理插件配置请求
+func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
+	// 提取插件 ID
+	pluginID := strings.TrimPrefix(r.URL.Path, "/api/plugins/config/")
+	if pluginID == "" {
+		s.jsonError(w, "插件 ID 不能为空", http.StatusBadRequest)
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		// 获取插件配置
+		configPath := filepath.Join("plugins", pluginID, "plugin.json")
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			s.jsonError(w, "读取配置失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var config map[string]interface{}
+		if err := json.Unmarshal(data, &config); err != nil {
+			s.jsonError(w, "解析配置失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.jsonResponse(w, config)
+
+	} else if r.Method == http.MethodPut {
+		// 更新插件配置
+		var config map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+			s.jsonError(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		// 写入配置文件
+		configPath := filepath.Join("plugins", pluginID, "plugin.json")
+		data, err := json.MarshalIndent(config, "", "  ")
+		if err != nil {
+			s.jsonError(w, "序列化配置失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if err := os.WriteFile(configPath, data, 0644); err != nil {
+			s.jsonError(w, "写入配置失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// 自动重新加载插件
+		if err := s.pluginManager.ReloadPlugin(pluginID); err != nil {
+			s.logManager.AddLog("error", fmt.Sprintf("重新加载插件失败 %s: %v", pluginID, err))
+			s.jsonError(w, "重新加载插件失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// 重新注册到路由器
+		plugin := s.pluginManager.GetPlugin(pluginID)
+		if plugin != nil && plugin.Plugin != nil {
+			if err := s.router.RegisterPlugin(plugin.Plugin); err != nil {
+				s.logManager.AddLog("error", fmt.Sprintf("重新注册插件失败 %s: %v", pluginID, err))
+				s.jsonError(w, "重新注册插件失败: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		s.logManager.AddLog("info", fmt.Sprintf("更新插件配置: %s", pluginID))
+		s.jsonResponse(w, map[string]interface{}{
+			"message": "配置已更新并生效",
+		})
+
+	} else {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
