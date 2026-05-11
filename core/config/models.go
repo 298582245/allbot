@@ -30,3 +30,4 @@ type WeChatConfig struct {
 type TelegramConfig struct {
 	BotToken string `json:"bot_token"`
 }
+

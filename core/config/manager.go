@@ -82,8 +82,11 @@ func (m *AdapterManager) startAdapter(config *AdapterConfig) error {
 		return fmt.Errorf("微信适配器尚未实现")
 
 	case "telegram":
-		// TODO: 实现 Telegram 适配器
-		return fmt.Errorf("Telegram 适配器尚未实现")
+		telegramConfig, err := ParseTelegramConfig(config.Config)
+		if err != nil {
+			return fmt.Errorf("解析 Telegram 配置失败: %w", err)
+		}
+		adp = adapter.NewTelegramAdapter(telegramConfig.BotToken)
 
 	default:
 		return fmt.Errorf("不支持的平台: %s", config.Platform)

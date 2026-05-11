@@ -60,11 +60,25 @@ servers:
 
 ### Telegram 平台配置
 
+**前置条件**：需要先从 [@BotFather](https://t.me/BotFather) 创建 Bot 并获取 Token
+
 **配置项**：
-- **Bot Token**：从 @BotFather 获取的 Bot Token
+- **Bot Token**：从 @BotFather 获取的 Bot Token（格式：`123456789:ABCdefGHIjklMNOpqrsTUVwxyz`）
 - **状态**：启用
 
-> 注意：Telegram 适配器尚未实现，配置后暂时无法使用
+**功能特性**：
+- ✅ 支持私聊和群组消息
+- ✅ 长轮询接收消息（无需 Webhook）
+- ✅ 发送文本、图片、文件
+- ✅ 获取群组信息
+- ✅ @提及用户
+
+**创建 Bot 步骤**：
+1. 在 Telegram 中搜索 @BotFather
+2. 发送 `/newbot` 命令
+3. 按提示设置 Bot 名称和用户名
+4. 获取 Bot Token
+5. 在 AllBot Web UI 中配置 Token 并启用
 
 ## 插件管理
 

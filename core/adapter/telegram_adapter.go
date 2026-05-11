@@ -1,0 +1,300 @@
+package adapter
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/allbot/allbot/core/types"
+)
+
+// TelegramAdapter Telegram 平台适配器
+type TelegramAdapter struct {
+	botToken       string
+	apiURL         string
+	messageHandler func(*types.Message)
+	stopChan       chan struct{}
+	lastUpdateID   int64
+}
+
+// NewTelegramAdapter 创建 Telegram 适配器
+func NewTelegramAdapter(botToken string) *TelegramAdapter {
+	return &TelegramAdapter{
+		botToken: botToken,
+		apiURL:   "https://api.telegram.org/bot" + botToken,
+		stopChan: make(chan struct{}),
+	}
+}
+
+// GetPlatform 获取平台名称
+func (a *TelegramAdapter) GetPlatform() string {
+	return "telegram"
+}
+
+// SetMessageHandler 设置消息处理器
+func (a *TelegramAdapter) SetMessageHandler(handler func(*types.Message)) {
+	a.messageHandler = handler
+}
+
+// Start 启动适配器
+func (a *TelegramAdapter) Start() error {
+	// 验证 Bot Token
+	if err := a.verifyToken(); err != nil {
+		return fmt.Errorf("验证 Bot Token 失败: %w", err)
+	}
+
+	// 启动长轮询
+	go a.pollUpdates()
+
+	log.Printf("Telegram Adapter 已启动")
+	return nil
+}
+
+// Stop 停止适配器
+func (a *TelegramAdapter) Stop() error {
+	close(a.stopChan)
+	log.Printf("Telegram Adapter 已停止")
+	return nil
+}
+
+// verifyToken 验证 Bot Token
+func (a *TelegramAdapter) verifyToken() error {
+	resp, err := http.Get(a.apiURL + "/getMe")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("无效的 Bot Token")
+	}
+
+	return nil
+}
+
+// pollUpdates 长轮询获取更新
+func (a *TelegramAdapter) pollUpdates() {
+	for {
+		select {
+		case <-a.stopChan:
+			return
+		default:
+			updates, err := a.getUpdates()
+			if err != nil {
+				log.Printf("获取 Telegram 更新失败: %v", err)
+				time.Sleep(3 * time.Second)
+				continue
+			}
+
+			for _, update := range updates {
+				a.handleUpdate(update)
+			}
+		}
+	}
+}
+
+// getUpdates 获取更新
+func (a *TelegramAdapter) getUpdates() ([]map[string]interface{}, error) {
+	url := fmt.Sprintf("%s/getUpdates?offset=%d&timeout=30", a.apiURL, a.lastUpdateID+1)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Ok     bool                     `json:"ok"`
+		Result []map[string]interface{} `json:"result"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+
+	if !result.Ok {
+		return nil, fmt.Errorf("API 返回错误")
+	}
+
+	return result.Result, nil
+}
+
+// handleUpdate 处理更新
+func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
+	// 更新 lastUpdateID
+	if updateID, ok := update["update_id"].(float64); ok {
+		if int64(updateID) > a.lastUpdateID {
+			a.lastUpdateID = int64(updateID)
+		}
+	}
+
+	// 处理消息
+	message, ok := update["message"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	text, ok := message["text"].(string)
+	if !ok {
+		return
+	}
+
+	from, ok := message["from"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	chat, ok := message["chat"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	userID := fmt.Sprintf("%v", from["id"])
+	chatID := fmt.Sprintf("%v", chat["id"])
+	messageID := fmt.Sprintf("%v", message["message_id"])
+
+	msg := &types.Message{
+		ID:       messageID,
+		Platform: "telegram",
+		UserID:   userID,
+		Content:  text,
+		Metadata: make(map[string]string),
+	}
+
+	// 判断是群组还是私聊
+	chatType, _ := chat["type"].(string)
+	if chatType == "group" || chatType == "supergroup" {
+		msg.GroupID = chatID
+	}
+
+	if a.messageHandler != nil {
+		a.messageHandler(msg)
+	}
+}
+
+// SendMessage 发送消息
+func (a *TelegramAdapter) SendMessage(target string, text string) error {
+	data := map[string]interface{}{
+		"chat_id": target,
+		"text":    text,
+	}
+
+	return a.callAPI("/sendMessage", data)
+}
+
+// SendImage 发送图片
+func (a *TelegramAdapter) SendImage(target string, imageURL string) error {
+	data := map[string]interface{}{
+		"chat_id": target,
+		"photo":   imageURL,
+	}
+
+	return a.callAPI("/sendPhoto", data)
+}
+
+// SendFile 发送文件
+func (a *TelegramAdapter) SendFile(target string, filePath string) error {
+	data := map[string]interface{}{
+		"chat_id":  target,
+		"document": filePath,
+	}
+
+	return a.callAPI("/sendDocument", data)
+}
+
+// GetUserInfo 获取用户信息
+func (a *TelegramAdapter) GetUserInfo(userID string) (*UserInfo, error) {
+	// Telegram 不提供直接获取用户信息的 API
+	// 只能从消息中获取
+	return &UserInfo{
+		UserID: userID,
+		Extra:  make(map[string]string),
+	}, nil
+}
+
+// GetGroupInfo 获取群组信息
+func (a *TelegramAdapter) GetGroupInfo(groupID string) (*GroupInfo, error) {
+	data := map[string]interface{}{
+		"chat_id": groupID,
+	}
+
+	var result map[string]interface{}
+	if err := a.callAPIWithResult("/getChat", data, &result); err != nil {
+		return nil, err
+	}
+
+	chatData, ok := result["result"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("无效的响应格式")
+	}
+
+	memberCount := 0
+	if count, ok := chatData["member_count"].(float64); ok {
+		memberCount = int(count)
+	}
+
+	return &GroupInfo{
+		GroupID:     groupID,
+		Name:        fmt.Sprintf("%v", chatData["title"]),
+		MemberCount: memberCount,
+		Extra:       make(map[string]string),
+	}, nil
+}
+
+// AtUser @某人
+func (a *TelegramAdapter) AtUser(groupID string, userID string) error {
+	// Telegram 使用 mention 格式
+	text := fmt.Sprintf("[User](tg://user?id=%s)", userID)
+	return a.SendMessage(groupID, text)
+}
+
+// callAPI 调用 Telegram API
+func (a *TelegramAdapter) callAPI(endpoint string, data map[string]interface{}) error {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	resp, err := http.Post(a.apiURL+endpoint, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API 调用失败 (状态码 %d): %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// callAPIWithResult 调用 API 并返回结果
+func (a *TelegramAdapter) callAPIWithResult(endpoint string, data map[string]interface{}, result interface{}) error {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	resp, err := http.Post(a.apiURL+endpoint, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	return json.Unmarshal(body, result)
+}
