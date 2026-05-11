@@ -73,7 +73,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
-import { getPlugins } from '@/api'
+import { getPlugins, controlPlugin, deletePlugin } from '@/api'
 
 const loading = ref(false)
 const plugins = ref([])
@@ -99,13 +99,25 @@ const getPlatformName = (platform) => {
 }
 
 const handleStart = async (plugin) => {
-  ElMessage.info(`启动插件: ${plugin.name}`)
-  // TODO: 实现启动插件 API
+  try {
+    await controlPlugin(plugin.id, 'start')
+    ElMessage.success(`插件 ${plugin.name} 启动成功`)
+    await loadPlugins()
+  } catch (error) {
+    console.error('启动插件失败:', error)
+    ElMessage.error('启动插件失败')
+  }
 }
 
 const handleStop = async (plugin) => {
-  ElMessage.info(`停止插件: ${plugin.name}`)
-  // TODO: 实现停止插件 API
+  try {
+    await controlPlugin(plugin.id, 'stop')
+    ElMessage.success(`插件 ${plugin.name} 停止成功`)
+    await loadPlugins()
+  } catch (error) {
+    console.error('停止插件失败:', error)
+    ElMessage.error('停止插件失败')
+  }
 }
 
 const handleDelete = async (plugin) => {
@@ -119,9 +131,14 @@ const handleDelete = async (plugin) => {
     }
   )
 
-  ElMessage.success(`已删除插件: ${plugin.name}`)
-  // TODO: 实现删除插件 API
-  await loadPlugins()
+  try {
+    await deletePlugin(plugin.id)
+    ElMessage.success(`插件 ${plugin.name} 已删除`)
+    await loadPlugins()
+  } catch (error) {
+    console.error('删除插件失败:', error)
+    ElMessage.error('删除插件失败')
+  }
 }
 
 onMounted(() => {

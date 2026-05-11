@@ -38,59 +38,39 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh, Delete } from '@element-plus/icons-vue'
+import { getLogs, clearLogs } from '@/api'
 
 const logs = ref([])
 let logInterval = null
 
-const mockLogs = () => {
-  const levels = ['info', 'warn', 'error', 'debug']
-  const messages = [
-    'AllBot 启动成功',
-    '加载插件: 天气插件',
-    '启动 QQ 适配器',
-    '收到消息: 你好',
-    '插件处理完成',
-    '发送消息成功',
-    'Web UI 启动: http://localhost:3000',
-    '适配器配置已更新',
-    '插件依赖安装完成'
-  ]
-
-  return {
-    time: new Date().toLocaleTimeString(),
-    level: levels[Math.floor(Math.random() * levels.length)],
-    message: messages[Math.floor(Math.random() * messages.length)]
+const loadLogs = async () => {
+  try {
+    logs.value = await getLogs()
+  } catch (error) {
+    console.error('加载日志失败:', error)
   }
 }
 
-const loadLogs = () => {
-  // TODO: 实现真实的日志 API
-  // 这里使用模拟数据
-  if (logs.value.length < 50) {
-    logs.value.unshift(mockLogs())
-  } else {
-    logs.value.pop()
-    logs.value.unshift(mockLogs())
+const handleRefresh = async () => {
+  await loadLogs()
+  ElMessage.success('日志已刷新')
+}
+
+const handleClear = async () => {
+  try {
+    await clearLogs()
+    logs.value = []
+    ElMessage.success('日志已清空')
+  } catch (error) {
+    console.error('清空日志失败:', error)
+    ElMessage.error('清空日志失败')
   }
-}
-
-const handleRefresh = () => {
-  ElMessage.info('日志已刷新')
-  loadLogs()
-}
-
-const handleClear = () => {
-  logs.value = []
-  ElMessage.success('日志已清空')
 }
 
 onMounted(() => {
-  // 初始加载一些日志
-  for (let i = 0; i < 10; i++) {
-    logs.value.push(mockLogs())
-  }
+  loadLogs()
 
-  // 每 3 秒添加新日志
+  // 每 3 秒自动刷新
   logInterval = setInterval(() => {
     loadLogs()
   }, 3000)

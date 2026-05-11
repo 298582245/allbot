@@ -25,6 +25,23 @@ export const getPlugins = () => {
   })
 }
 
+// 控制插件（启动/停止/重启）
+export const controlPlugin = (pluginId, action) => {
+  return request({
+    url: `/plugins/${pluginId}`,
+    method: 'post',
+    data: { action }
+  })
+}
+
+// 删除插件
+export const deletePlugin = (pluginId) => {
+  return request({
+    url: `/plugins/${pluginId}`,
+    method: 'delete'
+  })
+}
+
 // 获取适配器列表
 export const getAdapters = () => {
   return request({
@@ -54,6 +71,22 @@ export const getAdapter = (platform) => {
 export const deleteAdapter = (platform) => {
   return request({
     url: `/adapters/${platform}`,
+    method: 'delete'
+  })
+}
+
+// 获取日志
+export const getLogs = () => {
+  return request({
+    url: '/logs',
+    method: 'get'
+  })
+}
+
+// 清空日志
+export const clearLogs = () => {
+  return request({
+    url: '/logs',
     method: 'delete'
   })
 }
