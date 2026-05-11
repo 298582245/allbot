@@ -375,9 +375,8 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 		return nil, fmt.Errorf("无法获取Python绝对路径: %w", err)
 	}
 
-	// 构建命令
-	entryPath := filepath.Join(pluginPath, plugin.Entry)
-	cmd := exec.Command(absPythonPath, entryPath, "--mode=direct")
+	// 构建命令（工作目录已设置为插件目录，直接使用 Entry）
+	cmd := exec.Command(absPythonPath, plugin.Entry, "--mode=direct")
 	cmd.Dir = pluginPath
 
 	// 设置环境变量
