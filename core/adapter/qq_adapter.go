@@ -14,6 +14,7 @@ import (
 // QQAdapter QQ 平台适配器（基于 go-cqhttp）
 type QQAdapter struct {
 	apiURL         string
+	listenAddr     string
 	messageHandler func(*types.Message)
 	httpServer     *http.Server
 }
@@ -21,7 +22,8 @@ type QQAdapter struct {
 // NewQQAdapter 创建 QQ 适配器
 func NewQQAdapter(apiURL string, listenAddr string) *QQAdapter {
 	return &QQAdapter{
-		apiURL: apiURL,
+		apiURL:     apiURL,
+		listenAddr: listenAddr,
 	}
 }
 
@@ -42,12 +44,12 @@ func (a *QQAdapter) Start() error {
 	mux.HandleFunc("/", a.handleWebhook)
 
 	a.httpServer = &http.Server{
-		Addr:    ":8080",
+		Addr:    a.listenAddr,
 		Handler: mux,
 	}
 
 	go func() {
-		log.Printf("QQ Adapter listening on :8080")
+		log.Printf("QQ Adapter listening on %s", a.listenAddr)
 		if err := a.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("QQ Adapter HTTP server error: %v", err)
 		}

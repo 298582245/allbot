@@ -8,8 +8,9 @@
 - **多语言支持**：Python 和 Node.js 插件
 - **连续对话**：内置 `listen()` 支持多轮对话
 - **多平台适配**：统一 API 适配 QQ/微信/Telegram
+- **动态配置系统**：Web UI 修改配置立即生效，无需重启 ✨
 - **全局依赖管理**：所有插件共享依赖，节省空间和时间 ✨
-- **Web UI 管理**：可视化管理插件和系统 ✨
+- **Web UI 管理**：可视化管理插件、平台配置和系统 ✨
 - **一键安装**：自动安装所有依赖 ✨
 - **去中心化市场**：开发者自建市场，无平台抽成（Phase 3）
 - **源码保护**：AES-256 加密 + RSA 签名 ✅
@@ -235,37 +236,38 @@ async def handle(ctx):
 - `GET /api/plugins` - 插件列表
 - `GET /api/system/status` - 系统状态
 
-## 配置
+## 配置平台适配器
+
+### 通过 Web UI 配置（推荐）✨
+
+AllBot 支持动态配置，无需重启即可修改平台设置！
+
+1. 访问 http://localhost:3000 并登录
+2. 切换到"平台配置"标签
+3. 点击"添加平台"或编辑现有配置
+4. 填写配置信息并启用
+5. 点击"保存" - **配置立即生效！**
+
+**支持的平台**：
+- **QQ**：基于 go-cqhttp
+- **微信**：企业微信/公众号（开发中）
+- **Telegram**：Bot API（开发中）
+
+详细配置说明请查看 [快速使用指南](QUICKSTART.md)
 
 ### 命令行参数
 
 ```bash
---plugins=./plugins          # 插件目录
---qq-api=http://localhost:5700  # go-cqhttp API 地址
+--plugins=./plugins          # 插件目录（默认：./plugins）
 ```
 
-### 配置文件（config.yml）
+### 配置数据库
 
-```yaml
-# 管理员账号
-admin:
-  username: admin
-  password: admin123  # 首次启动后请修改
-
-# Web UI 配置
-web:
-  port: 3000
-  host: 0.0.0.0
-
-# QQ 平台配置
-qq:
-  api_url: http://localhost:5700
-  enabled: false
-
-# 插件目录
-plugins:
-  dir: ./plugins
-```
+平台配置存储在 `config.db` SQLite 数据库中，支持：
+- 多平台配置管理
+- 启用/禁用控制
+- 热重载（无需重启）
+- 配置历史记录
 
 ## 架构设计
 

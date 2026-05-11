@@ -72,40 +72,52 @@ type ReplyResponse struct {
 
 // Handle 调用插件处理消息
 func (c *Client) Handle(req *MessageRequest) (*MessageResponse, error) {
-	return c.post("/handle", req, &MessageResponse{})
+	resp := &MessageResponse{}
+	if err := c.post("/handle", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // Listen 等待用户消息
 func (c *Client) Listen(req *ListenRequest) (*ListenResponse, error) {
-	return c.post("/listen", req, &ListenResponse{})
+	resp := &ListenResponse{}
+	if err := c.post("/listen", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // Reply 回复消息
 func (c *Client) Reply(req *ReplyRequest) (*ReplyResponse, error) {
-	return c.post("/reply", req, &ReplyResponse{})
+	resp := &ReplyResponse{}
+	if err := c.post("/reply", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // post 发送 POST 请求
-func (c *Client) post(path string, req interface{}, resp interface{}) (interface{}, error) {
+func (c *Client) post(path string, req interface{}, resp interface{}) error {
 	data, err := json.Marshal(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	httpResp, err := c.client.Post(c.serverURL+path, "application/json", bytes.NewBuffer(data))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer httpResp.Body.Close()
 
 	body, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	if err := json.Unmarshal(body, resp); err != nil {
-		return nil, err
+		return err
 	}
 
-	return resp, nil
+	return nil
 }

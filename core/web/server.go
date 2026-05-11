@@ -4,29 +4,33 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/router"
 )
 
 // Server Web 服务器
 type Server struct {
-	port          string
-	pluginManager *plugin.Manager
-	router        *router.Router
-	adminUsername string
-	adminPassword string
+	port           string
+	pluginManager  *plugin.Manager
+	router         *router.Router
+	adapterManager *config.AdapterManager
+	adminUsername  string
+	adminPassword  string
 }
 
 // NewServer 创建 Web 服务器
-func NewServer(port string, pluginManager *plugin.Manager, router *router.Router, username, password string) *Server {
+func NewServer(port string, pluginManager *plugin.Manager, router *router.Router, adapterManager *config.AdapterManager, username, password string) *Server {
 	return &Server{
-		port:          port,
-		pluginManager: pluginManager,
-		router:        router,
-		adminUsername: username,
-		adminPassword: password,
+		port:           port,
+		pluginManager:  pluginManager,
+		router:         router,
+		adapterManager: adapterManager,
+		adminUsername:  username,
+		adminPassword:  password,
 	}
 }
 
@@ -39,6 +43,10 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/plugins", s.handlePlugins)
 	mux.HandleFunc("/api/plugins/", s.handlePluginDetail)
 	mux.HandleFunc("/api/system/status", s.handleSystemStatus)
+
+	// 配置管理 API
+	mux.HandleFunc("/api/adapters", s.handleAdapters)
+	mux.HandleFunc("/api/adapters/", s.handleAdapterDetail)
 
 	// 静态文件（Web UI）
 	// TODO: 嵌入 Vue 构建产物
@@ -134,6 +142,120 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAdapters 适配器列表接口
+func (s *Server) handleAdapters(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		// 获取所有适配器配置
+		adapters, err := s.adapterManager.GetDatabase().GetAllAdapters()
+		if err != nil {
+			s.jsonError(w, "获取适配器配置失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// 获取运行状态
+		runningAdapters := s.adapterManager.GetAllAdapters()
+		result := make([]map[string]interface{}, 0, len(adapters))
+
+		for _, adapter := range adapters {
+			_, isRunning := runningAdapters[adapter.Platform]
+			result = append(result, map[string]interface{}{
+				"id":         adapter.ID,
+				"platform":   adapter.Platform,
+				"enabled":    adapter.Enabled,
+				"config":     adapter.Config,
+				"running":    isRunning,
+				"created_at": adapter.CreatedAt,
+				"updated_at": adapter.UpdatedAt,
+			})
+		}
+
+		s.jsonResponse(w, result)
+
+	} else if r.Method == http.MethodPost {
+		// 创建或更新适配器配置
+		var req struct {
+			Platform string                 `json:"platform"`
+			Enabled  bool                   `json:"enabled"`
+			Config   map[string]interface{} `json:"config"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.jsonError(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		// 保存配置并重新加载
+		if err := s.adapterManager.SaveAdapterConfig(req.Platform, req.Enabled, req.Config); err != nil {
+			s.jsonError(w, "保存配置失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.jsonResponse(w, map[string]interface{}{
+			"message": "配置已保存并生效",
+		})
+
+	} else {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleAdapterDetail 适配器详情接口
+func (s *Server) handleAdapterDetail(w http.ResponseWriter, r *http.Request) {
+	// 提取平台名称
+	platform := r.URL.Path[len("/api/adapters/"):]
+	if platform == "" {
+		s.jsonError(w, "平台名称不能为空", http.StatusBadRequest)
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		// 获取适配器配置
+		adapter, err := s.adapterManager.GetDatabase().GetAdapter(platform)
+		if err != nil {
+			s.jsonError(w, "获取配置失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if adapter == nil {
+			s.jsonError(w, "配置不存在", http.StatusNotFound)
+			return
+		}
+
+		// 检查运行状态
+		isRunning := s.adapterManager.GetAdapter(platform) != nil
+
+		s.jsonResponse(w, map[string]interface{}{
+			"id":         adapter.ID,
+			"platform":   adapter.Platform,
+			"enabled":    adapter.Enabled,
+			"config":     adapter.Config,
+			"running":    isRunning,
+			"created_at": adapter.CreatedAt,
+			"updated_at": adapter.UpdatedAt,
+		})
+
+	} else if r.Method == http.MethodDelete {
+		// 删除适配器配置
+		// 先停止适配器
+		if err := s.adapterManager.StopAdapter(platform); err != nil {
+			log.Printf("警告：停止适配器失败: %v", err)
+		}
+
+		// 删除配置
+		if err := s.adapterManager.GetDatabase().DeleteAdapter(platform); err != nil {
+			s.jsonError(w, "删除配置失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.jsonResponse(w, map[string]interface{}{
+			"message": "配置已删除",
+		})
+
+	} else {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 // handleIndex 首页
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// 读取 HTML 文件
@@ -166,7 +288,6 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html")
 	w.Write(htmlContent)
-}
 }
 
 // authMiddleware 认证中间件

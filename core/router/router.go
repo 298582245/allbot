@@ -151,8 +151,8 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		return
 	}
 
-	if !resp.(*grpc.MessageResponse).Success {
-		log.Printf("Plugin %s returned error: %s", plugin.Name, resp.(*grpc.MessageResponse).Error)
+	if !resp.Success {
+		log.Printf("Plugin %s returned error: %s", plugin.Name, resp.Error)
 	}
 }
 
