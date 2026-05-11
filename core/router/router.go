@@ -1,14 +1,13 @@
 package router
 
 import (
+	"encoding/json"
 	"log"
 	"path/filepath"
 	"regexp"
 	"sync"
-	"time"
 
 	"github.com/allbot/allbot/core/adapter"
-	"github.com/allbot/allbot/core/grpc"
 	"github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/session"
 	"github.com/allbot/allbot/core/types"
@@ -134,64 +133,62 @@ func (r *Router) supportsPlatform(plugin *types.Plugin, platform string) bool {
 	return false
 }
 
-// callPlugin 调用插件（通过 HTTP）
+// callPlugin 调用插件（无端口直接执行模式）
 func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
+	// 检查插件是否启用
+	if !plugin.Enabled {
+		log.Printf("Plugin %s is disabled, skipping", plugin.Name)
+		return
+	}
+
 	// 获取插件管理器
 	if r.pluginManager == nil {
 		log.Printf("Plugin manager not set")
 		return
 	}
 
-	// 检查插件是否运行，如果没运行则启动
-	process := r.pluginManager.GetPlugin(plugin.ID)
-	if process == nil || process.Status != "running" {
-		log.Printf("Plugin %s not running, starting on demand...", plugin.Name)
-
-		// 按需启动插件
-		pluginPath := filepath.Join("plugins", plugin.ID)
-		if err := r.pluginManager.StartPlugin(plugin, pluginPath); err != nil {
-			log.Printf("Failed to start plugin %s: %v", plugin.Name, err)
-			return
-		}
-
-		// 等待插件启动（简单延迟，实际应该检查端口）
-		time.Sleep(500 * time.Millisecond)
-
-		// 重新获取进程信息
-		process = r.pluginManager.GetPlugin(plugin.ID)
-		if process == nil {
-			log.Printf("Plugin process still not found after start: %s", plugin.ID)
-			return
-		}
-	}
-
-	// 创建 HTTP 客户端
-	client := grpc.NewClient(process.Port)
-
-	// 调用插件
-	req := &grpc.MessageRequest{
-		PluginID:  plugin.ID,
-		Platform:  msg.Platform,
-		UserID:    msg.UserID,
-		GroupID:   msg.GroupID,
-		Content:   msg.Content,
-		MessageID: msg.ID,
-		Metadata:  msg.Metadata,
-	}
-
-	resp, err := client.Handle(req)
+	// 构建消息JSON
+	messageJSON, err := json.Marshal(map[string]interface{}{
+		"plugin_id":  plugin.ID,
+		"platform":   msg.Platform,
+		"user_id":    msg.UserID,
+		"group_id":   msg.GroupID,
+		"content":    msg.Content,
+		"message_id": msg.ID,
+		"metadata":   msg.Metadata,
+	})
 	if err != nil {
-		log.Printf("Failed to call plugin %s: %v", plugin.Name, err)
+		log.Printf("Failed to marshal message: %v", err)
 		return
 	}
 
-	if !resp.Success {
-		log.Printf("Plugin %s returned error: %s", plugin.Name, resp.Error)
+	// 直接执行插件（每次触发创建新进程，天然支持并发）
+	pluginPath := filepath.Join("plugins", plugin.ID)
+	output, err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON)
+	if err != nil {
+		log.Printf("Failed to execute plugin %s: %v", plugin.Name, err)
+		return
+	}
+
+	// 解析插件输出
+	var result struct {
+		Success bool     `json:"success"`
+		Error   string   `json:"error"`
+		Replies []string `json:"replies"`
+	}
+
+	if err := json.Unmarshal(output, &result); err != nil {
+		log.Printf("Failed to parse plugin output: %v", err)
+		return
+	}
+
+	if !result.Success {
+		log.Printf("Plugin %s returned error: %s", plugin.Name, result.Error)
 		return
 	}
 
 	// 发送插件返回的回复消息
-	if len(resp.Replies) > 0 {
+	if len(result.Replies) > 0 {
 		r.mu.RLock()
 		adp, ok := r.adapters[msg.Platform]
 		r.mu.RUnlock()
@@ -201,7 +198,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 			return
 		}
 
-		// 确定发送目标（群组或私聊）
+		// 确定发送目标
 		target := msg.UserID
 		if msg.GroupID != "" {
 			target = msg.GroupID
@@ -215,7 +212,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		}
 
 		// 发送所有回复消息
-		for _, reply := range resp.Replies {
+		for _, reply := range result.Replies {
 			if err := adp.SendMessage(target, reply); err != nil {
 				log.Printf("Failed to send reply: %v", err)
 			} else {

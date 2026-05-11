@@ -3,6 +3,7 @@ package plugin
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -79,14 +80,20 @@ func (m *Manager) LoadPlugin(pluginPath string) (*types.Plugin, error) {
 		Entry:     config.Entry,
 		Platforms: config.Platforms,
 		Trigger:   config.Trigger,
+		Enabled:   config.Enabled,
 	}
 
-	// 在插件管理器中注册插件（stopped状态）
+	// 默认启用
+	if plugin.Enabled == false && config.Enabled == false {
+		plugin.Enabled = true
+	}
+
+	// 在插件管理器中注册插件（不再需要启动进程）
 	m.mu.Lock()
 	if _, exists := m.plugins[pluginID]; !exists {
 		m.plugins[pluginID] = &PluginProcess{
 			Plugin: plugin,
-			Status: "stopped",
+			Status: "ready", // 改为ready状态，表示可以执行
 			Port:   0,
 		}
 	}
@@ -357,4 +364,87 @@ func (m *Manager) LoadAllPlugins() ([]*types.Plugin, error) {
 	}
 
 	return plugins, nil
+}
+
+// ExecutePlugin 直接执行插件（无端口模式，支持并发）
+func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte) ([]byte, error) {
+	// 获取Python路径
+	pythonPath := m.depsManager.GetPythonPath()
+	absPythonPath, err := filepath.Abs(pythonPath)
+	if err != nil {
+		return nil, fmt.Errorf("无法获取Python绝对路径: %w", err)
+	}
+
+	// 构建命令
+	entryPath := filepath.Join(pluginPath, plugin.Entry)
+	cmd := exec.Command(absPythonPath, entryPath, "--mode=direct")
+	cmd.Dir = pluginPath
+
+	// 设置环境变量
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", plugin.ID),
+	)
+
+	// 创建管道
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("创建stdin管道失败: %w", err)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("创建stdout管道失败: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("创建stderr管道失败: %w", err)
+	}
+
+	// 启动进程
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("启动插件进程失败: %w", err)
+	}
+
+	// 写入消息JSON到stdin
+	if _, err := stdin.Write(messageJSON); err != nil {
+		cmd.Process.Kill()
+		return nil, fmt.Errorf("写入消息失败: %w", err)
+	}
+	stdin.Close()
+
+	// 读取stdout和stderr
+	output, err := io.ReadAll(stdout)
+	if err != nil {
+		cmd.Process.Kill()
+		return nil, fmt.Errorf("读取输出失败: %w", err)
+	}
+
+	errOutput, _ := io.ReadAll(stderr)
+	if len(errOutput) > 0 {
+		log.Printf("Plugin %s stderr: %s", plugin.ID, string(errOutput))
+	}
+
+	// 等待进程结束
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("插件执行失败: %w, stderr: %s", err, string(errOutput))
+	}
+
+	return output, nil
+}
+
+// TogglePlugin 切换插件启用状态
+func (m *Manager) TogglePlugin(pluginID string, enabled bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	process, exists := m.plugins[pluginID]
+	if !exists {
+		return fmt.Errorf("plugin not found: %s", pluginID)
+	}
+
+	process.Plugin.Enabled = enabled
+	log.Printf("Plugin %s enabled=%v", pluginID, enabled)
+
+	return nil
 }
