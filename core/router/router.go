@@ -183,6 +183,13 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 			target = msg.GroupID
 		}
 
+		// 对于Telegram，优先使用Metadata中的chat_id
+		if msg.Platform == "telegram" {
+			if chatID, ok := msg.Metadata["chat_id"]; ok && chatID != "" {
+				target = chatID
+			}
+		}
+
 		// 发送所有回复消息
 		for _, reply := range resp.Replies {
 			if err := adp.SendMessage(target, reply); err != nil {

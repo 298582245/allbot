@@ -222,7 +222,9 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 		Platform: "telegram",
 		UserID:   userID,
 		Content:  text,
-		Metadata: make(map[string]string),
+		Metadata: map[string]string{
+			"chat_id": chatID, // 保存chat_id用于回复
+		},
 	}
 
 	// 判断是群组还是私聊
