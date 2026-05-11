@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 天气查询插件示例
 
@@ -65,16 +66,11 @@ async def handle(ctx: Context):
 async def fetch_weather(city: str) -> str:
     """获取实时天气（示例实现）"""
     # 实际应用中应该调用真实的天气 API
-    # response = await ctx.http.get(f"https://api.weather.com/{city}")
-
-    # 模拟数据
     return f"晴天 25°C，空气质量良好"
 
 
 async def fetch_forecast(city: str, days: int) -> str:
     """获取天气预报（示例实现）"""
-    # 实际应用中应该调用真实的天气 API
-
     # 模拟数据
     forecast_data = []
     for i in range(days):

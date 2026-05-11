@@ -379,9 +379,10 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 	cmd := exec.Command(absPythonPath, plugin.Entry, "--mode=direct")
 	cmd.Dir = pluginPath
 
-	// 设置环境变量
+	// 设置环境变量（强制 Python 使用 UTF-8 编码）
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", plugin.ID),
+		"PYTHONUTF8=1", // 强制 Python 3.7+ 使用 UTF-8 模式
 	)
 
 	// 创建管道
