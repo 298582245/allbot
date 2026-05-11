@@ -407,26 +407,20 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // authMiddleware 认证中间件
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 跳过登录接口、静态文件和资源文件
-		if r.URL.Path == "/api/login" ||
-		   r.URL.Path == "/" ||
-		   strings.HasPrefix(r.URL.Path, "/assets/") ||
-		   r.URL.Path == "/favicon.ico" {
-			next.ServeHTTP(w, r)
-			return
-		}
+		// 只对 API 路径进行认证检查（除了登录接口）
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/login" {
+			// 检查 Authorization header
+			token := r.Header.Get("Authorization")
+			if token == "" {
+				s.jsonError(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
 
-		// 检查 Authorization header
-		token := r.Header.Get("Authorization")
-		if token == "" {
-			s.jsonError(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		// 简单验证（生产环境应使用 JWT）
-		if token != "Bearer admin-token-"+time.Now().Format("20060102") {
-			s.jsonError(w, "Invalid token", http.StatusUnauthorized)
-			return
+			// 简单验证（生产环境应使用 JWT）
+			if token != "Bearer admin-token-"+time.Now().Format("20060102") {
+				s.jsonError(w, "Invalid token", http.StatusUnauthorized)
+				return
+			}
 		}
 
 		next.ServeHTTP(w, r)
