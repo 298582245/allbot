@@ -104,9 +104,25 @@ func (m *Manager) StartPlugin(plugin *types.Plugin, pluginPath string) error {
 	case "python":
 		// 使用全局虚拟环境的 Python
 		pythonPath := m.depsManager.GetPythonPath()
+
+		// 检查Python路径是否存在
+		if _, err := os.Stat(pythonPath); os.IsNotExist(err) {
+			return fmt.Errorf("Python解释器不存在: %s", pythonPath)
+		}
+
+		// 检查插件入口文件是否存在
+		if _, err := os.Stat(entryPath); os.IsNotExist(err) {
+			return fmt.Errorf("插件入口文件不存在: %s", entryPath)
+		}
+
+		log.Printf("启动Python插件: python=%s, entry=%s, dir=%s", pythonPath, entryPath, pluginPath)
+
 		cmd = exec.Command(pythonPath, entryPath, fmt.Sprintf("--port=%d", port))
 		// 设置工作目录为插件目录
 		cmd.Dir = pluginPath
+		// 捕获标准输出和错误输出
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
 	case "nodejs":
 		// 使用 Node.js，设置 NODE_PATH 指向全局 node_modules
 		cmd = exec.Command("node", entryPath, fmt.Sprintf("--port=%d", port))
@@ -116,6 +132,8 @@ func (m *Manager) StartPlugin(plugin *types.Plugin, pluginPath string) error {
 		cmd.Env = append(os.Environ(),
 			fmt.Sprintf("NODE_PATH=%s", nodePath),
 		)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
 	default:
 		return fmt.Errorf("unsupported runtime: %s", plugin.Runtime)
 	}
