@@ -1,0 +1,11 @@
+{
+  "name": "天气查询插件",
+  "version": "1.0.0",
+  "runtime": "python",
+  "entry": "main.py",
+  "platforms": ["qq", "wechat", "telegram"],
+  "trigger": "天气.*",
+  "dependencies": {
+    "requests": "2.31.0"
+  }
+}
