@@ -56,7 +56,7 @@
         </el-table-column>
       </el-table>
 
-      <el-empty v-if="!loading && adapters.length === 0" description="暂无平台配置，点击"添加平台"开始配置" />
+      <el-empty v-if="!loading && adapters.length === 0" description="暂无平台配置，点击添加平台开始配置" />
     </el-card>
 
     <!-- 添加/编辑对话框 -->
