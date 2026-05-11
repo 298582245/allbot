@@ -214,9 +214,16 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 		return
 	}
 
-	userID := fmt.Sprintf("%v", from["id"])
-	chatID := fmt.Sprintf("%v", chat["id"])
-	messageID := fmt.Sprintf("%v", message["message_id"])
+	// 正确提取chat_id，避免科学计数法
+	userIDNum, _ := from["id"].(float64)
+	chatIDNum, _ := chat["id"].(float64)
+	messageIDNum, _ := message["message_id"].(float64)
+
+	userID := fmt.Sprintf("%.0f", userIDNum)
+	chatID := fmt.Sprintf("%.0f", chatIDNum)
+	messageID := fmt.Sprintf("%.0f", messageIDNum)
+
+	log.Printf("Telegram message: user_id=%s, chat_id=%s, text=%s", userID, chatID, text)
 
 	msg := &types.Message{
 		ID:       messageID,
