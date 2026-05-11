@@ -116,14 +116,15 @@ func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 
 		for _, p := range plugins {
 			result = append(result, map[string]interface{}{
-				"id":       p.Plugin.ID,
-				"name":     p.Plugin.Name,
-				"version":  p.Plugin.Version,
-				"runtime":  p.Plugin.Runtime,
-				"status":   p.Status,
-				"port":     p.Port,
-				"trigger":  p.Plugin.Trigger,
+				"id":        p.Plugin.ID,
+				"name":      p.Plugin.Name,
+				"version":   p.Plugin.Version,
+				"runtime":   p.Plugin.Runtime,
+				"status":    p.Status,
+				"port":      p.Port,
+				"trigger":   p.Plugin.Trigger,
 				"platforms": p.Plugin.Platforms,
+				"enabled":   p.Plugin.Enabled,
 			})
 		}
 
