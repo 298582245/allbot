@@ -44,6 +44,11 @@ func (r *Router) SetAdapters(adapters map[string]adapter.Adapter) {
 	r.adapters = adapters
 }
 
+// GetSessionManager 获取会话管理器
+func (r *Router) GetSessionManager() *session.Manager {
+	return r.sessionManager
+}
+
 // RegisterPlugin 注册插件
 func (r *Router) RegisterPlugin(plugin *types.Plugin) error {
 	// 编译正则表达式

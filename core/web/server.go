@@ -57,6 +57,9 @@ func (s *Server) Start() error {
 	// 日志 API
 	mux.HandleFunc("/api/logs", s.handleLogs)
 
+	// 插件 API（供插件调用）
+	mux.HandleFunc("/api/plugin/listen", s.handlePluginListen)
+
 	// 静态文件服务（assets目录）
 	fs := http.FileServer(http.Dir("web"))
 	mux.Handle("/assets/", fs)
@@ -443,5 +446,48 @@ func (s *Server) jsonError(w http.ResponseWriter, message string, code int) {
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{
 		"error": message,
+	})
+}
+
+// handlePluginListen 处理插件的listen请求
+func (s *Server) handlePluginListen(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		PluginID string `json:"plugin_id"`
+		UserID   string `json:"user_id"`
+		GroupID  string `json:"group_id"`
+		Timeout  int    `json:"timeout"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// 通过router获取sessionManager
+	sessionManager := s.router.GetSessionManager()
+	if sessionManager == nil {
+		s.jsonError(w, "Session manager not available", http.StatusInternalServerError)
+		return
+	}
+
+	// 创建等待会话
+	ch := sessionManager.CreateSession(req.PluginID, req.UserID, req.GroupID, req.Timeout)
+
+	// 等待消息或超时
+	content := ""
+	select {
+	case msg, ok := <-ch:
+		if ok {
+			content = msg
+		}
+	}
+
+	s.jsonResponse(w, map[string]interface{}{
+		"content": content,
 	})
 }

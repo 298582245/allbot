@@ -77,14 +77,10 @@ class Context:
         """
         # 通过HTTP请求核心框架注册等待session
         import requests
-        import os
-
-        # 获取核心框架地址（从环境变量或默认值）
-        core_host = os.environ.get('ALLBOT_CORE_HOST', 'http://localhost:50050')
 
         try:
             response = requests.post(
-                f'{core_host}/listen',
+                'http://localhost:3000/api/plugin/listen',
                 json={
                     'plugin_id': self.plugin_id,
                     'user_id': self.user_id,
