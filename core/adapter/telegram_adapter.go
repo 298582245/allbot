@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/allbot/allbot/core/types"
+	"github.com/allbot/allbot/core/utils"
 )
 
 // TelegramAdapter Telegram 平台适配器
@@ -134,7 +135,7 @@ func (a *TelegramAdapter) pollUpdates() {
 		default:
 			updates, err := a.getUpdates()
 			if err != nil {
-				log.Printf("[ERROR][Telegram] 获取更新失败: %v", err)
+				log.Printf("[ERROR][Telegram] 获取更新失败: %s", utils.MaskSensitiveError(err))
 				time.Sleep(3 * time.Second)
 				continue
 			}

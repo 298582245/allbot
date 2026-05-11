@@ -38,18 +38,6 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="依赖" min-width="150">
-          <template #default="{ row }">
-            <el-tag
-              v-if="row.dependencies && Object.keys(row.dependencies).length > 0"
-              size="small"
-              type="info"
-            >
-              {{ Object.keys(row.dependencies).length }} 个依赖
-            </el-tag>
-            <span v-else style="color: #999">无依赖</span>
-          </template>
-        </el-table-column>
         <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
             <el-button

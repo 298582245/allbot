@@ -13,6 +13,7 @@ import (
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/router"
+	"github.com/allbot/allbot/core/utils"
 )
 
 // Server Web 服务器
@@ -286,7 +287,7 @@ func (s *Server) handleAdapters(w http.ResponseWriter, r *http.Request) {
 				"id":         adapter.ID,
 				"platform":   adapter.Platform,
 				"enabled":    adapter.Enabled,
-				"config":     adapter.Config,
+				"config":     utils.MaskSensitiveConfig(adapter.Config),
 				"running":    isRunning,
 				"created_at": adapter.CreatedAt,
 				"updated_at": adapter.UpdatedAt,
@@ -352,7 +353,7 @@ func (s *Server) handleAdapterDetail(w http.ResponseWriter, r *http.Request) {
 			"id":         adapter.ID,
 			"platform":   adapter.Platform,
 			"enabled":    adapter.Enabled,
-			"config":     adapter.Config,
+			"config":     utils.MaskSensitiveConfig(adapter.Config),
 			"running":    isRunning,
 			"created_at": adapter.CreatedAt,
 			"updated_at": adapter.UpdatedAt,
