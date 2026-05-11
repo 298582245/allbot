@@ -154,29 +154,43 @@ func (s *Server) handlePluginDetail(w http.ResponseWriter, r *http.Request) {
 		}
 
 		switch req.Action {
-		case "start":
-			// 启动插件
-			if err := s.pluginManager.StartPluginByID(pluginID); err != nil {
-				s.logManager.AddLog("error", fmt.Sprintf("启动插件失败 %s: %v", pluginID, err))
-				s.jsonError(w, "启动插件失败: "+err.Error(), http.StatusInternalServerError)
+		case "enable":
+			// 启用插件
+			if err := s.pluginManager.TogglePlugin(pluginID, true); err != nil {
+				s.logManager.AddLog("error", fmt.Sprintf("启用插件失败 %s: %v", pluginID, err))
+				s.jsonError(w, "启用插件失败: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
-			s.logManager.AddLog("info", fmt.Sprintf("启动插件: %s", pluginID))
+			s.logManager.AddLog("info", fmt.Sprintf("启用插件: %s", pluginID))
 			s.jsonResponse(w, map[string]interface{}{
-				"message": "插件启动成功",
+				"message": "插件已启用",
+			})
+		case "disable":
+			// 禁用插件
+			if err := s.pluginManager.TogglePlugin(pluginID, false); err != nil {
+				s.logManager.AddLog("error", fmt.Sprintf("禁用插件失败 %s: %v", pluginID, err))
+				s.jsonError(w, "禁用插件失败: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			s.logManager.AddLog("info", fmt.Sprintf("禁用插件: %s", pluginID))
+			s.jsonResponse(w, map[string]interface{}{
+				"message": "插件已禁用",
+			})
+		case "start":
+			// 启动插件（兼容旧版，现在无意义）
+			s.jsonResponse(w, map[string]interface{}{
+				"message": "插件采用按需执行模式，无需手动启动",
 			})
 		case "stop":
-			if err := s.pluginManager.StopPlugin(pluginID); err != nil {
-				s.logManager.AddLog("error", fmt.Sprintf("停止插件失败 %s: %v", pluginID, err))
-				s.jsonError(w, "停止插件失败: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			s.logManager.AddLog("info", fmt.Sprintf("停止插件: %s", pluginID))
+			// 停止插件（兼容旧版，现在无意义）
 			s.jsonResponse(w, map[string]interface{}{
-				"message": "插件停止成功",
+				"message": "插件采用按需执行模式，无需手动停止",
 			})
 		case "restart":
-			// 先停止再启动
+			// 重启插件（兼容旧版，现在无意义）
+			s.jsonResponse(w, map[string]interface{}{
+				"message": "插件采用按需执行模式，无需重启",
+			})
 			s.pluginManager.StopPlugin(pluginID)
 			time.Sleep(500 * time.Millisecond) // 等待进程完全停止
 			if err := s.pluginManager.StartPluginByID(pluginID); err != nil {
