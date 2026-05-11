@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/allbot/allbot/core/types"
@@ -240,10 +241,25 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 
 // SendMessage 发送消息
 func (a *TelegramAdapter) SendMessage(target string, text string) error {
+	// Telegram API要求chat_id是数字类型，需要转换
+	var chatID interface{}
+
+	// 尝试将字符串转换为int64
+	if id, err := strconv.ParseInt(target, 10, 64); err == nil {
+		chatID = id
+		log.Printf("Telegram SendMessage: target=%s, parsed_chat_id=%d", target, id)
+	} else {
+		// 如果转换失败，保持字符串（用于username）
+		chatID = target
+		log.Printf("Telegram SendMessage: target=%s (failed to parse as int, using string)", target)
+	}
+
 	data := map[string]interface{}{
-		"chat_id": target,
+		"chat_id": chatID,
 		"text":    text,
 	}
+
+	log.Printf("Telegram API request: chat_id=%v (type=%T), text=%s", chatID, chatID, text)
 
 	return a.callAPI("/sendMessage", data)
 }
