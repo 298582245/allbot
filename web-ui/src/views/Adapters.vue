@@ -114,6 +114,15 @@
               placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
             />
           </el-form-item>
+          <el-form-item label="代理地址">
+            <el-input
+              v-model="form.config.proxy_url"
+              placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+            />
+            <span style="font-size: 12px; color: #999">
+              可选，国内访问Telegram需要代理
+            </span>
+          </el-form-item>
         </template>
 
         <!-- 微信配置 -->
@@ -170,6 +179,7 @@ const form = reactive({
     api_url: 'http://localhost:5700',
     listen_addr: ':8080',
     bot_token: '',
+    proxy_url: '',
     app_id: '',
     app_secret: ''
   }
@@ -208,7 +218,9 @@ const getConfigText = (row) => {
     if (row.platform === 'qq') {
       return `API: ${config.api_url} | 监听: ${config.listen_addr}`
     } else if (row.platform === 'telegram') {
-      return `Token: ${config.bot_token?.substring(0, 20)}...`
+      const token = `Token: ${config.bot_token?.substring(0, 20)}...`
+      const proxy = config.proxy_url ? ` | 代理: ${config.proxy_url}` : ''
+      return token + proxy
     } else if (row.platform === 'wechat') {
       return `AppID: ${config.app_id}`
     }
@@ -247,6 +259,7 @@ const handlePlatformChange = () => {
     api_url: 'http://localhost:5700',
     listen_addr: ':8080',
     bot_token: '',
+    proxy_url: '',
     app_id: '',
     app_secret: ''
   }
@@ -270,7 +283,8 @@ const handleSave = async () => {
         }
       } else if (form.platform === 'telegram') {
         config = {
-          bot_token: form.config.bot_token
+          bot_token: form.config.bot_token,
+          proxy_url: form.config.proxy_url || ''
         }
       } else if (form.platform === 'wechat') {
         config = {
@@ -341,6 +355,7 @@ const resetForm = () => {
     api_url: 'http://localhost:5700',
     listen_addr: ':8080',
     bot_token: '',
+    proxy_url: '',
     app_id: '',
     app_secret: ''
   }
