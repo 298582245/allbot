@@ -105,9 +105,15 @@ func (m *Manager) StartPlugin(plugin *types.Plugin, pluginPath string) error {
 		// 使用全局虚拟环境的 Python
 		pythonPath := m.depsManager.GetPythonPath()
 
+		// 转换为绝对路径
+		absPythonPath, err := filepath.Abs(pythonPath)
+		if err != nil {
+			return fmt.Errorf("无法获取Python绝对路径: %w", err)
+		}
+
 		// 检查Python路径是否存在
-		if _, err := os.Stat(pythonPath); os.IsNotExist(err) {
-			return fmt.Errorf("Python解释器不存在: %s", pythonPath)
+		if _, err := os.Stat(absPythonPath); os.IsNotExist(err) {
+			return fmt.Errorf("Python解释器不存在: %s", absPythonPath)
 		}
 
 		// 检查插件入口文件是否存在
@@ -115,9 +121,9 @@ func (m *Manager) StartPlugin(plugin *types.Plugin, pluginPath string) error {
 			return fmt.Errorf("插件入口文件不存在: %s", entryPath)
 		}
 
-		log.Printf("启动Python插件: python=%s, entry=%s, dir=%s", pythonPath, entryPath, pluginPath)
+		log.Printf("启动Python插件: python=%s, entry=%s, dir=%s", absPythonPath, plugin.Entry, pluginPath)
 
-		cmd = exec.Command(pythonPath, entryPath, fmt.Sprintf("--port=%d", port))
+		cmd = exec.Command(absPythonPath, plugin.Entry, fmt.Sprintf("--port=%d", port))
 		// 设置工作目录为插件目录
 		cmd.Dir = pluginPath
 		// 捕获标准输出和错误输出
@@ -222,9 +228,18 @@ func (m *Manager) startPluginProcess(plugin *types.Plugin, pluginPath string) er
 	switch plugin.Runtime {
 	case "python":
 		pythonPath := m.depsManager.GetPythonPath()
-		cmd = exec.Command(pythonPath, entryPath, fmt.Sprintf("--port=%d", port))
+
+		// 转换为绝对路径
+		absPythonPath, err := filepath.Abs(pythonPath)
+		if err != nil {
+			return fmt.Errorf("无法获取Python绝对路径: %w", err)
+		}
+
+		cmd = exec.Command(absPythonPath, plugin.Entry, fmt.Sprintf("--port=%d", port))
 		// 设置工作目录为插件目录
 		cmd.Dir = pluginPath
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
 	case "nodejs":
 		cmd = exec.Command("node", entryPath, fmt.Sprintf("--port=%d", port))
 		// 设置工作目录为插件目录
