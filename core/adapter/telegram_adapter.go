@@ -128,26 +128,33 @@ func (a *TelegramAdapter) getUpdates() ([]map[string]interface{}, error) {
 
 	resp, err := a.httpClient.Get(url)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("HTTP请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	// 检查HTTP状态码
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP状态码 %d, 响应: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
-		Ok     bool                     `json:"ok"`
-		Result []map[string]interface{} `json:"result"`
+		Ok          bool                     `json:"ok"`
+		Result      []map[string]interface{} `json:"result"`
+		ErrorCode   int                      `json:"error_code"`
+		Description string                   `json:"description"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("JSON解析失败: %w, 响应: %s", err, string(body))
 	}
 
 	if !result.Ok {
-		return nil, fmt.Errorf("API 返回错误")
+		return nil, fmt.Errorf("Telegram API错误 [%d]: %s", result.ErrorCode, result.Description)
 	}
 
 	return result.Result, nil
