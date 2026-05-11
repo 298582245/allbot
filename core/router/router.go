@@ -2,8 +2,10 @@ package router
 
 import (
 	"log"
+	"path/filepath"
 	"regexp"
 	"sync"
+	"time"
 
 	"github.com/allbot/allbot/core/adapter"
 	"github.com/allbot/allbot/core/grpc"
@@ -129,16 +131,33 @@ func (r *Router) supportsPlatform(plugin *types.Plugin, platform string) bool {
 
 // callPlugin 调用插件（通过 HTTP）
 func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
-	// 获取插件进程
+	// 获取插件管理器
 	if r.pluginManager == nil {
 		log.Printf("Plugin manager not set")
 		return
 	}
 
+	// 检查插件是否运行，如果没运行则启动
 	process := r.pluginManager.GetPlugin(plugin.ID)
-	if process == nil {
-		log.Printf("Plugin process not found: %s", plugin.ID)
-		return
+	if process == nil || process.Status != "running" {
+		log.Printf("Plugin %s not running, starting on demand...", plugin.Name)
+
+		// 按需启动插件
+		pluginPath := filepath.Join("plugins", plugin.ID)
+		if err := r.pluginManager.StartPlugin(plugin, pluginPath); err != nil {
+			log.Printf("Failed to start plugin %s: %v", plugin.Name, err)
+			return
+		}
+
+		// 等待插件启动（简单延迟，实际应该检查端口）
+		time.Sleep(500 * time.Millisecond)
+
+		// 重新获取进程信息
+		process = r.pluginManager.GetPlugin(plugin.ID)
+		if process == nil {
+			log.Printf("Plugin process still not found after start: %s", plugin.ID)
+			return
+		}
 	}
 
 	// 创建 HTTP 客户端

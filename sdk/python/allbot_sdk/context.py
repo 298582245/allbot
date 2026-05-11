@@ -75,9 +75,34 @@ class Context:
         Returns:
             用户发送的消息内容，超时返回空字符串
         """
-        # TODO: 调用 gRPC ListenRequest
-        print(f"[Listen] Waiting for {timeout}s...")
-        return ""
+        # 通过HTTP请求核心框架注册等待session
+        import requests
+        import os
+
+        # 获取核心框架地址（从环境变量或默认值）
+        core_host = os.environ.get('ALLBOT_CORE_HOST', 'http://localhost:50050')
+
+        try:
+            response = requests.post(
+                f'{core_host}/listen',
+                json={
+                    'plugin_id': self.plugin_id,
+                    'user_id': self.user_id,
+                    'group_id': self.group_id,
+                    'timeout': timeout
+                },
+                timeout=timeout + 5  # 稍微长一点避免客户端先超时
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('content', '')
+            else:
+                print(f"[Listen] Failed: {response.status_code}")
+                return ''
+        except Exception as e:
+            print(f"[Listen] Error: {e}")
+            return ''
 
     async def get_user_info(self) -> Optional[Dict[str, Any]]:
         """获取用户信息

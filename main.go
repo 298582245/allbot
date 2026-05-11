@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"github.com/allbot/allbot/core/config"
@@ -70,19 +69,14 @@ func main() {
 		log.Printf("警告：加载插件失败: %v", err)
 	}
 
-	// 8. 注册插件到路由器并启动插件进程
+	// 8. 注册插件到路由器（但不启动进程，按需启动）
 	for _, p := range plugins {
 		if err := messageRouter.RegisterPlugin(p); err != nil {
 			log.Printf("警告：注册插件失败 %s: %v", p.Name, err)
-			continue
-		}
-
-		pluginPath := filepath.Join(*pluginDir, p.ID)
-		if err := pluginManager.StartPlugin(p, pluginPath); err != nil {
-			log.Printf("警告：启动插件失败 %s: %v", p.Name, err)
-			continue
 		}
 	}
+
+	log.Printf("已注册 %d 个插件（按需启动模式）", len(plugins))
 
 	// 9. 创建适配器管理器
 	adapterManager := config.NewAdapterManager(configDB)
