@@ -97,6 +97,10 @@ func main() {
 
 	// 10. 启动 Web UI 服务器
 	webServer := web.NewServer("3000", pluginManager, messageRouter, adapterManager, "admin", "admin123")
+
+	// 将标准日志重定向到 LogManager，使前端可以看到终端日志
+	log.SetOutput(web.NewCustomLogger(webServer.GetLogManager()))
+
 	go func() {
 		if err := webServer.Start(); err != nil {
 			log.Printf("Web UI 启动失败: %v", err)

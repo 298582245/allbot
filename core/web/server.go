@@ -40,6 +40,11 @@ func NewServer(port string, pluginManager *plugin.Manager, router *router.Router
 	}
 }
 
+// GetLogManager 获取日志管理器
+func (s *Server) GetLogManager() *LogManager {
+	return s.logManager
+}
+
 // Start 启动 Web 服务器
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
