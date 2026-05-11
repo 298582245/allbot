@@ -2,11 +2,13 @@ package adapter
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/allbot/allbot/core/types"
@@ -19,14 +21,37 @@ type TelegramAdapter struct {
 	messageHandler func(*types.Message)
 	stopChan       chan struct{}
 	lastUpdateID   int64
+	httpClient     *http.Client
 }
 
 // NewTelegramAdapter 创建 Telegram 适配器
-func NewTelegramAdapter(botToken string) *TelegramAdapter {
+func NewTelegramAdapter(botToken string, proxyURL string) *TelegramAdapter {
+	// 创建 HTTP 客户端
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+		},
+	}
+
+	// 如果配置了代理，使用代理
+	if proxyURL != "" {
+		if proxy, err := url.Parse(proxyURL); err == nil {
+			client.Transport = &http.Transport{
+				Proxy:           http.ProxyURL(proxy),
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+			}
+			log.Printf("Telegram 使用代理: %s", proxyURL)
+		} else {
+			log.Printf("警告：代理地址解析失败: %v", err)
+		}
+	}
+
 	return &TelegramAdapter{
-		botToken: botToken,
-		apiURL:   "https://api.telegram.org/bot" + botToken,
-		stopChan: make(chan struct{}),
+		botToken:   botToken,
+		apiURL:     "https://api.telegram.org/bot" + botToken,
+		stopChan:   make(chan struct{}),
+		httpClient: client,
 	}
 }
 
@@ -63,7 +88,7 @@ func (a *TelegramAdapter) Stop() error {
 
 // verifyToken 验证 Bot Token
 func (a *TelegramAdapter) verifyToken() error {
-	resp, err := http.Get(a.apiURL + "/getMe")
+	resp, err := a.httpClient.Get(a.apiURL + "/getMe")
 	if err != nil {
 		return err
 	}
@@ -101,7 +126,7 @@ func (a *TelegramAdapter) pollUpdates() {
 func (a *TelegramAdapter) getUpdates() ([]map[string]interface{}, error) {
 	url := fmt.Sprintf("%s/getUpdates?offset=%d&timeout=30", a.apiURL, a.lastUpdateID+1)
 
-	resp, err := http.Get(url)
+	resp, err := a.httpClient.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +289,7 @@ func (a *TelegramAdapter) callAPI(endpoint string, data map[string]interface{}) 
 		return err
 	}
 
-	resp, err := http.Post(a.apiURL+endpoint, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := a.httpClient.Post(a.apiURL+endpoint, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return err
 	}
@@ -285,7 +310,7 @@ func (a *TelegramAdapter) callAPIWithResult(endpoint string, data map[string]int
 		return err
 	}
 
-	resp, err := http.Post(a.apiURL+endpoint, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := a.httpClient.Post(a.apiURL+endpoint, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return err
 	}

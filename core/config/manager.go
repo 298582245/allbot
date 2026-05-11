@@ -86,7 +86,7 @@ func (m *AdapterManager) startAdapter(config *AdapterConfig) error {
 		if err != nil {
 			return fmt.Errorf("解析 Telegram 配置失败: %w", err)
 		}
-		adp = adapter.NewTelegramAdapter(telegramConfig.BotToken)
+		adp = adapter.NewTelegramAdapter(telegramConfig.BotToken, telegramConfig.ProxyURL)
 
 	default:
 		return fmt.Errorf("不支持的平台: %s", config.Platform)

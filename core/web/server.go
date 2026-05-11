@@ -57,8 +57,11 @@ func (s *Server) Start() error {
 	// 日志 API
 	mux.HandleFunc("/api/logs", s.handleLogs)
 
-	// 静态文件（Web UI）
-	// TODO: 嵌入 Vue 构建产物
+	// 静态文件服务（assets目录）
+	fs := http.FileServer(http.Dir("web"))
+	mux.Handle("/assets/", fs)
+
+	// 首页
 	mux.HandleFunc("/", s.handleIndex)
 
 	server := &http.Server{
@@ -149,7 +152,12 @@ func (s *Server) handlePluginDetail(w http.ResponseWriter, r *http.Request) {
 
 		switch req.Action {
 		case "start":
-			// TODO: 实现启动插件
+			// 启动插件
+			if err := s.pluginManager.StartPluginByID(pluginID); err != nil {
+				s.logManager.AddLog("error", fmt.Sprintf("启动插件失败 %s: %v", pluginID, err))
+				s.jsonError(w, "启动插件失败: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 			s.logManager.AddLog("info", fmt.Sprintf("启动插件: %s", pluginID))
 			s.jsonResponse(w, map[string]interface{}{
 				"message": "插件启动成功",
@@ -167,7 +175,12 @@ func (s *Server) handlePluginDetail(w http.ResponseWriter, r *http.Request) {
 		case "restart":
 			// 先停止再启动
 			s.pluginManager.StopPlugin(pluginID)
-			// TODO: 实现启动插件
+			time.Sleep(500 * time.Millisecond) // 等待进程完全停止
+			if err := s.pluginManager.StartPluginByID(pluginID); err != nil {
+				s.logManager.AddLog("error", fmt.Sprintf("重启插件失败 %s: %v", pluginID, err))
+				s.jsonError(w, "重启插件失败: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 			s.logManager.AddLog("info", fmt.Sprintf("重启插件: %s", pluginID))
 			s.jsonResponse(w, map[string]interface{}{
 				"message": "插件重启成功",
@@ -376,8 +389,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // authMiddleware 认证中间件
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 跳过登录接口和静态文件
-		if r.URL.Path == "/api/login" || r.URL.Path == "/" {
+		// 跳过登录接口、静态文件和资源文件
+		if r.URL.Path == "/api/login" ||
+		   r.URL.Path == "/" ||
+		   strings.HasPrefix(r.URL.Path, "/assets/") ||
+		   r.URL.Path == "/favicon.ico" {
 			next.ServeHTTP(w, r)
 			return
 		}

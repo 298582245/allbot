@@ -28,6 +28,7 @@ type WeChatConfig struct {
 
 // TelegramConfig Telegram 平台配置
 type TelegramConfig struct {
-	BotToken string `json:"bot_token"`
+	BotToken  string `json:"bot_token"`
+	ProxyURL  string `json:"proxy_url,omitempty"`  // 代理地址，如：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080
 }
 

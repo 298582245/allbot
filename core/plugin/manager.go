@@ -163,8 +163,83 @@ func (m *Manager) StopPlugin(pluginID string) error {
 		}
 	}
 
-	delete(m.plugins, pluginID)
+	// 不删除插件，只标记为停止状态
+	process.Status = "stopped"
+	process.Cmd = nil
 	log.Printf("Plugin stopped: %s", pluginID)
+
+	return nil
+}
+
+// StartPluginByID 通过ID启动已停止的插件
+func (m *Manager) StartPluginByID(pluginID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	process, exists := m.plugins[pluginID]
+	if !exists {
+		return fmt.Errorf("plugin not found: %s", pluginID)
+	}
+
+	if process.Status == "running" {
+		return fmt.Errorf("plugin already running: %s", pluginID)
+	}
+
+	// 重新启动插件
+	pluginPath := filepath.Join(m.pluginDir, pluginID)
+	return m.startPluginProcess(process.Plugin, pluginPath)
+}
+
+// startPluginProcess 启动插件进程（内部方法，调用时需要持有锁）
+func (m *Manager) startPluginProcess(plugin *types.Plugin, pluginPath string) error {
+	port := 50051 + len(m.plugins)
+
+	var cmd *exec.Cmd
+	entryPath := filepath.Join(pluginPath, plugin.Entry)
+
+	switch plugin.Runtime {
+	case "python":
+		pythonPath := m.depsManager.GetPythonPath()
+		cmd = exec.Command(pythonPath, entryPath, fmt.Sprintf("--port=%d", port))
+	case "nodejs":
+		cmd = exec.Command("node", entryPath, fmt.Sprintf("--port=%d", port))
+		nodePath := m.depsManager.GetNodePath()
+		cmd.Env = append(os.Environ(),
+			fmt.Sprintf("NODE_PATH=%s", nodePath),
+		)
+	default:
+		return fmt.Errorf("unsupported runtime: %s", plugin.Runtime)
+	}
+
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = append(cmd.Env,
+		fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", plugin.ID),
+		fmt.Sprintf("ALLBOT_GRPC_PORT=%d", port),
+	)
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start plugin: %w", err)
+	}
+
+	// 更新进程信息
+	if process, exists := m.plugins[plugin.ID]; exists {
+		process.Cmd = cmd
+		process.Port = port
+		process.Status = "running"
+	} else {
+		m.plugins[plugin.ID] = &PluginProcess{
+			Plugin: plugin,
+			Cmd:    cmd,
+			Port:   port,
+			Status: "running",
+		}
+	}
+
+	log.Printf("Plugin started: %s (runtime: %s, port: %d)", plugin.Name, plugin.Runtime, port)
+
+	go m.monitorProcess(plugin.ID, cmd)
 
 	return nil
 }
