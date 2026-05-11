@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -111,7 +112,7 @@ type CustomLogger struct {
 func NewCustomLogger(lm *LogManager) *CustomLogger {
 	return &CustomLogger{
 		logManager: lm,
-		logger:     log.New(os.Stdout, "", log.LstdFlags),
+		logger:     log.New(os.Stdout, "", log.LstdFlags), // 保留标准输出的时间戳
 	}
 }
 
@@ -119,23 +120,31 @@ func NewCustomLogger(lm *LogManager) *CustomLogger {
 func (cl *CustomLogger) Write(p []byte) (n int, err error) {
 	message := string(p)
 
+	// 从消息中提取内容（去掉 Go 日志的时间戳）
+	// Go 日志格式: "2026/05/11 20:19:41 消息内容"
+	content := message
+
+	if len(message) > 20 && message[4] == '/' && message[7] == '/' && message[10] == ' ' {
+		// 跳过时间部分，只保留消息内容
+		content = message[20:] // 消息内容
+	}
+
 	// 解析日志级别
 	level := "info"
-	if len(message) > 0 {
-		if message[0] == '[' {
-			// 尝试解析级别
-			if len(message) > 7 && message[1:6] == "ERROR" {
-				level = "error"
-			} else if len(message) > 6 && message[1:5] == "WARN" {
-				level = "warn"
-			} else if len(message) > 7 && message[1:6] == "DEBUG" {
-				level = "debug"
-			}
+	if len(content) > 0 {
+		// 检查关键词判断级别
+		contentLower := strings.ToLower(content)
+		if strings.Contains(contentLower, "error") || strings.Contains(contentLower, "failed") || strings.Contains(contentLower, "失败") {
+			level = "error"
+		} else if strings.Contains(contentLower, "warn") || strings.Contains(contentLower, "警告") {
+			level = "warn"
+		} else if strings.Contains(content, "[DEBUG]") {
+			level = "debug"
 		}
 	}
 
-	// 添加到日志管理器
-	cl.logManager.AddLog(level, message)
+	// 添加到日志管理器（不重复添加时间）
+	cl.logManager.AddLog(level, strings.TrimSpace(content))
 
 	// 同时输出到标准输出
 	return cl.logger.Writer().Write(p)
