@@ -72,6 +72,11 @@ func (a *TelegramAdapter) Start() error {
 		return fmt.Errorf("验证 Bot Token 失败: %w", err)
 	}
 
+	// 删除 webhook（如果存在），以便使用 long polling
+	if err := a.deleteWebhook(); err != nil {
+		log.Printf("警告：删除 webhook 失败: %v", err)
+	}
+
 	// 启动长轮询
 	go a.pollUpdates()
 
@@ -98,6 +103,24 @@ func (a *TelegramAdapter) verifyToken() error {
 		return fmt.Errorf("无效的 Bot Token")
 	}
 
+	return nil
+}
+
+// deleteWebhook 删除 webhook 配置
+func (a *TelegramAdapter) deleteWebhook() error {
+	resp, err := a.httpClient.Get(a.apiURL + "/deleteWebhook")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("删除 webhook 失败 (状态码 %d): %s", resp.StatusCode, string(body))
+	}
+
+	log.Printf("Telegram webhook 已删除，切换到 long polling 模式")
 	return nil
 }
 
