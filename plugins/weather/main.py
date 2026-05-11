@@ -10,7 +10,13 @@ import os
 # 添加SDK路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 
-from allbot_sdk import Context, start_plugin
+# 检查运行模式
+if '--mode=direct' in sys.argv:
+    # 直接执行模式（无端口）
+    from allbot_direct import run_direct, Context
+else:
+    # HTTP服务器模式（兼容旧版）
+    from allbot_sdk import Context, start_plugin
 
 
 async def handle(ctx: Context):
@@ -78,5 +84,10 @@ async def fetch_forecast(city: str, days: int) -> str:
 
 
 if __name__ == '__main__':
-    # 启动插件服务器
-    start_plugin()
+    # 根据运行模式选择启动方式
+    if '--mode=direct' in sys.argv:
+        # 直接执行模式（无端口，支持并发）
+        run_direct(handle)
+    else:
+        # HTTP服务器模式（兼容旧版）
+        start_plugin()
