@@ -223,7 +223,14 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 	chatID := fmt.Sprintf("%.0f", chatIDNum)
 	messageID := fmt.Sprintf("%.0f", messageIDNum)
 
-	log.Printf("Telegram message: user_id=%s, chat_id=%s, text=%s", userID, chatID, text)
+	// 判断是群组还是私聊
+	chatType, _ := chat["type"].(string)
+	chatInfo := "私聊"
+	if chatType != "private" {
+		chatInfo = fmt.Sprintf("群组%s", chatID)
+	}
+
+	log.Printf("[Telegram %s(%s) 接收] %s", userID, chatInfo, text)
 
 	msg := &types.Message{
 		ID:       messageID,
@@ -236,7 +243,6 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 	}
 
 	// 判断是群组还是私聊
-	chatType, _ := chat["type"].(string)
 	if chatType == "group" || chatType == "supergroup" {
 		msg.GroupID = chatID
 	}
@@ -254,11 +260,9 @@ func (a *TelegramAdapter) SendMessage(target string, text string) error {
 	// 尝试将字符串转换为int64
 	if id, err := strconv.ParseInt(target, 10, 64); err == nil {
 		chatID = id
-		log.Printf("Telegram SendMessage: target=%s, parsed_chat_id=%d", target, id)
 	} else {
 		// 如果转换失败，保持字符串（用于username）
 		chatID = target
-		log.Printf("Telegram SendMessage: target=%s (failed to parse as int, using string)", target)
 	}
 
 	data := map[string]interface{}{
@@ -266,7 +270,13 @@ func (a *TelegramAdapter) SendMessage(target string, text string) error {
 		"text":    text,
 	}
 
-	log.Printf("Telegram API request: chat_id=%v (type=%T), text=%s", chatID, chatID, text)
+	// 发送前记录日志（格式：[平台 user_id(群组id/私聊) 发送]消息内容）
+	chatInfo := "私聊"
+	if target != "" {
+		// 这里无法区分是群组还是私聊，统一标记为目标ID
+		chatInfo = fmt.Sprintf("目标%s", target)
+	}
+	log.Printf("[Telegram %s 发送] %s", chatInfo, text)
 
 	return a.callAPI("/sendMessage", data)
 }

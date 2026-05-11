@@ -211,12 +211,10 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 			}
 		}
 
-		// 发送所有回复消息
+		// 发送所有回复消息（日志由 Adapter 层记录）
 		for _, reply := range result.Replies {
 			if err := adp.SendMessage(target, reply); err != nil {
 				log.Printf("Failed to send reply: %v", err)
-			} else {
-				log.Printf("Sent reply to %s: %s", target, reply)
 			}
 		}
 	}
