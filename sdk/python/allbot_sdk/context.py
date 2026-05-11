@@ -1,7 +1,6 @@
 """
 Context 类 - 提供插件开发的统一 API
 """
-import grpc
 from typing import Optional, Dict, Any
 
 
@@ -16,7 +15,7 @@ class Context:
         content: str,
         message_id: str,
         plugin_id: str,
-        grpc_channel: grpc.Channel,
+        grpc_channel: Optional[Any] = None,
     ):
         self.platform = platform  # 'qq' | 'wechat' | 'telegram'
         self.user_id = user_id
@@ -128,7 +127,7 @@ class Context:
     class Storage:
         """插件数据存储（自动隔离）"""
 
-        def __init__(self, plugin_id: str, channel: grpc.Channel):
+        def __init__(self, plugin_id: str, channel: Optional[Any] = None):
             self.plugin_id = plugin_id
             self._channel = channel
 
@@ -168,7 +167,7 @@ class Context:
     class Http:
         """HTTP 请求工具"""
 
-        def __init__(self, channel: grpc.Channel):
+        def __init__(self, channel: Optional[Any] = None):
             self._channel = channel
 
         async def get(self, url: str, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:

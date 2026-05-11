@@ -4,8 +4,16 @@
 展示如何使用 AllBot SDK 开发插件
 """
 
+import sys
+import os
 
-async def handle(ctx):
+# 添加SDK路径
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
+
+from allbot_sdk import Context, start_plugin
+
+
+async def handle(ctx: Context):
     """处理消息的主函数"""
     content = ctx.content
 
@@ -67,3 +75,8 @@ async def fetch_forecast(city: str, days: int) -> str:
         forecast_data.append(f"第{i+1}天：晴转多云 20-28°C")
 
     return "\n".join(forecast_data)
+
+
+if __name__ == '__main__':
+    # 启动插件服务器
+    start_plugin()

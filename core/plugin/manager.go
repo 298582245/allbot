@@ -105,9 +105,13 @@ func (m *Manager) StartPlugin(plugin *types.Plugin, pluginPath string) error {
 		// 使用全局虚拟环境的 Python
 		pythonPath := m.depsManager.GetPythonPath()
 		cmd = exec.Command(pythonPath, entryPath, fmt.Sprintf("--port=%d", port))
+		// 设置工作目录为插件目录
+		cmd.Dir = pluginPath
 	case "nodejs":
 		// 使用 Node.js，设置 NODE_PATH 指向全局 node_modules
 		cmd = exec.Command("node", entryPath, fmt.Sprintf("--port=%d", port))
+		// 设置工作目录为插件目录
+		cmd.Dir = pluginPath
 		nodePath := m.depsManager.GetNodePath()
 		cmd.Env = append(os.Environ(),
 			fmt.Sprintf("NODE_PATH=%s", nodePath),
@@ -201,8 +205,12 @@ func (m *Manager) startPluginProcess(plugin *types.Plugin, pluginPath string) er
 	case "python":
 		pythonPath := m.depsManager.GetPythonPath()
 		cmd = exec.Command(pythonPath, entryPath, fmt.Sprintf("--port=%d", port))
+		// 设置工作目录为插件目录
+		cmd.Dir = pluginPath
 	case "nodejs":
 		cmd = exec.Command("node", entryPath, fmt.Sprintf("--port=%d", port))
+		// 设置工作目录为插件目录
+		cmd.Dir = pluginPath
 		nodePath := m.depsManager.GetNodePath()
 		cmd.Env = append(os.Environ(),
 			fmt.Sprintf("NODE_PATH=%s", nodePath),
