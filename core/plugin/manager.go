@@ -81,6 +81,17 @@ func (m *Manager) LoadPlugin(pluginPath string) (*types.Plugin, error) {
 		Trigger:   config.Trigger,
 	}
 
+	// 在插件管理器中注册插件（stopped状态）
+	m.mu.Lock()
+	if _, exists := m.plugins[pluginID]; !exists {
+		m.plugins[pluginID] = &PluginProcess{
+			Plugin: plugin,
+			Status: "stopped",
+			Port:   0,
+		}
+	}
+	m.mu.Unlock()
+
 	return plugin, nil
 }
 
