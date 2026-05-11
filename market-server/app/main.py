@@ -118,3 +118,10 @@ async def root():
 async def health():
     """健康检查"""
     return {"status": "ok"}
+
+
+# 注册路由
+from app.api import plugins, payment
+
+app.include_router(plugins.router)
+app.include_router(payment.router)
