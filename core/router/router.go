@@ -112,7 +112,7 @@ func (r *Router) matchPlugins(msg *types.Message) []*types.Plugin {
 		// 正则匹配
 		if plugin.TriggerRegex.MatchString(msg.Content) {
 			matched = append(matched, plugin)
-			log.Printf("Plugin matched: %s for message: %s", plugin.Name, msg.Content)
+			log.Printf("[SYSTEM] Plugin matched: %s for message: %s", plugin.Name, msg.Content)
 		}
 	}
 

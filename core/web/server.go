@@ -182,6 +182,7 @@ func (s *Server) handlePluginDetail(w http.ResponseWriter, r *http.Request) {
 			s.jsonResponse(w, map[string]interface{}{
 				"message": "插件已禁用",
 			})
+case "reload":		// 重新加载插件		if err := s.pluginManager.ReloadPlugin(pluginID); err != nil {			s.logManager.AddLog("error", fmt.Sprintf("重新加载插件失败 %s: %v", pluginID, err))			s.jsonError(w, "重新加载插件失败: "+err.Error(), http.StatusInternalServerError)			return		}		// 重新注册到路由器		plugin := s.pluginManager.GetPlugin(pluginID)		if plugin != nil && plugin.Plugin != nil {			if err := s.router.RegisterPlugin(plugin.Plugin); err != nil {				s.logManager.AddLog("error", fmt.Sprintf("重新注册插件失败 %s: %v", pluginID, err))				s.jsonError(w, "重新注册插件失败: "+err.Error(), http.StatusInternalServerError)				return			}		}		s.logManager.AddLog("info", fmt.Sprintf("重新加载插件: %s", pluginID))		s.jsonResponse(w, map[string]interface{}{			"message": "插件已重新加载",		})
 		case "start":
 			// 启动插件（兼容旧版，现在无意义）
 			s.jsonResponse(w, map[string]interface{}{

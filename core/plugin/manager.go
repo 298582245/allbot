@@ -448,3 +448,63 @@ func (m *Manager) TogglePlugin(pluginID string, enabled bool) error {
 
 	return nil
 }
+
+// ReloadPlugin 重新加载插件（热重载）
+func (m *Manager) ReloadPlugin(pluginID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	process, exists := m.plugins[pluginID]
+	if !exists {
+		return fmt.Errorf("plugin not found: %s", pluginID)
+	}
+
+	// 重新加载插件配置
+	pluginPath := filepath.Join(m.pluginDir, pluginID)
+	newPlugin, err := m.loadPluginConfig(pluginPath)
+	if err != nil {
+		return fmt.Errorf("failed to reload plugin config: %w", err)
+	}
+
+	// 更新插件信息
+	process.Plugin = newPlugin
+	log.Printf("[SYSTEM] Plugin %s reloaded", pluginID)
+
+	return nil
+}
+
+// loadPluginConfig 加载插件配置（内部方法）
+func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
+	// 读取 plugin.json
+	configPath := filepath.Join(pluginPath, "plugin.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read plugin.json: %w", err)
+	}
+
+	var config types.PluginConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse plugin.json: %w", err)
+	}
+
+	// 生成插件ID（使用目录名）
+	pluginID := filepath.Base(pluginPath)
+
+	plugin := &types.Plugin{
+		ID:        pluginID,
+		Name:      config.Name,
+		Version:   config.Version,
+		Runtime:   config.Runtime,
+		Entry:     config.Entry,
+		Platforms: config.Platforms,
+		Trigger:   config.Trigger,
+		Enabled:   config.Enabled,
+	}
+
+	// 默认启用
+	if plugin.Enabled == false && config.Enabled == false {
+		plugin.Enabled = true
+	}
+
+	return plugin, nil
+}
