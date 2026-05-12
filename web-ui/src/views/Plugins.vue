@@ -1,50 +1,69 @@
 <template>
   <div class="plugins">
-    <el-card>
-      <template #header>
-        <div class="card-header">
-          <span>插件列表</span>
-          <el-button type="primary" size="small">
-            <el-icon><Plus /></el-icon>
-            安装插件
-          </el-button>
-        </div>
-      </template>
+    <div class="plugins-header">
+      <span class="title">插件列表</span>
+      <el-button type="primary" size="small">
+        <el-icon><Plus /></el-icon>
+        安装插件
+      </el-button>
+    </div>
 
-      <el-table :data="plugins" v-loading="loading" style="width: 100%">
-        <el-table-column prop="name" label="插件名称" min-width="150" />
-        <el-table-column prop="version" label="版本" width="100" />
-        <el-table-column prop="runtime" label="运行时" width="100">
-          <template #default="{ row }">
-            <el-tag size="small">{{ row.runtime }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="100">
-          <template #default="{ row }">
-            <el-tag :type="row.enabled ? 'success' : 'info'" size="small">
-              {{ row.enabled ? '已启用' : '已禁用' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="平台" min-width="150">
-          <template #default="{ row }">
+    <div class="plugins-content" v-loading="loading">
+      <div class="plugin-grid" v-if="paginatedPlugins.length > 0">
+        <div
+          class="plugin-card"
+          v-for="plugin in paginatedPlugins"
+          :key="plugin.id"
+        >
+          <div class="plugin-card-header">
+            <span class="plugin-name">{{ plugin.name }}</span>
             <el-tag
-              v-for="platform in row.platforms"
-              :key="platform"
+              :type="plugin.enabled ? 'success' : 'info'"
               size="small"
-              style="margin-right: 5px"
             >
-              {{ getPlatformName(platform) }}
+              {{ plugin.enabled ? '已启用' : '已禁用' }}
             </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="350" fixed="right">
-          <template #default="{ row }">
+          </div>
+
+          <div class="plugin-card-body">
+            <div class="plugin-info-row">
+              <span class="label">版本：</span>
+              <span>{{ plugin.version }}</span>
+            </div>
+            <div class="plugin-info-row">
+              <span class="label">运行时：</span>
+              <el-tag size="small">{{ plugin.runtime }}</el-tag>
+            </div>
+            <div class="plugin-info-row">
+              <span class="label">指令：</span>
+              <code class="trigger-text">{{ plugin.trigger || '无' }}</code>
+            </div>
+            <div class="plugin-info-row">
+              <span class="label">平台：</span>
+              <span class="platforms">
+                <el-tag
+                  v-for="platform in plugin.platforms"
+                  :key="platform"
+                  size="small"
+                  type="info"
+                >
+                  {{ getPlatformName(platform) }}
+                </el-tag>
+                <span v-if="!plugin.platforms || plugin.platforms.length === 0" style="color: #999">无</span>
+              </span>
+            </div>
+            <div class="plugin-info-row" v-if="plugin.error">
+              <span class="label">错误：</span>
+              <span style="color: #f56c6c">{{ plugin.error }}</span>
+            </div>
+          </div>
+
+          <div class="plugin-card-footer">
             <el-button
-              v-if="row.enabled"
+              v-if="plugin.enabled"
               type="warning"
               size="small"
-              @click="handleDisable(row)"
+              @click="handleDisable(plugin)"
             >
               禁用
             </el-button>
@@ -52,28 +71,38 @@
               v-else
               type="success"
               size="small"
-              @click="handleEnable(row)"
+              @click="handleEnable(plugin)"
             >
               启用
             </el-button>
-            <el-button type="primary" size="small" @click="handleReload(row)">
-              重新加载
+            <el-button type="primary" size="small" @click="handleReload(plugin)">
+              重载
             </el-button>
-            <el-button type="info" size="small" @click="handleConfig(row)">
+            <el-button type="info" size="small" @click="handleConfig(plugin)">
               配置
             </el-button>
-            <el-button type="default" size="small" @click="handleEditCode(row)">
-              编辑代码
+            <el-button size="small" @click="handleEditCode(plugin)">
+              代码
             </el-button>
-            <el-button type="danger" size="small" @click="handleDelete(row)">
+            <el-button type="danger" size="small" @click="handleDelete(plugin)">
               删除
             </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+          </div>
+        </div>
+      </div>
 
       <el-empty v-if="!loading && plugins.length === 0" description="暂无插件" />
-    </el-card>
+    </div>
+
+    <div class="plugins-pagination">
+      <el-pagination
+        v-model:current-page="currentPage"
+        :page-size="pageSize"
+        :total="plugins.length"
+        layout="total, prev, pager, next"
+        background
+      />
+    </div>
 
     <!-- 配置编辑对话框 -->
     <el-dialog
@@ -121,7 +150,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
@@ -132,6 +161,8 @@ const router = useRouter()
 
 const loading = ref(false)
 const plugins = ref([])
+const currentPage = ref(1)
+const pageSize = 8
 const configDialogVisible = ref(false)
 const currentPluginId = ref('')
 const currentConfig = ref({
@@ -142,6 +173,11 @@ const currentConfig = ref({
   trigger: '',
   platforms: [],
   enabled: true
+})
+
+const paginatedPlugins = computed(() => {
+  const start = (currentPage.value - 1) * pageSize
+  return plugins.value.slice(start, start + pageSize)
 })
 
 const loadPlugins = async () => {
@@ -200,10 +236,8 @@ const handleReload = async (plugin) => {
 const handleConfig = async (plugin) => {
   try {
     currentPluginId.value = plugin.id
-    // 获取插件配置
     const config = await request.get(`/plugins/config/${plugin.id}`)
     currentConfig.value = config
-
     configDialogVisible.value = true
   } catch (error) {
     console.error('获取插件配置失败:', error)
@@ -217,9 +251,7 @@ const handleEditCode = (plugin) => {
 
 const saveConfig = async () => {
   try {
-    // 保存配置
     await request.put(`/plugins/config/${currentPluginId.value}`, currentConfig.value)
-
     ElMessage.success('配置已保存并生效')
     configDialogVisible.value = false
     await loadPlugins()
@@ -270,11 +302,109 @@ onMounted(() => {
 <style scoped>
 .plugins {
   width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
-.card-header {
+.plugins-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-bottom: 20px;
+}
+
+.plugins-header .title {
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.plugins-content {
+  flex: 1;
+  overflow: auto;
+}
+
+.plugin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.plugin-card {
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  transition: box-shadow 0.2s;
+  min-height: 220px;
+}
+
+.plugin-card:hover {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
+.plugin-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.plugin-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.plugin-card-body {
+  flex: 1;
+  margin-bottom: 12px;
+}
+
+.plugin-info-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: #606266;
+}
+
+.plugin-info-row .label {
+  color: #909399;
+  min-width: 50px;
+  flex-shrink: 0;
+}
+
+.trigger-text {
+  background: #f5f7fa;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: #606266;
+  word-break: break-all;
+}
+
+.platforms .el-tag {
+  margin-right: 4px;
+}
+
+.plugin-card-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.plugins-pagination {
+  padding-top: 16px;
+  display: flex;
+  justify-content: center;
+  border-top: 1px solid #ebeef5;
+  margin-top: 16px;
 }
 </style>
