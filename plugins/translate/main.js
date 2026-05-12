@@ -20,7 +20,7 @@ if (process.argv.includes('--mode=direct')) {
         const content = ctx.content;
 
         // 翻译 你好
-        if (content.startsWith('翻译 ')) {
+        if (content.startsWith('翻译')) {
             const text = content.substring(3).trim();
 
             if (!text) {
