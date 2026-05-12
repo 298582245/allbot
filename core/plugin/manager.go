@@ -56,18 +56,18 @@ func (m *Manager) LoadPlugin(pluginPath string) (*types.Plugin, error) {
 	// 生成插件ID（使用目录名）
 	pluginID := filepath.Base(pluginPath)
 
-	// 安装依赖
+	// 安装依赖（失败不阻塞插件注册）
 	if len(config.Dependencies) > 0 {
 		log.Printf("Installing dependencies for plugin: %s", config.Name)
 
 		switch config.Runtime {
 		case "python":
 			if err := m.depsManager.InstallPythonDeps(config.Dependencies); err != nil {
-				return nil, fmt.Errorf("failed to install Python dependencies: %w", err)
+				log.Printf("[SYSTEM] 警告：安装插件 %s 的Python依赖失败: %v", config.Name, err)
 			}
 		case "nodejs":
 			if err := m.depsManager.InstallNodeDeps(config.Dependencies); err != nil {
-				return nil, fmt.Errorf("failed to install Node.js dependencies: %w", err)
+				log.Printf("[SYSTEM] 警告：安装插件 %s 的Node.js依赖失败: %v", config.Name, err)
 			}
 		}
 	}
