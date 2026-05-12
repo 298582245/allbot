@@ -134,7 +134,7 @@ func (r *Router) supportsPlatform(plugin *types.Plugin, platform string) bool {
 	return false
 }
 
-// callPlugin 调用插件（无端口直接执行模式）
+// callPlugin 调用插件（流式协议模式）
 func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 	// 检查插件是否启用
 	if !plugin.Enabled {
@@ -163,61 +163,48 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		return
 	}
 
-	// 直接执行插件（每次触发创建新进程，天然支持并发）
-	pluginPath := filepath.Join("plugins", plugin.ID)
-	output, err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON)
-	if err != nil {
-		log.Printf("Failed to execute plugin %s: %v", plugin.Name, err)
+	// 确定发送目标
+	target := msg.UserID
+	if msg.GroupID != "" {
+		target = msg.GroupID
+	}
+
+	// 对于Telegram，优先使用Metadata中的chat_id
+	if msg.Platform == "telegram" {
+		if chatID, ok := msg.Metadata["chat_id"]; ok && chatID != "" {
+			target = chatID
+		}
+	}
+
+	// 获取适配器
+	r.mu.RLock()
+	adp, ok := r.adapters[msg.Platform]
+	r.mu.RUnlock()
+
+	if !ok {
+		log.Printf("Adapter not found for platform: %s", msg.Platform)
 		return
 	}
 
-	// 解析插件输出
-	var result struct {
-		Success bool     `json:"success"`
-		Error   string   `json:"error"`
-		Replies []string `json:"replies"`
+	// 回复回调：立即发送消息给用户
+	replyFunc := func(text string) error {
+		return adp.SendMessage(target, text)
 	}
 
-	if err := json.Unmarshal(output, &result); err != nil {
-		log.Printf("[ERROR] Plugin %s failed to parse output: %v, output: %s", plugin.Name, err, string(output))
-		return
-	}
-
-	if !result.Success {
-		log.Printf("Plugin %s returned error: %s", plugin.Name, result.Error)
-		return
-	}
-
-	// 发送插件返回的回复消息
-	if len(result.Replies) > 0 {
-		r.mu.RLock()
-		adp, ok := r.adapters[msg.Platform]
-		r.mu.RUnlock()
-
+	// listen 回调：创建等待会话，等待用户输入
+	listenFunc := func(timeout int) string {
+		ch := r.sessionManager.CreateSession(plugin.ID, msg.UserID, msg.GroupID, timeout)
+		content, ok := <-ch
 		if !ok {
-			log.Printf("Adapter not found for platform: %s", msg.Platform)
-			return
+			return "" // 超时或通道关闭
 		}
+		return content
+	}
 
-		// 确定发送目标
-		target := msg.UserID
-		if msg.GroupID != "" {
-			target = msg.GroupID
-		}
-
-		// 对于Telegram，优先使用Metadata中的chat_id
-		if msg.Platform == "telegram" {
-			if chatID, ok := msg.Metadata["chat_id"]; ok && chatID != "" {
-				target = chatID
-			}
-		}
-
-		// 发送所有回复消息（日志由 Adapter 层记录）
-		for _, reply := range result.Replies {
-			if err := adp.SendMessage(target, reply); err != nil {
-				log.Printf("Failed to send reply: %v", err)
-			}
-		}
+	// 直接执行插件
+	pluginPath := filepath.Join("plugins", plugin.ID)
+	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, listenFunc); err != nil {
+		log.Printf("Failed to execute plugin %s: %v", plugin.Name, err)
 	}
 }
 

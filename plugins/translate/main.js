@@ -21,11 +21,16 @@ if (process.argv.includes('--mode=direct')) {
 
         // 翻译 你好
         if (content.startsWith('翻译')) {
-            const text = content.substring(3).trim();
+            let text = content.substring(2).trim();
 
             if (!text) {
-                await ctx.reply('请输入要翻译的文本');
-                return;
+                await ctx.reply('请输入要翻译的文本：');
+                // 等待用户输入
+                text = await ctx.listen(60);
+                if (!text) {
+                    await ctx.reply('等待超时，请重新发送翻译指令');
+                    return;
+                }
             }
 
             // 模拟翻译（实际应用中应该调用翻译API）

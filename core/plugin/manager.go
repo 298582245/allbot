@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -361,8 +362,8 @@ func (m *Manager) LoadAllPlugins() ([]*types.Plugin, error) {
 	return plugins, nil
 }
 
-// ExecutePlugin 直接执行插件（无端口模式，支持并发）
-func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte) ([]byte, error) {
+// ExecutePlugin 直接执行插件（流式协议，支持listen）
+func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte, replyFunc func(string) error, listenFunc func(timeout int) string) error {
 	var cmd *exec.Cmd
 
 	// 根据运行时选择解释器
@@ -372,7 +373,7 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 		pythonPath := m.depsManager.GetPythonPath()
 		absPythonPath, err := filepath.Abs(pythonPath)
 		if err != nil {
-			return nil, fmt.Errorf("无法获取Python绝对路径: %w", err)
+			return fmt.Errorf("无法获取Python绝对路径: %w", err)
 		}
 
 		// 构建命令
@@ -398,55 +399,112 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 		)
 
 	default:
-		return nil, fmt.Errorf("不支持的运行时: %s", plugin.Runtime)
+		return fmt.Errorf("不支持的运行时: %s", plugin.Runtime)
 	}
 
 	// 创建管道
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, fmt.Errorf("创建stdin管道失败: %w", err)
+		return fmt.Errorf("创建stdin管道失败: %w", err)
 	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("创建stdout管道失败: %w", err)
+		return fmt.Errorf("创建stdout管道失败: %w", err)
 	}
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, fmt.Errorf("创建stderr管道失败: %w", err)
+		return fmt.Errorf("创建stderr管道失败: %w", err)
 	}
 
 	// 启动进程
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("启动插件进程失败: %w", err)
+		return fmt.Errorf("启动插件进程失败: %w", err)
 	}
 
-	// 写入消息JSON到stdin
+	// 异步读取 stderr
+	go func() {
+		errOutput, _ := io.ReadAll(stderr)
+		if len(errOutput) > 0 {
+			log.Printf("[SYSTEM] Plugin %s stderr: %s", plugin.ID, string(errOutput))
+		}
+	}()
+
+	// 写入消息JSON到stdin（作为一行，不关闭stdin）
+	messageJSON = append(messageJSON, '\n')
 	if _, err := stdin.Write(messageJSON); err != nil {
 		cmd.Process.Kill()
-		return nil, fmt.Errorf("写入消息失败: %w", err)
+		return fmt.Errorf("写入消息失败: %w", err)
 	}
+
+	// 逐行读取stdout处理流式协议
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		var action struct {
+			Action  string `json:"action"`
+			Text    string `json:"text"`
+			Timeout int    `json:"timeout"`
+			Success bool   `json:"success"`
+			Error   string `json:"error"`
+		}
+
+		if err := json.Unmarshal([]byte(line), &action); err != nil {
+			log.Printf("[SYSTEM] Plugin %s invalid output line: %s", plugin.ID, line)
+			continue
+		}
+
+		switch action.Action {
+		case "reply":
+			if replyFunc != nil && action.Text != "" {
+				if err := replyFunc(action.Text); err != nil {
+					log.Printf("[ERROR] Failed to send reply from plugin %s: %v", plugin.ID, err)
+				}
+			}
+
+		case "listen":
+			timeout := action.Timeout
+			if timeout <= 0 {
+				timeout = 60
+			}
+
+			// 调用 listen 回调获取用户输入
+			content := ""
+			if listenFunc != nil {
+				content = listenFunc(timeout)
+			}
+
+			// 将用户回复写回插件stdin
+			response := map[string]string{
+				"action":  "listen_response",
+				"content": content,
+			}
+			respJSON, _ := json.Marshal(response)
+			respJSON = append(respJSON, '\n')
+			if _, err := stdin.Write(respJSON); err != nil {
+				log.Printf("[ERROR] Failed to write listen response to plugin %s: %v", plugin.ID, err)
+			}
+
+		case "done":
+			if !action.Success && action.Error != "" {
+				log.Printf("[ERROR] Plugin %s error: %s", plugin.ID, action.Error)
+			}
+			// 插件完成，关闭stdin
+			stdin.Close()
+			cmd.Wait()
+			return nil
+		}
+	}
+
+	// 如果 scanner 结束但没有收到 done（进程意外退出）
 	stdin.Close()
-
-	// 读取stdout和stderr
-	output, err := io.ReadAll(stdout)
-	if err != nil {
-		cmd.Process.Kill()
-		return nil, fmt.Errorf("读取输出失败: %w", err)
-	}
-
-	errOutput, _ := io.ReadAll(stderr)
-	if len(errOutput) > 0 {
-		log.Printf("[SYSTEM] Plugin %s stderr: %s", plugin.ID, string(errOutput))
-	}
-
-	// 等待进程结束
-	if err := cmd.Wait(); err != nil {
-		return nil, fmt.Errorf("插件执行失败: %w, stderr: %s", err, string(errOutput))
-	}
-
-	return output, nil
+	cmd.Wait()
+	return nil
 }
 
 // TogglePlugin 切换插件启用状态

@@ -3,7 +3,7 @@
     "requests": "2.31.0"
   },
   "description": "支持中英互译的翻译插件，展示跨平台兼容性",
-  "enabled": true,
+  "enabled": false,
   "entry": "main.py",
   "name": "翻译助手",
   "platforms": [

@@ -1,11 +1,17 @@
 /**
  * AllBot Node.js SDK - Direct Mode (stdin/stdout)
  *
- * 无端口直接执行模式，支持并发
+ * 支持流式通信协议：
+ * - 插件通过 stdout 发送 JSON 行指令
+ * - reply: 立即发送消息
+ * - listen: 等待用户输入，从 stdin 读取响应
+ * - done: 执行结束
  */
 
+const readline = require('readline');
+
 class Context {
-    constructor(data) {
+    constructor(data, rl) {
         this.plugin_id = data.plugin_id || '';
         this.platform = data.platform || '';
         this.user_id = data.user_id || '';
@@ -13,61 +19,74 @@ class Context {
         this.content = data.content || '';
         this.message_id = data.message_id || '';
         this.metadata = data.metadata || {};
-        this._replies = [];
+        this._rl = rl;
     }
 
     async reply(text) {
-        this._replies.push(text);
+        const action = { action: 'reply', text };
+        process.stdout.write(JSON.stringify(action) + '\n');
         return true;
     }
 
     async send_image(image_url) {
-        // TODO: 实现图片发送
         return false;
     }
 
     async listen(timeout = 60) {
-        // TODO: 实现连续对话
-        return '';
+        // 发送 listen 指令
+        const action = { action: 'listen', timeout };
+        process.stdout.write(JSON.stringify(action) + '\n');
+
+        // 等待 stdin 返回用户回复
+        return new Promise((resolve) => {
+            const timer = setTimeout(() => {
+                resolve('');
+            }, (timeout + 5) * 1000);
+
+            this._rl.once('line', (line) => {
+                clearTimeout(timer);
+                try {
+                    const response = JSON.parse(line);
+                    if (response.action === 'listen_response') {
+                        resolve(response.content || '');
+                    } else {
+                        resolve('');
+                    }
+                } catch (e) {
+                    resolve('');
+                }
+            });
+        });
     }
 }
 
 function runDirect(handler) {
-    let inputData = '';
-
-    // 读取 stdin
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => {
-        inputData += chunk;
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        terminal: false
     });
 
-    process.stdin.on('end', async () => {
+    let firstLine = true;
+
+    rl.on('line', async (line) => {
+        if (!firstLine) return;
+        firstLine = false;
+
         try {
-            // 解析消息 JSON
-            const messageData = JSON.parse(inputData);
+            const messageData = JSON.parse(line);
+            const ctx = new Context(messageData, rl);
 
-            // 创建上下文
-            const ctx = new Context(messageData);
-
-            // 执行处理器
             await handler(ctx);
 
-            // 输出结果到 stdout
-            const result = {
-                success: true,
-                error: '',
-                replies: ctx._replies
-            };
-            console.log(JSON.stringify(result));
+            // 发送完成信号
+            const done = { action: 'done', success: true };
+            process.stdout.write(JSON.stringify(done) + '\n');
+            process.exit(0);
 
         } catch (error) {
-            // 输出错误
-            const result = {
-                success: false,
-                error: error.message,
-                replies: []
-            };
-            console.log(JSON.stringify(result));
+            const done = { action: 'done', success: false, error: error.message };
+            process.stdout.write(JSON.stringify(done) + '\n');
             process.exit(1);
         }
     });
