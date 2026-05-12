@@ -38,7 +38,7 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="操作" width="350" fixed="right">
           <template #default="{ row }">
             <el-button
               v-if="row.enabled"
@@ -61,6 +61,9 @@
             </el-button>
             <el-button type="info" size="small" @click="handleConfig(row)">
               配置
+            </el-button>
+            <el-button type="default" size="small" @click="handleEditCode(row)">
+              编辑代码
             </el-button>
             <el-button type="danger" size="small" @click="handleDelete(row)">
               删除
@@ -108,39 +111,6 @@
         <el-form-item label="启用状态">
           <el-switch v-model="currentConfig.enabled" />
         </el-form-item>
-        <el-form-item label="依赖管理">
-          <el-table :data="dependenciesArray" style="width: 100%">
-            <el-table-column prop="name" label="包名" width="200">
-              <template #default="{ row, $index }">
-                <el-input v-model="dependenciesArray[$index].name" size="small" />
-              </template>
-            </el-table-column>
-            <el-table-column prop="version" label="版本" width="150">
-              <template #default="{ row, $index }">
-                <el-input v-model="dependenciesArray[$index].version" size="small" />
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="100">
-              <template #default="{ $index }">
-                <el-button
-                  type="danger"
-                  size="small"
-                  @click="removeDependency($index)"
-                >
-                  删除
-                </el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <el-button
-            type="primary"
-            size="small"
-            style="margin-top: 10px"
-            @click="addDependency"
-          >
-            添加依赖
-          </el-button>
-        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="configDialogVisible = false">取消</el-button>
@@ -152,10 +122,13 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { getPlugins, controlPlugin, deletePlugin } from '@/api'
 import request from '@/utils/request'
+
+const router = useRouter()
 
 const loading = ref(false)
 const plugins = ref([])
@@ -168,10 +141,8 @@ const currentConfig = ref({
   entry: '',
   trigger: '',
   platforms: [],
-  enabled: true,
-  dependencies: {}
+  enabled: true
 })
-const dependenciesArray = ref([])
 
 const loadPlugins = async () => {
   loading.value = true
@@ -230,14 +201,8 @@ const handleConfig = async (plugin) => {
   try {
     currentPluginId.value = plugin.id
     // 获取插件配置
-    const config = await request.get(`/api/plugins/config/${plugin.id}`)
+    const config = await request.get(`/plugins/config/${plugin.id}`)
     currentConfig.value = config
-
-    // 转换 dependencies 对象为数组
-    dependenciesArray.value = Object.entries(config.dependencies || {}).map(([name, version]) => ({
-      name,
-      version
-    }))
 
     configDialogVisible.value = true
   } catch (error) {
@@ -246,31 +211,14 @@ const handleConfig = async (plugin) => {
   }
 }
 
-const addDependency = () => {
-  dependenciesArray.value.push({ name: '', version: '' })
-}
-
-const removeDependency = (index) => {
-  dependenciesArray.value.splice(index, 1)
+const handleEditCode = (plugin) => {
+  router.push(`/plugins/${plugin.id}/edit`)
 }
 
 const saveConfig = async () => {
   try {
-    // 转换 dependencies 数组为对象
-    const dependencies = {}
-    dependenciesArray.value.forEach(dep => {
-      if (dep.name && dep.version) {
-        dependencies[dep.name] = dep.version
-      }
-    })
-
-    const configToSave = {
-      ...currentConfig.value,
-      dependencies
-    }
-
     // 保存配置
-    await request.put(`/api/plugins/config/${currentPluginId.value}`, configToSave)
+    await request.put(`/plugins/config/${currentPluginId.value}`, currentConfig.value)
 
     ElMessage.success('配置已保存并生效')
     configDialogVisible.value = false
@@ -289,10 +237,8 @@ const handleConfigDialogClose = () => {
     entry: '',
     trigger: '',
     platforms: [],
-    enabled: true,
-    dependencies: {}
+    enabled: true
   }
-  dependenciesArray.value = []
 }
 
 const handleDelete = async (plugin) => {

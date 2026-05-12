@@ -83,11 +83,6 @@ func (m *Manager) LoadPlugin(pluginPath string) (*types.Plugin, error) {
 		Enabled:   config.Enabled,
 	}
 
-	// 默认启用
-	if plugin.Enabled == false && config.Enabled == false {
-		plugin.Enabled = true
-	}
-
 	// 在插件管理器中注册插件（不再需要启动进程）
 	m.mu.Lock()
 	if _, exists := m.plugins[pluginID]; !exists {
@@ -368,22 +363,43 @@ func (m *Manager) LoadAllPlugins() ([]*types.Plugin, error) {
 
 // ExecutePlugin 直接执行插件（无端口模式，支持并发）
 func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte) ([]byte, error) {
-	// 获取Python路径
-	pythonPath := m.depsManager.GetPythonPath()
-	absPythonPath, err := filepath.Abs(pythonPath)
-	if err != nil {
-		return nil, fmt.Errorf("无法获取Python绝对路径: %w", err)
+	var cmd *exec.Cmd
+
+	// 根据运行时选择解释器
+	switch plugin.Runtime {
+	case "python":
+		// 获取Python路径
+		pythonPath := m.depsManager.GetPythonPath()
+		absPythonPath, err := filepath.Abs(pythonPath)
+		if err != nil {
+			return nil, fmt.Errorf("无法获取Python绝对路径: %w", err)
+		}
+
+		// 构建命令
+		cmd = exec.Command(absPythonPath, plugin.Entry, "--mode=direct")
+		cmd.Dir = pluginPath
+
+		// 设置环境变量（强制 Python 使用 UTF-8 编码）
+		cmd.Env = append(os.Environ(),
+			fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", plugin.ID),
+			"PYTHONUTF8=1", // 强制 Python 3.7+ 使用 UTF-8 模式
+		)
+
+	case "nodejs":
+		// 构建命令
+		cmd = exec.Command("node", plugin.Entry, "--mode=direct")
+		cmd.Dir = pluginPath
+
+		// 设置环境变量
+		nodePath := m.depsManager.GetNodePath()
+		cmd.Env = append(os.Environ(),
+			fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", plugin.ID),
+			fmt.Sprintf("NODE_PATH=%s", nodePath),
+		)
+
+	default:
+		return nil, fmt.Errorf("不支持的运行时: %s", plugin.Runtime)
 	}
-
-	// 构建命令（工作目录已设置为插件目录，直接使用 Entry）
-	cmd := exec.Command(absPythonPath, plugin.Entry, "--mode=direct")
-	cmd.Dir = pluginPath
-
-	// 设置环境变量（强制 Python 使用 UTF-8 编码）
-	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", plugin.ID),
-		"PYTHONUTF8=1", // 强制 Python 3.7+ 使用 UTF-8 模式
-	)
 
 	// 创建管道
 	stdin, err := cmd.StdinPipe()
@@ -422,7 +438,7 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 
 	errOutput, _ := io.ReadAll(stderr)
 	if len(errOutput) > 0 {
-		log.Printf("Plugin %s stderr: %s", plugin.ID, string(errOutput))
+		log.Printf("[SYSTEM] Plugin %s stderr: %s", plugin.ID, string(errOutput))
 	}
 
 	// 等待进程结束
@@ -444,6 +460,30 @@ func (m *Manager) TogglePlugin(pluginID string, enabled bool) error {
 	}
 
 	process.Plugin.Enabled = enabled
+
+	// 同步更新 plugin.json 文件
+	configPath := filepath.Join(m.pluginDir, pluginID, "plugin.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("读取配置文件失败: %w", err)
+	}
+
+	var config map[string]interface{}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return fmt.Errorf("解析配置文件失败: %w", err)
+	}
+
+	config["enabled"] = enabled
+
+	newData, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化配置失败: %w", err)
+	}
+
+	if err := os.WriteFile(configPath, newData, 0644); err != nil {
+		return fmt.Errorf("写入配置文件失败: %w", err)
+	}
+
 	log.Printf("Plugin %s enabled=%v", pluginID, enabled)
 
 	return nil
@@ -501,10 +541,10 @@ func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
 		Enabled:   config.Enabled,
 	}
 
-	// 默认启用
-	if plugin.Enabled == false && config.Enabled == false {
-		plugin.Enabled = true
-	}
-
 	return plugin, nil
+}
+
+// GetDepsManager 获取依赖管理器
+func (m *Manager) GetDepsManager() *deps.Manager {
+	return m.depsManager
 }

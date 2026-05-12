@@ -46,6 +46,18 @@ const routes = [
         name: 'Settings',
         component: () => import('@/views/Settings.vue'),
         meta: { title: '系统设置' }
+      },
+      {
+        path: 'dependencies',
+        name: 'Dependencies',
+        component: () => import('@/views/Dependencies.vue'),
+        meta: { title: '依赖管理' }
+      },
+      {
+        path: 'plugins/:id/edit',
+        name: 'PluginEditor',
+        component: () => import('@/views/PluginEditor.vue'),
+        meta: { title: '编辑插件代码' }
       }
     ]
   }

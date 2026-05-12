@@ -11,8 +11,8 @@ async def handle(ctx):
     content = ctx.content.strip()
 
     # 提取要翻译的文本
-    # 支持格式：翻译 hello / translate hello / fanyi 你好
-    match = re.match(r'^(翻译|translate|fanyi)\s+(.+)$', content, re.IGNORECASE)
+    # 支持格式：翻译 hello / translate hello / fanyi 你好 / fanyi你好
+    match = re.match(r'^(翻译|translate|fanyi)\s*(.+)$', content, re.IGNORECASE)
     if not match:
         await ctx.reply("❌ 格式错误\n用法：翻译 <文本>")
         return
@@ -25,15 +25,11 @@ async def handle(ctx):
         result = await translate_text(text, 'zh', 'en')
         if result:
             await ctx.reply(f"🌐 中译英\n原文：{text}\n译文：{result}")
-        else:
-            await ctx.reply("❌ 翻译失败，请稍后重试")
     else:
         # 英文 -> 中文
         result = await translate_text(text, 'en', 'zh')
         if result:
             await ctx.reply(f"🌐 英译中\n原文：{text}\n译文：{result}")
-        else:
-            await ctx.reply("❌ 翻译失败，请稍后重试")
 
 
 def contains_chinese(text):
@@ -63,12 +59,27 @@ async def translate_text(text, from_lang, to_lang):
             data = response.json()
             return data.get('translatedText', '')
         else:
-            print(f"翻译 API 返回错误: {response.status_code}")
+            print(f"翻译 API 返回错误: {response.status_code}", file=sys.stderr)
             return None
 
     except requests.exceptions.Timeout:
-        print("翻译请求超时")
+        print("翻译请求超时", file=sys.stderr)
         return None
     except Exception as e:
-        print(f"翻译出错: {e}")
+        print(f"翻译出错: {e}", file=sys.stderr)
         return None
+
+
+# 直接执行模式入口
+if __name__ == '__main__':
+    import sys
+    import os
+
+    # 添加SDK路径
+    sdk_path = os.path.join(os.path.dirname(__file__), '../../sdk/python')
+    sys.path.insert(0, sdk_path)
+
+    from allbot_direct import run_direct
+
+    # 运行插件
+    run_direct(handle)

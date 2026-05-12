@@ -70,6 +70,13 @@ func (s *Server) Start() error {
 	// 插件配置 API
 	mux.HandleFunc("/api/plugins/config/", s.handlePluginConfig)
 
+	// 依赖管理 API
+	mux.HandleFunc("/api/dependencies", s.handleDependencies)
+	mux.HandleFunc("/api/dependencies/", s.handleDependencyDetail)
+
+	// 插件代码编辑 API
+	mux.HandleFunc("/api/plugins/code/", s.handlePluginCode)
+
 	// 静态文件服务（assets目录）
 	fs := http.FileServer(http.Dir("web"))
 	mux.Handle("/assets/", fs)
@@ -120,21 +127,114 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // handlePlugins 插件列表接口
 func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		// 获取插件列表
-		plugins := s.pluginManager.GetAllPlugins()
-		result := make([]map[string]interface{}, 0, len(plugins))
+		// 扫描插件目录，显示所有插件（包括加载失败的）
+		result := make([]map[string]interface{}, 0)
 
-		for _, p := range plugins {
+		entries, err := os.ReadDir("plugins")
+		if err != nil {
+			s.jsonError(w, "读取插件目录失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+
+			pluginID := entry.Name()
+			configPath := filepath.Join("plugins", pluginID, "plugin.json")
+
+			// 尝试读取 plugin.json
+			data, err := os.ReadFile(configPath)
+			if err != nil {
+				// 配置文件不存在或读取失败
+				result = append(result, map[string]interface{}{
+					"id":        pluginID,
+					"name":      pluginID,
+					"version":   "unknown",
+					"runtime":   "unknown",
+					"status":    "error",
+					"port":      0,
+					"trigger":   "",
+					"platforms": []string{},
+					"enabled":   false,
+					"error":     "配置文件不存在或读取失败",
+				})
+				continue
+			}
+
+			var config map[string]interface{}
+			if err := json.Unmarshal(data, &config); err != nil {
+				// 配置文件解析失败
+				result = append(result, map[string]interface{}{
+					"id":        pluginID,
+					"name":      pluginID,
+					"version":   "unknown",
+					"runtime":   "unknown",
+					"status":    "error",
+					"port":      0,
+					"trigger":   "",
+					"platforms": []string{},
+					"enabled":   false,
+					"error":     "配置文件解析失败",
+				})
+				continue
+			}
+
+			// 从配置文件读取信息
+			name := pluginID
+			if n, ok := config["name"].(string); ok {
+				name = n
+			}
+
+			version := "unknown"
+			if v, ok := config["version"].(string); ok {
+				version = v
+			}
+
+			runtime := "unknown"
+			if r, ok := config["runtime"].(string); ok {
+				runtime = r
+			}
+
+			trigger := ""
+			if t, ok := config["trigger"].(string); ok {
+				trigger = t
+			}
+
+			enabled := true
+			if e, ok := config["enabled"].(bool); ok {
+				enabled = e
+			}
+
+			platforms := []string{}
+			if p, ok := config["platforms"].([]interface{}); ok {
+				for _, platform := range p {
+					if ps, ok := platform.(string); ok {
+						platforms = append(platforms, ps)
+					}
+				}
+			}
+
+			// 检查插件是否已加载
+			process := s.pluginManager.GetPlugin(pluginID)
+			status := "ready"
+			port := 0
+			if process != nil {
+				status = process.Status
+				port = process.Port
+			}
+
 			result = append(result, map[string]interface{}{
-				"id":        p.Plugin.ID,
-				"name":      p.Plugin.Name,
-				"version":   p.Plugin.Version,
-				"runtime":   p.Plugin.Runtime,
-				"status":    p.Status,
-				"port":      p.Port,
-				"trigger":   p.Plugin.Trigger,
-				"platforms": p.Plugin.Platforms,
-				"enabled":   p.Plugin.Enabled,
+				"id":        pluginID,
+				"name":      name,
+				"version":   version,
+				"runtime":   runtime,
+				"status":    status,
+				"port":      port,
+				"trigger":   trigger,
+				"platforms": platforms,
+				"enabled":   enabled,
 			})
 		}
 
@@ -579,6 +679,219 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 		s.logManager.AddLog("info", fmt.Sprintf("更新插件配置: %s", pluginID))
 		s.jsonResponse(w, map[string]interface{}{
 			"message": "配置已更新并生效",
+		})
+
+	} else {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleDependencies 处理依赖管理请求
+func (s *Server) handleDependencies(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		// 获取所有依赖
+		pythonDeps, err := s.pluginManager.GetDepsManager().GetPythonDeps()
+		if err != nil {
+			s.jsonError(w, "获取 Python 依赖失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		nodeDeps, err := s.pluginManager.GetDepsManager().GetNodeDeps()
+		if err != nil {
+			s.jsonError(w, "获取 Node.js 依赖失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.jsonResponse(w, map[string]interface{}{
+			"python": pythonDeps,
+			"nodejs": nodeDeps,
+		})
+
+	} else if r.Method == http.MethodPost {
+		// 安装新依赖
+		var req struct {
+			Runtime string `json:"runtime"`
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.jsonError(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		// 验证输入
+		if !isValidPackageName(req.Name) {
+			s.jsonError(w, "无效的包名", http.StatusBadRequest)
+			return
+		}
+
+		if req.Version != "" && req.Version != "latest" && !isValidVersion(req.Version) {
+			s.jsonError(w, "无效的版本号", http.StatusBadRequest)
+			return
+		}
+
+		// 安装依赖
+		deps := map[string]string{req.Name: req.Version}
+		if req.Version == "latest" || req.Version == "" {
+			deps[req.Name] = ""
+		}
+
+		var err error
+		if req.Runtime == "python" {
+			err = s.pluginManager.GetDepsManager().InstallPythonDeps(deps)
+		} else if req.Runtime == "nodejs" {
+			err = s.pluginManager.GetDepsManager().InstallNodeDeps(deps)
+		} else {
+			s.jsonError(w, "不支持的运行时: "+req.Runtime, http.StatusBadRequest)
+			return
+		}
+
+		if err != nil {
+			s.logManager.AddLog("error", fmt.Sprintf("安装依赖失败 %s: %v", req.Name, err))
+			s.jsonError(w, "安装依赖失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.logManager.AddLog("info", fmt.Sprintf("安装依赖: %s@%s (%s)", req.Name, req.Version, req.Runtime))
+		s.jsonResponse(w, map[string]interface{}{
+			"message": "依赖安装成功",
+		})
+
+	} else {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleDependencyDetail 处理依赖详情请求
+func (s *Server) handleDependencyDetail(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/dependencies/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) != 2 {
+		s.jsonError(w, "无效的请求路径", http.StatusBadRequest)
+		return
+	}
+
+	runtime := parts[0]
+	name := parts[1]
+
+	if r.Method == http.MethodDelete {
+		var err error
+		if runtime == "python" {
+			err = s.pluginManager.GetDepsManager().UninstallPythonDep(name)
+		} else if runtime == "nodejs" {
+			err = s.pluginManager.GetDepsManager().UninstallNodeDep(name)
+		} else {
+			s.jsonError(w, "不支持的运行时: "+runtime, http.StatusBadRequest)
+			return
+		}
+
+		if err != nil {
+			s.logManager.AddLog("error", fmt.Sprintf("卸载依赖失败 %s: %v", name, err))
+			s.jsonError(w, "卸载依赖失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.logManager.AddLog("info", fmt.Sprintf("卸载依赖: %s (%s)", name, runtime))
+		s.jsonResponse(w, map[string]interface{}{
+			"message": "依赖卸载成功",
+		})
+
+	} else {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// isValidPackageName 验证包名
+func isValidPackageName(name string) bool {
+	if len(name) == 0 || len(name) > 100 {
+		return false
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidVersion 验证版本号
+func isValidVersion(version string) bool {
+	if len(version) == 0 || len(version) > 50 {
+		return false
+	}
+	for _, c := range version {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// handlePluginCode 处理插件代码编辑请求
+func (s *Server) handlePluginCode(w http.ResponseWriter, r *http.Request) {
+	pluginID := strings.TrimPrefix(r.URL.Path, "/api/plugins/code/")
+	if pluginID == "" {
+		s.jsonError(w, "插件ID不能为空", http.StatusBadRequest)
+		return
+	}
+
+	pluginPath := filepath.Join("plugins", pluginID)
+
+	if r.Method == http.MethodGet {
+		// 获取插件代码
+		plugin := s.router.GetPlugin(pluginID)
+		if plugin == nil {
+			s.jsonError(w, "插件不存在", http.StatusNotFound)
+			return
+		}
+
+		entryPath := filepath.Join(pluginPath, plugin.Entry)
+		code, err := os.ReadFile(entryPath)
+		if err != nil {
+			s.jsonError(w, "读取代码失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.jsonResponse(w, map[string]interface{}{
+			"code":        string(code),
+			"filename":    plugin.Entry,
+			"plugin_name": plugin.Name,
+		})
+
+	} else if r.Method == http.MethodPut {
+		// 保存插件代码
+		var req struct {
+			Code string `json:"code"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.jsonError(w, "无效的请求数据", http.StatusBadRequest)
+			return
+		}
+
+		plugin := s.router.GetPlugin(pluginID)
+		if plugin == nil {
+			s.jsonError(w, "插件不存在", http.StatusNotFound)
+			return
+		}
+
+		entryPath := filepath.Join(pluginPath, plugin.Entry)
+		if err := os.WriteFile(entryPath, []byte(req.Code), 0644); err != nil {
+			s.jsonError(w, "保存代码失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// 重新加载插件
+		if err := s.pluginManager.ReloadPlugin(pluginID); err != nil {
+			s.logManager.AddLog("error", fmt.Sprintf("重新加载插件失败 %s: %v", pluginID, err))
+			s.jsonError(w, "重新加载插件失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.logManager.AddLog("info", fmt.Sprintf("插件代码已更新: %s", plugin.Name))
+		s.jsonResponse(w, map[string]interface{}{
+			"message": "代码已保存并生效",
 		})
 
 	} else {

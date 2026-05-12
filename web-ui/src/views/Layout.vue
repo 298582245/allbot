@@ -25,6 +25,11 @@
           <span>平台配置</span>
         </el-menu-item>
 
+        <el-menu-item index="/dependencies">
+          <el-icon><Box /></el-icon>
+          <span>依赖管理</span>
+        </el-menu-item>
+
         <el-menu-item index="/logs">
           <el-icon><Document /></el-icon>
           <span>日志查看</span>
@@ -76,6 +81,7 @@ import {
   DataAnalysis,
   Grid,
   Connection,
+  Box,
   Document,
   Setting,
   User,

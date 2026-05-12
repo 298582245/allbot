@@ -90,20 +90,21 @@ func (r *Router) HandleMessage(msg *types.Message) {
 		return
 	}
 
-	// 3. 并发调用匹配的插件
-	for _, plugin := range matchedPlugins {
-		go r.callPlugin(plugin, msg)
-	}
+	// 3. 只执行第一个匹配的插件
+	r.callPlugin(matchedPlugins[0], msg)
 }
 
-// matchPlugins 匹配插件
+// matchPlugins 匹配插件（只返回第一个匹配的）
 func (r *Router) matchPlugins(msg *types.Message) []*types.Plugin {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	var matched []*types.Plugin
-
 	for _, plugin := range r.plugins {
+		// 检查插件是否启用
+		if !plugin.Enabled {
+			continue
+		}
+
 		// 检查平台支持
 		if !r.supportsPlatform(plugin, msg.Platform) {
 			continue
@@ -111,12 +112,12 @@ func (r *Router) matchPlugins(msg *types.Message) []*types.Plugin {
 
 		// 正则匹配
 		if plugin.TriggerRegex.MatchString(msg.Content) {
-			matched = append(matched, plugin)
 			log.Printf("[SYSTEM] Plugin matched: %s for message: %s", plugin.Name, msg.Content)
+			return []*types.Plugin{plugin}
 		}
 	}
 
-	return matched
+	return nil
 }
 
 // supportsPlatform 检查插件是否支持该平台
@@ -178,7 +179,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 	}
 
 	if err := json.Unmarshal(output, &result); err != nil {
-		log.Printf("Failed to parse plugin output: %v", err)
+		log.Printf("[ERROR] Plugin %s failed to parse output: %v, output: %s", plugin.Name, err, string(output))
 		return
 	}
 

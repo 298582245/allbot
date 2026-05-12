@@ -95,13 +95,22 @@ func (m *Manager) InstallPythonDeps(deps map[string]string) error {
 	// 安装缺失的依赖
 	for pkg, version := range deps {
 		installedVersion, exists := installed.Packages[pkg]
-		if exists && installedVersion == version {
+		if exists && installedVersion == version && version != "" {
 			fmt.Printf("Python 包 %s==%s 已安装\n", pkg, version)
 			continue
 		}
 
-		fmt.Printf("正在安装 Python 包: %s==%s\n", pkg, version)
-		cmd := exec.Command(pipPath, "install", fmt.Sprintf("%s==%s", pkg, version))
+		// 构建安装命令
+		var packageSpec string
+		if version == "" || version == "latest" {
+			fmt.Printf("正在安装 Python 包: %s (最新版)\n", pkg)
+			packageSpec = pkg
+		} else {
+			fmt.Printf("正在安装 Python 包: %s==%s\n", pkg, version)
+			packageSpec = fmt.Sprintf("%s==%s", pkg, version)
+		}
+
+		cmd := exec.Command(pipPath, "install", packageSpec)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
@@ -109,7 +118,12 @@ func (m *Manager) InstallPythonDeps(deps map[string]string) error {
 		}
 
 		// 更新已安装清单
-		installed.Packages[pkg] = version
+		if version == "" || version == "latest" {
+			// 获取实际安装的版本（简化处理，记录为 "latest"）
+			installed.Packages[pkg] = "latest"
+		} else {
+			installed.Packages[pkg] = version
+		}
 	}
 
 	// 保存依赖清单
@@ -130,10 +144,16 @@ func (m *Manager) InstallNodeDeps(deps map[string]string) error {
 	// 合并依赖
 	needInstall := false
 	for pkg, version := range deps {
-		if nodeDeps.Dependencies[pkg] != version {
-			nodeDeps.Dependencies[pkg] = version
+		// 处理空版本或 latest
+		targetVersion := version
+		if version == "" || version == "latest" {
+			targetVersion = "latest"
+		}
+
+		if nodeDeps.Dependencies[pkg] != targetVersion {
+			nodeDeps.Dependencies[pkg] = targetVersion
 			needInstall = true
-			fmt.Printf("添加 Node.js 包: %s@%s\n", pkg, version)
+			fmt.Printf("添加 Node.js 包: %s@%s\n", pkg, targetVersion)
 		}
 	}
 
@@ -241,4 +261,96 @@ func (m *Manager) saveNodeDeps(deps *NodeDeps) error {
 		return err
 	}
 	return os.WriteFile(m.nodeDepsFile, data, 0644)
+}
+
+// GetPythonDeps 获取已安装的 Python 依赖
+func (m *Manager) GetPythonDeps() (map[string]string, error) {
+	deps, err := m.loadPythonDeps()
+	if err != nil {
+		return nil, err
+	}
+	return deps.Packages, nil
+}
+
+// GetNodeDeps 获取已安装的 Node.js 依赖
+func (m *Manager) GetNodeDeps() (map[string]string, error) {
+	deps, err := m.loadNodeDeps()
+	if err != nil {
+		return nil, err
+	}
+	return deps.Dependencies, nil
+}
+
+// UninstallPythonDep 卸载 Python 依赖
+func (m *Manager) UninstallPythonDep(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 读取已安装的依赖
+	installed, err := m.loadPythonDeps()
+	if err != nil {
+		return err
+	}
+
+	// 检查是否已安装
+	if _, exists := installed.Packages[name]; !exists {
+		return fmt.Errorf("依赖 %s 未安装", name)
+	}
+
+	// 获取 pip 路径
+	pipPath := m.getPipPath()
+
+	// 卸载依赖
+	fmt.Printf("正在卸载 Python 包: %s\n", name)
+	cmd := exec.Command(pipPath, "uninstall", "-y", name)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("卸载 %s 失败: %w", name, err)
+	}
+
+	// 更新已安装清单
+	delete(installed.Packages, name)
+
+	// 保存依赖清单
+	return m.savePythonDeps(installed)
+}
+
+// UninstallNodeDep 卸载 Node.js 依赖
+func (m *Manager) UninstallNodeDep(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 读取 package.json
+	nodeDeps, err := m.loadNodeDeps()
+	if err != nil {
+		return err
+	}
+
+	// 检查是否已安装
+	if _, exists := nodeDeps.Dependencies[name]; !exists {
+		return fmt.Errorf("依赖 %s 未安装", name)
+	}
+
+	// 删除依赖
+	delete(nodeDeps.Dependencies, name)
+
+	// 保存 package.json
+	if err := m.saveNodeDeps(nodeDeps); err != nil {
+		return err
+	}
+
+	// 执行 npm uninstall
+	fmt.Printf("正在卸载 Node.js 包: %s\n", name)
+	runtimeDir := filepath.Dir(m.nodeModules)
+	cmd := exec.Command("npm", "uninstall", name)
+	cmd.Dir = runtimeDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("npm uninstall 失败: %w", err)
+	}
+
+	fmt.Println("Node.js 依赖卸载成功")
+	return nil
 }

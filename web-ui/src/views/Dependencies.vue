@@ -9,9 +9,7 @@
 
       <div style="display: flex; align-items: center; margin-bottom: 20px;">
         <el-tabs v-model="activeTab" style="flex: 1;">
-          <!-- Python 依赖 -->
           <el-tab-pane label="Python 依赖" name="python" />
-          <!-- Node.js 依赖 -->
           <el-tab-pane label="Node.js 依赖" name="nodejs" />
         </el-tabs>
         <el-button type="primary" @click="showAddDialog(activeTab)" style="margin-left: 20px;">
@@ -21,40 +19,62 @@
       </div>
 
       <!-- Python 依赖表格 -->
-      <el-table v-if="activeTab === 'python'" :data="pythonDeps" v-loading="loading" style="width: 100%">
-        <el-table-column prop="name" label="包名" min-width="200" />
-        <el-table-column prop="version" label="版本" width="150" />
-        <el-table-column label="操作" width="120">
-          <template #default="{ row }">
-            <el-button
-              type="danger"
-              size="small"
-              @click="handleUninstall('python', row.name)"
-            >
-              卸载
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-empty v-if="activeTab === 'python' && !loading && pythonDeps.length === 0" description="暂无 Python 依赖" />
+      <div v-if="activeTab === 'python'" class="table-wrapper">
+        <el-table :data="paginatedPythonDeps" v-loading="loading" style="width: 100%" max-height="400">
+          <el-table-column prop="name" label="包名" min-width="200" />
+          <el-table-column prop="version" label="版本" width="150" />
+          <el-table-column label="操作" width="120">
+            <template #default="{ row }">
+              <el-button
+                type="danger"
+                size="small"
+                @click="handleUninstall('python', row.name)"
+              >
+                卸载
+              </el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-if="!loading && pythonDeps.length === 0" description="暂无 Python 依赖" />
+      </div>
 
       <!-- Node.js 依赖表格 -->
-      <el-table v-if="activeTab === 'nodejs'" :data="nodejsDeps" v-loading="loading" style="width: 100%">
-        <el-table-column prop="name" label="包名" min-width="200" />
-        <el-table-column prop="version" label="版本" width="150" />
-        <el-table-column label="操作" width="120">
-          <template #default="{ row }">
-            <el-button
-              type="danger"
-              size="small"
-              @click="handleUninstall('nodejs', row.name)"
-            >
-              卸载
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-empty v-if="activeTab === 'nodejs' && !loading && nodejsDeps.length === 0" description="暂无 Node.js 依赖" />
+      <div v-if="activeTab === 'nodejs'" class="table-wrapper">
+        <el-table :data="paginatedNodejsDeps" v-loading="loading" style="width: 100%" max-height="400">
+          <el-table-column prop="name" label="包名" min-width="200" />
+          <el-table-column prop="version" label="版本" width="150" />
+          <el-table-column label="操作" width="120">
+            <template #default="{ row }">
+              <el-button
+                type="danger"
+                size="small"
+                @click="handleUninstall('nodejs', row.name)"
+              >
+                卸载
+              </el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-if="!loading && nodejsDeps.length === 0" description="暂无 Node.js 依赖" />
+      </div>
+
+      <!-- 分页器 -->
+      <div class="pagination-wrapper">
+        <el-pagination
+          v-if="activeTab === 'python' && pythonDeps.length > 0"
+          v-model:current-page="pythonCurrentPage"
+          :page-size="pageSize"
+          :total="pythonDeps.length"
+          layout="total, prev, pager, next"
+        />
+        <el-pagination
+          v-if="activeTab === 'nodejs' && nodejsDeps.length > 0"
+          v-model:current-page="nodejsCurrentPage"
+          :page-size="pageSize"
+          :total="nodejsDeps.length"
+          layout="total, prev, pager, next"
+        />
+      </div>
     </el-card>
 
     <!-- 安装依赖对话框 -->
@@ -82,7 +102,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import request from '@/utils/request'
@@ -97,6 +117,22 @@ const currentRuntime = ref('python')
 const newDep = ref({
   name: '',
   version: ''
+})
+
+const pageSize = 10
+const pythonCurrentPage = ref(1)
+const nodejsCurrentPage = ref(1)
+
+const paginatedPythonDeps = computed(() => {
+  const start = (pythonCurrentPage.value - 1) * pageSize
+  const end = start + pageSize
+  return pythonDeps.value.slice(start, end)
+})
+
+const paginatedNodejsDeps = computed(() => {
+  const start = (nodejsCurrentPage.value - 1) * pageSize
+  const end = start + pageSize
+  return nodejsDeps.value.slice(start, end)
 })
 
 const loadDependencies = async () => {
@@ -131,13 +167,11 @@ const handleInstall = async () => {
     return
   }
 
-  // 验证包名，防止注入
   if (!/^[a-zA-Z0-9_\-\.]+$/.test(newDep.value.name)) {
     ElMessage.error('包名只能包含字母、数字、下划线、连字符和点')
     return
   }
 
-  // 验证版本号，防止注入
   if (newDep.value.version && !/^[a-zA-Z0-9_\-\.]+$/.test(newDep.value.version)) {
     ElMessage.error('版本号只能包含字母、数字、下划线、连字符和点')
     return
@@ -196,5 +230,15 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.table-wrapper {
+  min-height: 400px;
+}
+
+.pagination-wrapper {
+  margin-top: 20px;
+  display: flex;
+  justify-content: center;
 }
 </style>
