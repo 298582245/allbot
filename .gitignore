@@ -7,9 +7,11 @@
 *.sqlite3-*
 config.db
 
+.claude
+
 # 插件备份包
-plugins/*.backup*.zip
-plugins/**/*.backup*.zip
+plugins/
+
 
 # 缓存与依赖目录
 .gocache/
