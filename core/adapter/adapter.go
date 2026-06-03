@@ -1,52 +1,21 @@
 package adapter
 
-import "github.com/allbot/allbot/core/types"
+import "github.com/allbot/allbot/core/adapter/_contract"
 
-// Adapter 平台适配器接口
-type Adapter interface {
-	// GetPlatform 获取平台名称
-	GetPlatform() string
+// Adapter 平台适配器接口。
+type Adapter = contract.Adapter
 
-	// SendMessage 发送消息
-	SendMessage(target string, text string) error
+// ReplyTargetResolver 由适配器按自身目标格式解析回复目标。
+type ReplyTargetResolver = contract.ReplyTargetResolver
 
-	// SendImage 发送图片
-	SendImage(target string, imageURL string) error
+// ReplyTextFormatter 由适配器按自身消息格式处理回复文本。
+type ReplyTextFormatter = contract.ReplyTextFormatter
 
-	// SendFile 发送文件
-	SendFile(target string, filePath string) error
+// SendTargetResolver 由适配器按自身目标格式解析插件主动发送目标。
+type SendTargetResolver = contract.SendTargetResolver
 
-	// GetUserInfo 获取用户信息
-	GetUserInfo(userID string) (*UserInfo, error)
+// UserInfo 用户信息。
+type UserInfo = contract.UserInfo
 
-	// GetGroupInfo 获取群组信息
-	GetGroupInfo(groupID string) (*GroupInfo, error)
-
-	// AtUser @某人
-	AtUser(groupID string, userID string) error
-
-	// Start 启动适配器
-	Start() error
-
-	// Stop 停止适配器
-	Stop() error
-
-	// SetMessageHandler 设置消息处理器
-	SetMessageHandler(handler func(*types.Message))
-}
-
-// UserInfo 用户信息
-type UserInfo struct {
-	UserID   string
-	Nickname string
-	Avatar   string
-	Extra    map[string]string
-}
-
-// GroupInfo 群组信息
-type GroupInfo struct {
-	GroupID     string
-	Name        string
-	MemberCount int
-	Extra       map[string]string
-}
+// GroupInfo 群组信息。
+type GroupInfo = contract.GroupInfo

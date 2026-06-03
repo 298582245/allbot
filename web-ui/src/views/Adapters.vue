@@ -71,10 +71,12 @@
       <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
         <el-form-item label="平台" prop="platform">
           <el-select v-model="form.platform" style="width: 100%" @change="handlePlatformChange">
-            <el-option label="QQ" value="qq" />
-            <el-option label="QQ 官方机器人" value="qq_office" />
-            <el-option label="Telegram" value="telegram" />
-            <el-option label="微信" value="wechat" />
+            <el-option
+              v-for="platform in adapterPlatformOptions"
+              :key="platform.platform"
+              :label="platform.display_name || platform.platform"
+              :value="platform.platform"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="备注" prop="remark">
@@ -88,45 +90,21 @@
           <span class="switch-text">{{ form.enabled ? '启用' : '禁用' }}</span>
         </el-form-item>
 
-        <template v-if="form.platform === 'qq'">
-          <el-form-item label="服务地址" prop="config.server_url">
-            <el-input v-model="form.config.server_url" placeholder="ws://127.0.0.1:3001" />
-          </el-form-item>
-          <el-form-item label="访问令牌">
-            <el-input v-model="form.config.access_token" type="password" show-password placeholder="NapCat 未设置 token 可留空" />
-          </el-form-item>
-        </template>
-
-        <template v-if="form.platform === 'qq_office'">
-          <el-form-item label="App ID" prop="config.app_id">
-            <el-input v-model="form.config.app_id" placeholder="QQ 官方机器人 App ID" />
-          </el-form-item>
-          <el-form-item label="Client Secret" prop="config.client_secret">
-            <el-input v-model="form.config.client_secret" type="password" show-password placeholder="QQ 官方机器人 Client Secret" />
-          </el-form-item>
-          <el-form-item label="API 地址">
-            <el-input v-model="form.config.api_base_url" placeholder="https://api.sgroup.qq.com" />
-          </el-form-item>
-          <el-form-item label="Token 地址">
-            <el-input v-model="form.config.token_url" placeholder="https://bots.qq.com/app/getAppAccessToken" />
-          </el-form-item>
-        </template>
-
-        <template v-if="form.platform === 'telegram'">
-          <el-form-item label="Bot Token" prop="config.bot_token">
-            <el-input v-model="form.config.bot_token" type="textarea" :rows="3" placeholder="123456789:ABC..." />
-          </el-form-item>
-          <el-form-item label="代理地址">
-            <el-input v-model="form.config.proxy_url" placeholder="http://127.0.0.1:7890" />
-          </el-form-item>
-        </template>
-
-        <template v-if="form.platform === 'wechat'">
-          <el-form-item label="App ID" prop="config.app_id">
-            <el-input v-model="form.config.app_id" />
-          </el-form-item>
-          <el-form-item label="App Secret" prop="config.app_secret">
-            <el-input v-model="form.config.app_secret" type="password" show-password />
+        <template v-for="field in currentConfigSchema" :key="field.key">
+          <el-form-item :label="field.label || field.key" :prop="`config.${field.key}`">
+            <el-switch v-if="field.type === 'boolean'" v-model="form.config[field.key]" />
+            <el-input-number v-else-if="field.type === 'number'" v-model="form.config[field.key]" style="width: 100%" />
+            <el-input v-else-if="field.type === 'textarea'" v-model="form.config[field.key]" type="textarea" :rows="3" :placeholder="field.placeholder || ''" />
+            <el-select v-else-if="field.type === 'select'" v-model="form.config[field.key]" style="width: 100%" :placeholder="field.placeholder || '请选择'">
+              <el-option
+                v-for="option in configFieldOptions(field)"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+            <el-input v-else v-model="form.config[field.key]" :type="field.type === 'password' ? 'password' : 'text'" :show-password="field.type === 'password'" :placeholder="field.placeholder || ''" />
+            <div v-if="field.help" class="field-help">{{ field.help }}</div>
           </el-form-item>
         </template>
       </el-form>
@@ -143,7 +121,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled, Plus } from '@element-plus/icons-vue'
-import { deleteAdapter, getAdapters, saveAdapter } from '@/api'
+import { deleteAdapter, getAdapterPlatforms, getAdapters, saveAdapter } from '@/api'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -155,6 +133,43 @@ const dialogTitle = ref('添加机器人')
 const isEdit = ref(false)
 const formRef = ref(null)
 const pageDescription = '同一平台可添加多个机器人账号，插件默认可被全部机器人触发。'
+const adapterPlatformFallback = [
+  {
+    platform: 'qq',
+    display_name: 'QQ',
+    config_schema: [
+      { key: 'server_url', label: '服务地址', type: 'text', required: true, placeholder: 'ws://127.0.0.1:3001' },
+      { key: 'access_token', label: '访问令牌', type: 'password', required: false, placeholder: 'NapCat 未设置 token 可留空' }
+    ]
+  },
+  {
+    platform: 'qq_office',
+    display_name: 'QQ 官方机器人',
+    config_schema: [
+      { key: 'app_id', label: 'App ID', type: 'text', required: true },
+      { key: 'client_secret', label: 'Client Secret', type: 'password', required: true },
+      { key: 'api_base_url', label: 'API 地址', type: 'text', required: false, placeholder: 'https://api.sgroup.qq.com' },
+      { key: 'token_url', label: 'Token 地址', type: 'text', required: false, placeholder: 'https://bots.qq.com/app/getAppAccessToken' }
+    ]
+  },
+  {
+    platform: 'telegram',
+    display_name: 'Telegram',
+    config_schema: [
+      { key: 'bot_token', label: 'Bot Token', type: 'textarea', required: true, placeholder: '123456789:ABC...' },
+      { key: 'proxy_url', label: '代理地址', type: 'text', required: false, placeholder: 'http://127.0.0.1:7890' }
+    ]
+  },
+  {
+    platform: 'wechat',
+    display_name: '微信',
+    config_schema: [
+      { key: 'app_id', label: 'App ID', type: 'text', required: true },
+      { key: 'app_secret', label: 'App Secret', type: 'password', required: true }
+    ]
+  }
+]
+const adapterPlatforms = ref([...adapterPlatformFallback])
 
 const form = reactive({
   id: 0,
@@ -165,13 +180,23 @@ const form = reactive({
   config: defaultConfig()
 })
 
-const rules = {
-  platform: [{ required: true, message: '请选择平台', trigger: 'change' }],
-  remark: [{ required: true, message: '请输入备注', trigger: 'blur' }],
-  'config.bot_token': [{ required: true, message: '请输入 Bot Token', trigger: 'blur' }],
-  'config.app_id': [{ required: true, message: '请输入 App ID', trigger: 'blur' }],
-  'config.client_secret': [{ required: true, message: '请输入 Client Secret', trigger: 'blur' }]
-}
+const adapterPlatformOptions = computed(() => adapterPlatforms.value)
+const adapterPlatformMap = computed(() => Object.fromEntries(adapterPlatforms.value.map(item => [item.platform, item])))
+const currentPlatform = computed(() => adapterPlatformMap.value[form.platform] || adapterPlatformFallback.find(item => item.platform === form.platform) || null)
+const currentConfigSchema = computed(() => normalizeConfigSchema(currentPlatform.value?.config_schema))
+const platformNames = computed(() => Object.fromEntries(adapterPlatforms.value.map(item => [item.platform, item.display_name || item.platform])))
+const rules = computed(() => {
+  const result = {
+    platform: [{ required: true, message: '请选择平台', trigger: 'change' }],
+    remark: [{ required: true, message: '请输入备注', trigger: 'blur' }]
+  }
+  currentConfigSchema.value.forEach(field => {
+    if (field.required) {
+      result[`config.${field.key}`] = [{ required: true, message: `请输入${field.label || field.key}`, trigger: field.type === 'select' || field.type === 'boolean' ? 'change' : 'blur' }]
+    }
+  })
+  return result
+})
 
 const showPageDescription = () => {
   ElMessageBox.alert(pageDescription, '平台机器人说明', {
@@ -186,16 +211,64 @@ const paginatedAdapters = computed(() => {
 })
 
 function defaultConfig() {
-  return {
-    server_url: 'ws://127.0.0.1:3001',
-    access_token: '',
-    bot_token: '',
-    proxy_url: '',
-    app_id: '',
-    app_secret: '',
-    client_secret: '',
-    api_base_url: 'https://api.sgroup.qq.com',
-    token_url: 'https://bots.qq.com/app/getAppAccessToken'
+  const config = {}
+  adapterPlatformFallback.forEach(platform => {
+    normalizeConfigSchema(platform.config_schema).forEach(field => {
+      if (config[field.key] === undefined) config[field.key] = defaultFieldValue(field)
+    })
+  })
+  return config
+}
+
+function defaultFieldValue(field) {
+  if (field.default !== undefined) return field.default
+  if (field.type === 'boolean') return false
+  if (field.type === 'number') return 0
+  return ''
+}
+
+function normalizeConfigSchema(schema) {
+  return Array.isArray(schema)
+    ? schema.filter(field => field && field.key).map(field => ({ ...field, type: normalizeFieldType(field.type) }))
+    : []
+}
+
+function normalizeFieldType(type) {
+  const value = String(type || 'text').trim().toLowerCase()
+  return ['text', 'password', 'number', 'boolean', 'textarea', 'select'].includes(value) ? value : 'text'
+}
+
+function mergeAdapterPlatformFallback(items) {
+  const merged = [...items]
+  const exists = new Set(merged.map(item => item.platform))
+  adapterPlatformFallback.forEach(item => {
+    if (!exists.has(item.platform)) merged.push(item)
+  })
+  return merged
+}
+
+function ensureConfigFields(platform = currentPlatform.value, preserve = {}) {
+  const config = { ...preserve }
+  normalizeConfigSchema(platform?.config_schema).forEach(field => {
+    if (config[field.key] === undefined) config[field.key] = defaultFieldValue(field)
+  })
+  return config
+}
+
+function configFieldOptions(field) {
+  if (!Array.isArray(field.options)) return []
+  return field.options.map(option => {
+    if (option && typeof option === 'object') return { label: option.label || option.value, value: option.value }
+    return { label: String(option), value: option }
+  })
+}
+
+async function loadAdapterPlatforms() {
+  try {
+    const items = await getAdapterPlatforms()
+    adapterPlatforms.value = mergeAdapterPlatformFallback(Array.isArray(items) ? items : [])
+  } catch (error) {
+    adapterPlatforms.value = [...adapterPlatformFallback]
   }
 }
 
@@ -212,7 +285,7 @@ async function loadAdapters() {
 }
 
 function getPlatformName(platform) {
-  return { qq: 'QQ', qq_office: 'QQ 官方机器人', wechat: '微信', telegram: 'Telegram' }[platform] || platform
+  return platformNames.value[platform] || platform
 }
 
 function getConfig(row) {
@@ -222,14 +295,15 @@ function getConfig(row) {
 function getConfigText(row) {
   try {
     const config = getConfig(row)
-    if (row.platform === 'qq') return `NapCat: ${config.server_url || config.api_url || '未设置'}`
-    if (row.platform === 'qq_office') return `AppID: ${config.app_id || '未设置'} | API: ${config.api_base_url || 'https://api.sgroup.qq.com'}`
-    if (row.platform === 'telegram') return `Token: ${config.bot_token || '未设置'}${config.proxy_url ? ` | 代理: ${config.proxy_url}` : ''}`
-    if (row.platform === 'wechat') return `AppID: ${config.app_id || '未设置'}`
+    const schema = normalizeConfigSchema(adapterPlatformMap.value[row.platform]?.config_schema || adapterPlatformFallback.find(item => item.platform === row.platform)?.config_schema)
+    const parts = schema
+      .filter(field => field.type !== 'password')
+      .slice(0, 2)
+      .map(field => `${field.label || field.key}: ${config[field.key] || '未设置'}`)
+    return parts.join(' | ')
   } catch (error) {
     return '配置解析失败'
   }
-  return ''
 }
 
 function showAddDialog() {
@@ -247,12 +321,12 @@ function handleEdit(row) {
   form.remark = row.remark || ''
   form.description = row.description || ''
   form.enabled = row.enabled
-  form.config = { ...defaultConfig(), ...getConfig(row) }
+  form.config = ensureConfigFields(adapterPlatformMap.value[form.platform], getConfig(row))
   dialogVisible.value = true
 }
 
 function handlePlatformChange() {
-  form.config = defaultConfig()
+  form.config = ensureConfigFields(currentPlatform.value)
 }
 
 async function handleSave() {
@@ -279,11 +353,7 @@ async function handleSave() {
 }
 
 function buildConfig() {
-  if (form.platform === 'qq') return { server_url: form.config.server_url || form.config.api_url, access_token: form.config.access_token || '' }
-  if (form.platform === 'qq_office') return { app_id: form.config.app_id, client_secret: form.config.client_secret, api_base_url: form.config.api_base_url || '', token_url: form.config.token_url || '' }
-  if (form.platform === 'telegram') return { bot_token: form.config.bot_token, proxy_url: form.config.proxy_url || '' }
-  if (form.platform === 'wechat') return { app_id: form.config.app_id, app_secret: form.config.app_secret }
-  return {}
+  return { ...form.config }
 }
 
 async function handleToggleEnabled(row, enabled) {
@@ -325,7 +395,10 @@ function resetForm() {
   formRef.value?.clearValidate()
 }
 
-onMounted(loadAdapters)
+onMounted(async () => {
+  await loadAdapterPlatforms()
+  await loadAdapters()
+})
 </script>
 
 <style scoped>
@@ -461,6 +534,13 @@ onMounted(loadAdapters)
 .switch-text {
   margin-left: 10px;
   color: #909399;
+}
+
+.field-help {
+  margin-top: 4px;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 @media (max-width: 768px) {

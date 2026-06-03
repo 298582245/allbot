@@ -1,12 +1,73 @@
 # AllBot 平台适配器开发说明
 
-本文说明如何在 `core/adapter` 中新增一个 Go 原生平台适配器。适配器负责把外部平台的消息转换成 AllBot 内部消息，并把 AllBot 的回复发送回对应平台。
+本文说明如何新增 Go 原生平台适配器。当前适配器已经采用目录化、manifest 注册和 loader 自动导入机制：新增平台时，原则上只需要在 `core/adapter/<platform>/` 下实现适配器和 `manifest.go`，再运行 `go generate ./core/adapter/_loader`。
+
+## 当前目录结构
+
+```text
+core/adapter/
+  adapter.go          # 兼容入口，导出 Adapter/UserInfo/GroupInfo 等类型别名
+  _contract/          # 适配器接口契约，不是真实适配器
+  _registry/          # 适配器注册中心，不是真实适配器
+  _loader/            # 自动生成真实适配器 blank import，不是真实适配器
+  _builtin/           # 兼容入口，转入 _loader，不是真实适配器
+  qq/                 # QQ 适配器
+  qq_office/          # QQ 官方机器人适配器
+  telegram/           # Telegram 适配器
+```
+
+约定：
+
+- `_` 开头目录是基础设施，不是真实适配器。
+- 不以 `_` 开头且包含 `manifest.go` 的目录会被 `_loader` 识别为真实适配器。
+- 新增适配器目录名必须和平台标识一致，例如 `discord`、`dingtalk`。
+
+## 新增适配器流程
+
+1. 新建目录：
+
+```text
+core/adapter/example/
+```
+
+2. 编写：
+
+```text
+core/adapter/example/adapter.go
+core/adapter/example/manifest.go
+core/adapter/example/adapter_test.go
+```
+
+3. 运行 loader 生成：
+
+```bash
+go generate ./core/adapter/_loader
+```
+
+4. 运行验证：
+
+```bash
+go test ./core/adapter/_loader ./core/adapter/example
+go test ./...
+go build -o "D:/Desktop/program/java/AITest/allbot/allbot.exe" .
+```
+
+新增适配器后不应该修改：
+
+```text
+core/config/manager.go
+core/router/router.go
+web-ui/src/views/Adapters.vue
+web-ui/src/views/Plugins.vue
+```
+
+这些模块会通过 registry、manifest、配置 schema 和能力接口自动识别平台。
 
 ## 适配器职责
 
 适配器只处理平台协议，不处理插件逻辑。
 
-完整链路如下：
+完整链路：
 
 ```text
 平台消息
@@ -29,7 +90,8 @@ Router 分发给插件 / 内置回复
 - 过滤空消息、自己发出的消息、无效事件。
 - 转换成 `types.Message`。
 - 调用 `messageHandler(msg)` 交给主路由。
-- 实现文本、图片、文件、用户信息、群信息、@用户等接口。
+- 实现文本、图片、文件、用户信息、群信息、@ 用户等接口。
+- 声明 manifest：平台名、显示名、配置 schema、能力、配置解析器和构造器。
 - 在 `Stop()` 中释放连接、停止 goroutine、清理等待中的请求。
 
 适配器不应该负责：
@@ -39,14 +101,27 @@ Router 分发给插件 / 内置回复
 - 关键词回复。
 - 定时任务。
 - Web UI 配置保存。
+- 修改插件平台复选框。
 
-这些逻辑由其他模块处理。
+这些逻辑由其他模块基于 manifest 自动处理。
 
 ## 必须实现的接口
 
 所有平台适配器都必须实现 `Adapter` 接口。
 
-位置：`core/adapter/adapter.go`
+接口位置：
+
+```text
+core/adapter/_contract/contract.go
+```
+
+兼容引用位置：
+
+```text
+core/adapter/adapter.go
+```
+
+接口：
 
 ```go
 type Adapter interface {
@@ -63,11 +138,78 @@ type Adapter interface {
 }
 ```
 
+适配器子包里可以这样引用类型：
+
+```go
+import "github.com/allbot/allbot/core/adapter/_contract"
+
+type UserInfo = contract.UserInfo
+type GroupInfo = contract.GroupInfo
+```
+
+## 可选能力接口
+
+Router 不再写平台特殊逻辑。平台差异应通过可选能力接口下沉到适配器。
+
+### ReplyTargetResolver
+
+用于处理“回复收到的消息”时的目标格式。
+
+```go
+type ReplyTargetResolver interface {
+    ReplyTarget(msg *types.Message) string
+}
+```
+
+示例：
+
+- QQ 群聊返回 `group_<groupID>`。
+- Telegram 优先返回 `Metadata["chat_id"]`。
+- QQ 官方优先返回 `Metadata["reply_target"]`，再 fallback 到 `group_`、`user_`、`dms_`。
+
+### ReplyTextFormatter
+
+用于处理群聊回复文本格式，例如 @ 用户。
+
+```go
+type ReplyTextFormatter interface {
+    FormatReplyText(msg *types.Message, text string) string
+}
+```
+
+示例：
+
+- QQ 群聊拼接 `[CQ:at,qq=<userID>]`。
+- Telegram 群聊拼接 HTML mention。
+- QQ 官方保持原文，不拼 CQ 码或文本 @。
+
+### SendTargetResolver
+
+用于处理插件主动发送消息时的目标格式。
+
+```go
+type SendTargetResolver interface {
+    SendTarget(userID string, groupID string) string
+}
+```
+
+示例：
+
+- QQ 群聊返回 `group_<groupID>`。
+- Telegram 群聊返回 `groupID`。
+- QQ 官方支持 `dms_`、`user_`、`group_` 前缀。
+
 ## 消息结构
 
 适配器收到平台消息后，需要转换成 `types.Message`。
 
-位置：`core/types/types.go`
+位置：
+
+```text
+core/types/types.go
+```
+
+结构：
 
 ```go
 type Message struct {
@@ -85,13 +227,13 @@ type Message struct {
 
 | 字段 | 说明 |
 | --- | --- |
-| `ID` | 平台消息 ID，无法获取时可用时间戳或平台事件 ID。 |
-| `Platform` | 平台标识，例如 `qq`、`telegram`。必须和配置里的 `platform` 一致。 |
-| `AdapterID` | 不需要适配器自己填，`AdapterManager` 会自动注入。 |
+| `ID` | 平台消息 ID。无法获取时可用平台事件 ID 或时间戳。 |
+| `Platform` | 平台标识，必须和 manifest 里的 `Platform` 一致。 |
+| `AdapterID` | 适配器不需要自己填，`AdapterManager` 会自动注入。 |
 | `UserID` | 发送者用户 ID。 |
 | `GroupID` | 群聊 ID。私聊时留空。 |
 | `Content` | 文本内容。空内容通常不要继续分发。 |
-| `Metadata` | 平台额外信息，例如 `chat_id`、`message_type`、`from_name`。 |
+| `Metadata` | 平台额外信息，例如 `chat_id`、`message_type`、`from_name`、`reply_target`。 |
 
 `AdapterManager` 会在消息进入 Router 前自动补充：
 
@@ -103,39 +245,132 @@ msg.Metadata["adapter_remark"] = remark
 msg.Metadata["adapter_description"] = description
 ```
 
-所以适配器只需要填平台自身需要的元数据。
+适配器只需要填平台自身需要的元数据。
 
-## 文件命名建议
+## manifest.go 写法
 
-新增平台时，在 `core/adapter` 下创建对应文件：
+每个真实适配器目录必须有 `manifest.go`。
+
+示例：
+
+```go
+package example
+
+import (
+    "encoding/json"
+    "fmt"
+    "strings"
+
+    "github.com/allbot/allbot/core/adapter/_contract"
+    "github.com/allbot/allbot/core/adapter/_registry"
+)
+
+type Config struct {
+    Token string `json:"token"`
+}
+
+func init() {
+    registry.Register(registry.Descriptor{
+        Platform:    "example",
+        DisplayName: "Example",
+        Description: "Example 平台适配器",
+        ConfigSchema: []registry.ConfigField{
+            {
+                Key:      "token",
+                Label:    "Token",
+                Type:     "password",
+                Required: true,
+                Help:     "Example 平台访问令牌",
+            },
+        },
+        Capabilities: registry.Capabilities{
+            SendText:       true,
+            SendImage:      false,
+            SendFile:       false,
+            PrivateMessage: true,
+            GroupMessage:   true,
+            Mention:        false,
+        },
+        ParseConfig: parseConfigForRegistry,
+        NewAdapter:  newAdapterFromRegistry,
+    })
+}
+
+func parseConfigForRegistry(raw string) (interface{}, error) {
+    var config Config
+    if err := json.Unmarshal([]byte(raw), &config); err != nil {
+        return nil, err
+    }
+    config.Token = strings.TrimSpace(config.Token)
+    if config.Token == "" {
+        return nil, fmt.Errorf("token 不能为空")
+    }
+    return &config, nil
+}
+
+func newAdapterFromRegistry(parsed interface{}) (contract.Adapter, error) {
+    config, ok := parsed.(*Config)
+    if !ok {
+        return nil, fmt.Errorf("Example 配置类型错误: %T", parsed)
+    }
+    return NewExampleAdapter(config.Token), nil
+}
+```
+
+manifest 会被 `_loader` 自动导入，`init()` 执行后平台会进入 registry。
+
+## 配置 schema 字段
+
+`ConfigSchema` 会提供给后端接口和 Web UI。
+
+支持字段类型：
 
 ```text
-core/adapter/dingtalk_adapter.go
-core/adapter/discord_adapter.go
-core/adapter/feishu_adapter.go
+text
+password
+number
+boolean
+textarea
+select
 ```
 
-类型命名建议：
+字段定义：
 
 ```go
-type DingTalkAdapter struct {}
-func NewDingTalkAdapter(...) *DingTalkAdapter {}
+type ConfigField struct {
+    Key         string      `json:"key"`
+    Label       string      `json:"label"`
+    Type        string      `json:"type"`
+    Required    bool        `json:"required"`
+    Placeholder string      `json:"placeholder,omitempty"`
+    Default     interface{} `json:"default,omitempty"`
+    Help        string      `json:"help,omitempty"`
+}
 ```
 
-## 基础实现模板
+注意：
 
-下面是一个最小结构模板。实际平台需要根据协议实现连接、收消息和发消息。
+- `Key` 必须和配置 JSON 字段一致。
+- `Required` 会用于前端校验。
+- `password` 只影响前端展示，不代表后端加密。
+- schema 只描述表单，不应该包含真实密钥。
+
+## adapter.go 基础模板
 
 ```go
-package adapter
+package example
 
 import (
     "fmt"
     "log"
     "sync"
 
+    "github.com/allbot/allbot/core/adapter/_contract"
     "github.com/allbot/allbot/core/types"
 )
+
+type UserInfo = contract.UserInfo
+type GroupInfo = contract.GroupInfo
 
 type ExampleAdapter struct {
     token          string
@@ -163,7 +398,6 @@ func (a *ExampleAdapter) Start() error {
     if a.token == "" {
         return fmt.Errorf("Example token 不能为空")
     }
-
     go a.listen()
     log.Printf("Example Adapter 已启动")
     return nil
@@ -184,7 +418,6 @@ func (a *ExampleAdapter) listen() {
             return
         default:
             // 从平台读取消息。
-            // 读取到消息后调用 a.handleIncomingMessage(...)
         }
     }
 }
@@ -193,7 +426,6 @@ func (a *ExampleAdapter) handleIncomingMessage(messageID, userID, groupID, conte
     if content == "" {
         return
     }
-
     msg := &types.Message{
         ID:       messageID,
         Platform: "example",
@@ -202,9 +434,7 @@ func (a *ExampleAdapter) handleIncomingMessage(messageID, userID, groupID, conte
         Content:  content,
         Metadata: map[string]string{},
     }
-
     log.Printf("[接收][Example][%s]：%s", userID, content)
-
     if a.messageHandler != nil {
         a.messageHandler(msg)
     }
@@ -212,17 +442,14 @@ func (a *ExampleAdapter) handleIncomingMessage(messageID, userID, groupID, conte
 
 func (a *ExampleAdapter) SendMessage(target string, text string) error {
     log.Printf("[发送][Example][%s]：%s", target, text)
-    // 调用平台发送文本接口。
     return nil
 }
 
 func (a *ExampleAdapter) SendImage(target string, imageURL string) error {
-    // 调用平台发送图片接口。
     return fmt.Errorf("Example 图片发送暂未实现")
 }
 
 func (a *ExampleAdapter) SendFile(target string, filePath string) error {
-    // 调用平台发送文件接口。
     return fmt.Errorf("Example 文件发送暂未实现")
 }
 
@@ -250,7 +477,9 @@ func (a *ExampleAdapter) AtUser(groupID string, userID string) error {
 3. 启动接收消息的 goroutine。
 4. 返回启动错误，方便后台显示失败原因。
 
-不要在 `Start()` 里永久阻塞。错误示例：
+不要在 `Start()` 里永久阻塞。
+
+错误示例：
 
 ```go
 func (a *ExampleAdapter) Start() error {
@@ -271,242 +500,170 @@ func (a *ExampleAdapter) Start() error {
 
 ## Stop 实现要求
 
-`Stop()` 需要可以重复调用，避免重复关闭 channel 导致 panic。
+`Stop()` 必须可重复调用，不应该因为重复停止 panic。
 
 建议使用：
 
 ```go
-stopOnce sync.Once
-```
-
-如果适配器持有连接、请求等待表、定时器，需要在 `Stop()` 中释放。
-
-参考 `QQAdapter.Stop()`：
-
-- 关闭停止信号。
-- 关闭连接。
-- 清理 pending 请求。
-- 删除运行中的适配器实例。
-
-## 接收消息要求
-
-接收平台消息时需要注意：
-
-1. 只处理真实用户消息。
-2. 忽略空文本。
-3. 忽略自己发出的消息，避免自触发循环。
-4. 群聊消息必须填 `GroupID`。
-5. 私聊消息 `GroupID` 留空。
-6. 平台特殊字段放入 `Metadata`。
-7. 调用 `messageHandler` 前不要做耗时插件逻辑。
-
-示例：
-
-```go
-msg := &types.Message{
-    ID:       messageID,
-    Platform: "telegram",
-    UserID:   userID,
-    Content:  text,
-    Metadata: map[string]string{
-        "chat_id": chatID,
-        "from_name": fromName,
-    },
+type ExampleAdapter struct {
+    stopChan chan struct{}
+    stopOnce sync.Once
 }
 
-if chatType == "group" || chatType == "supergroup" {
-    msg.GroupID = chatID
-}
-
-if a.messageHandler != nil {
-    a.messageHandler(msg)
+func (a *ExampleAdapter) Stop() error {
+    a.stopOnce.Do(func() {
+        close(a.stopChan)
+    })
+    return nil
 }
 ```
 
-## 发送消息要求
+如果适配器有连接、HTTP 长轮询、WebSocket、等待响应的 channel，也要在 `Stop()` 中释放。
 
-`SendMessage(target, text)` 是 Router 和插件最常用的发送入口。
+## target 格式建议
 
-`target` 的含义由适配器决定，但要保持稳定：
+`SendMessage(target, text)` 中的 `target` 是适配器内部目标格式。
 
-- Telegram 当前使用 `chat_id`。
-- QQ 当前私聊使用用户 ID，群聊使用 `group_<groupID>`。
+适配器可以自行定义，例如：
 
-如果平台需要区分私聊和群聊，可以参考 QQ：
-
-```go
-messageType := "private"
-targetID := target
-if strings.HasPrefix(target, "group_") {
-    messageType = "group"
-    targetID = strings.TrimPrefix(target, "group_")
-}
+```text
+user_<userID>
+group_<groupID>
+dms_<guildID>
+<chatID>
 ```
 
-发送前建议记录日志：
+但需要实现 `ReplyTargetResolver` 和 `SendTargetResolver`，让 Router 不需要知道平台细节。
 
-```go
-log.Printf("[发送][平台名][%s]：%s", target, text)
+推荐：
+
+- 私聊：使用 `user_<id>` 或平台原始用户 ID。
+- 群聊：使用 `group_<id>` 或平台原始群 ID。
+- 特殊回复：在 `Metadata["reply_target"]` 中写完整目标。
+
+## Metadata 建议
+
+通用字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `message_type` | `private`、`group`、`c2c`、`dms` 等。 |
+| `reply_target` | 适配器完整回复目标。优先级最高。 |
+| `from_name` | 发送者显示名，Telegram mention 等场景可用。 |
+| `chat_id` | Telegram 等平台原始 chat ID。 |
+
+平台私有字段建议加平台前缀，例如：
+
+```text
+qq_office_msg_id
+qq_office_user_openid
+qq_office_group_openid
 ```
 
-## 并发与超时要求
+## loader 生成规则
 
-适配器通常会同时处理接收消息、发送消息、API 响应等待等逻辑，需要注意并发安全。
+`core/adapter/_loader/generate.go` 会扫描：
 
-建议：
-
-- 共享连接写入使用 `writeMu` 串行化。
-- 共享 map 使用 `mu` 保护。
-- API 请求等待必须设置超时。
-- 网络客户端必须设置超时。
-- 平台异常重试需要退避，避免刷屏和高频请求。
-- `messageHandler` 可能触发插件执行，不要在持锁状态下调用。
-
-错误示例：
-
-```go
-a.mu.Lock()
-a.messageHandler(msg) // 不要持锁调用外部逻辑。
-a.mu.Unlock()
+```text
+core/adapter/*/manifest.go
 ```
 
-正确示例：
+跳过：
 
-```go
-a.mu.Lock()
-// 只读写适配器内部状态。
-a.mu.Unlock()
-
-if a.messageHandler != nil {
-    a.messageHandler(msg)
-}
+```text
+_ 开头目录
+. 开头目录
 ```
 
-## 日志规范
+生成：
 
-为了让 `/logs` 页面可读，建议使用统一日志格式。
-
-接收消息：
-
-```go
-log.Printf("[接收][平台名][%s]：%s", userID, content)
+```text
+core/adapter/_loader/loader_gen.go
 ```
 
-发送消息：
+示例生成结果：
 
 ```go
-log.Printf("[发送][平台名][%s]：%s", target, text)
+package loader
+
+import (
+    _ "github.com/allbot/allbot/core/adapter/example"
+    _ "github.com/allbot/allbot/core/adapter/qq"
+)
 ```
 
-异常：
-
-```go
-log.Printf("[WARN][平台名] 获取消息异常: %v", err)
-log.Printf("[INFO][平台名] 网络连接已恢复")
-```
-
-注意不要直接输出 token、access token、secret 等敏感字段。
-
-## 配置接入步骤
-
-新增适配器不只改 `core/adapter`，还需要接入配置和管理器。
-
-### 1. 新增配置结构
-
-位置：`core/config/models.go`
-
-```go
-type ExampleConfig struct {
-    Token string `json:"token"`
-    APIURL string `json:"api_url,omitempty"`
-}
-```
-
-### 2. 新增配置解析函数
-
-位置：`core/config/manager.go` 或配置解析相关文件。
-
-```go
-func ParseExampleConfig(config string) (*ExampleConfig, error) {
-    var exampleConfig ExampleConfig
-    if err := json.Unmarshal([]byte(config), &exampleConfig); err != nil {
-        return nil, err
-    }
-    return &exampleConfig, nil
-}
-```
-
-### 3. 在 AdapterManager 中注册平台
-
-位置：`core/config/manager.go`
-
-在 `startAdapter` 的 `switch config.Platform` 中增加分支：
-
-```go
-case "example":
-    exampleConfig, err := ParseExampleConfig(config.Config)
-    if err != nil {
-        return fmt.Errorf("解析 Example 配置失败: %w", err)
-    }
-    adp = adapter.NewExampleAdapter(exampleConfig.Token, exampleConfig.APIURL)
-```
-
-### 4. 前端配置页面增加平台选项
-
-如果 Web UI 需要配置该平台，需要在适配器页面增加对应平台和配置字段。
-
-当前适配器配置最终会保存为 `AdapterConfig.Config` 字符串，后端再按 `platform` 解析成具体配置。
-
-## 测试建议
-
-新增适配器后至少验证：
-
-1. 配置为空时启动失败，并返回明确错误。
-2. `Start()` 能启动接收循环且不阻塞。
-3. `Stop()` 可重复调用且不会 panic。
-4. 收到私聊消息时能生成正确 `types.Message`。
-5. 收到群聊消息时能填充 `GroupID`。
-6. 空消息或自身消息不会进入 `messageHandler`。
-7. `SendMessage()` 会按平台协议构造正确请求。
-8. 网络/API 超时时能返回错误，不会永久卡住。
-
-推荐命令：
+新增、删除或重命名适配器目录后必须运行：
 
 ```bash
-go test ./core/adapter ./core/config
+go generate ./core/adapter/_loader
+```
+
+## 验证要求
+
+新增适配器后至少执行：
+
+```bash
+go generate ./core/adapter/_loader
+go test ./core/adapter/_loader ./core/adapter/<platform>
 go test ./...
-```
-
-如果改动了 Go 代码，验证通过后再编译：
-
-```bash
 go build -o "D:/Desktop/program/java/AITest/allbot/allbot.exe" .
 ```
 
-## 现有实现参考
+如果改了 Web UI 或前端资源，还要执行：
 
-| 文件 | 可参考内容 |
-| --- | --- |
-| `adapter.go` | 适配器接口和用户/群信息结构。 |
-| `telegram_adapter.go` | Bot Token 校验、Webhook 清理、长轮询、发送文本、命令归一化。 |
-| `qq_adapter.go` | WebSocket 连接、请求响应匹配、pending map、发送回声过滤、群聊 target 规则。 |
-| `core/config/manager.go` | 适配器配置加载、启动、停止、消息元信息注入。 |
-| `core/config/models.go` | 平台配置结构定义。 |
+```bash
+npm --prefix "D:/Desktop/program/java/AITest/allbot/web-ui" run build
+```
 
-## 开发检查清单
+## 常见错误
 
-新增适配器提交前确认：
+### 忘记运行 go generate
 
-- [ ] 实现了 `Adapter` 接口的全部方法。
-- [ ] `GetPlatform()` 返回值和数据库配置 `platform` 一致。
-- [ ] `Start()` 不阻塞主流程。
-- [ ] `Stop()` 可重复调用。
-- [ ] 网络请求和 API 等待都有超时。
-- [ ] 共享状态有锁保护。
-- [ ] 不持锁调用 `messageHandler`。
-- [ ] 群聊消息正确填充 `GroupID`。
-- [ ] 平台必要字段放入 `Metadata`。
-- [ ] 日志不输出敏感凭据。
-- [ ] 已在 `AdapterManager.startAdapter` 注册平台。
-- [ ] 已补充配置结构和解析逻辑。
-- [ ] 已运行本地测试。
+现象：
+
+- `GET /api/adapter-platforms` 看不到新平台。
+- `manager.go` 报 `不支持的平台`。
+
+解决：
+
+```bash
+go generate ./core/adapter/_loader
+```
+
+### manifest.go 缺失
+
+`_loader` 只扫描有 `manifest.go` 的真实适配器目录。没有 manifest 的目录不会被注册。
+
+### import cycle
+
+不要让适配器目录 import `_builtin` 或 `_loader`。
+
+推荐依赖方向：
+
+```text
+适配器目录 -> _contract
+适配器目录 -> _registry
+_loader -> 适配器目录
+main/web -> _loader
+```
+
+### 在 Router 中加平台判断
+
+不要为了新平台修改 `router.go` 的平台分支。应该实现：
+
+```go
+ReplyTargetResolver
+ReplyTextFormatter
+SendTargetResolver
+```
+
+### 在 Web UI 中写死平台
+
+不要为了新平台修改：
+
+```text
+web-ui/src/views/Adapters.vue
+web-ui/src/views/Plugins.vue
+```
+
+平台展示名和配置表单来自 manifest 的 `DisplayName` 和 `ConfigSchema`。

@@ -154,7 +154,7 @@ func (r *Router) HandleMessage(msg *types.Message) {
 		if _, err := database.GetUserAccount(msg.Platform, msg.UserID); err != nil {
 			adp := r.getAdapterForMessage(msg)
 			if adp != nil {
-				_ = adp.SendMessage(r.replyTarget(msg), mentionReplyText(msg, userRegisterGuide()))
+				_ = adp.SendMessage(resolveReplyTarget(adp, msg), formatReplyText(adp, msg, userRegisterGuide()))
 			}
 			return
 		}
@@ -336,20 +336,20 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		return
 	}
 
-	target := r.replyTarget(msg)
-
 	adp := r.getAdapterForMessage(msg)
+	target := resolveReplyTarget(adp, msg)
 
+	responseLogID := pluginResponseLogMessageID(msg)
 	replyFunc := func(text string) error {
-		log.Printf("%s：%s", pluginResponseLogPrefix(msg, plugin), text)
+		log.Printf("%s：消息ID=%s", pluginResponseLogPrefix(msg, plugin), responseLogID)
 		if adp == nil {
 			log.Printf("[SYSTEM] Adapter not found for platform: %s, reply skipped", msg.Platform)
 			return nil
 		}
-		return adp.SendMessage(target, mentionReplyText(msg, text))
+		return adp.SendMessage(target, formatReplyText(adp, msg, text))
 	}
 	imageFunc := func(imageURL string) error {
-		log.Printf("%s：[图片] %s", pluginResponseLogPrefix(msg, plugin), imageURL)
+		log.Printf("%s：[图片] 消息ID=%s", pluginResponseLogPrefix(msg, plugin), responseLogID)
 		if adp == nil {
 			log.Printf("[SYSTEM] Adapter not found for platform: %s, image skipped", msg.Platform)
 			return nil
@@ -357,7 +357,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		return adp.SendImage(target, imageURL)
 	}
 	fileFunc := func(filePath string) error {
-		log.Printf("%s：[文件] %s", pluginResponseLogPrefix(msg, plugin), filePath)
+		log.Printf("%s：[文件] 消息ID=%s", pluginResponseLogPrefix(msg, plugin), responseLogID)
 		if adp == nil {
 			log.Printf("[SYSTEM] Adapter not found for platform: %s, file skipped", msg.Platform)
 			return nil
@@ -541,67 +541,45 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 	}
 }
 
-func mentionReplyText(msg *types.Message, text string) string {
-	if msg == nil || msg.GroupID == "" {
-		return text
+func resolveReplyTarget(adp adapter.Adapter, msg *types.Message) string {
+	if msg == nil {
+		return ""
 	}
-	switch msg.Platform {
-	case "qq":
-		return fmt.Sprintf("[CQ:at,qq=%s] %s", msg.UserID, text)
-	case "qq_office":
-		return text
-	case "telegram":
-		return fmt.Sprintf(`<a href="tg://user?id=%s">%s</a> %s`, htmlEscape(msg.UserID), htmlEscape(telegramMentionName(msg)), htmlEscape(text))
-	default:
-		return fmt.Sprintf("@%s %s", msg.UserID, text)
+	if resolver, ok := adp.(adapter.ReplyTargetResolver); ok {
+		if target := strings.TrimSpace(resolver.ReplyTarget(msg)); target != "" {
+			return target
+		}
 	}
+	return defaultReplyTarget(msg)
 }
 
-func telegramMentionName(msg *types.Message) string {
-	if msg.Metadata != nil {
-		if name := strings.TrimSpace(msg.Metadata["from_name"]); name != "" {
-			return name
-		}
+func defaultReplyTarget(msg *types.Message) string {
+	if msg == nil {
+		return ""
+	}
+	if msg.GroupID != "" {
+		return msg.GroupID
 	}
 	return msg.UserID
 }
 
-func htmlEscape(value string) string {
-	value = strings.ReplaceAll(value, "&", "&amp;")
-	value = strings.ReplaceAll(value, "<", "&lt;")
-	value = strings.ReplaceAll(value, ">", "&gt;")
-	value = strings.ReplaceAll(value, `"`, "&quot;")
-	return value
+func formatReplyText(adp adapter.Adapter, msg *types.Message, text string) string {
+	if formatter, ok := adp.(adapter.ReplyTextFormatter); ok {
+		return formatter.FormatReplyText(msg, text)
+	}
+	return text
 }
 
-func (r *Router) replyTarget(msg *types.Message) string {
-	target := msg.UserID
-	if msg.GroupID != "" {
-		target = msg.GroupID
-	}
-	if msg.Platform == "qq" && msg.GroupID != "" {
-		target = "group_" + msg.GroupID
-	}
-	if msg.Platform == "qq_office" && msg.Metadata != nil {
-		if replyTarget := strings.TrimSpace(msg.Metadata["reply_target"]); replyTarget != "" {
-			return replyTarget
-		}
-		if groupOpenID := strings.TrimSpace(msg.Metadata["qq_office_group_openid"]); groupOpenID != "" {
-			return "group_" + groupOpenID
-		}
-		if userOpenID := strings.TrimSpace(msg.Metadata["qq_office_user_openid"]); userOpenID != "" {
-			return "user_" + userOpenID
-		}
-		if guildID := strings.TrimSpace(msg.Metadata["qq_office_guild_id"]); guildID != "" {
-			return "dms_" + guildID
+func resolveSendTarget(adp adapter.Adapter, userID string, groupID string) string {
+	if resolver, ok := adp.(adapter.SendTargetResolver); ok {
+		if target := strings.TrimSpace(resolver.SendTarget(userID, groupID)); target != "" {
+			return target
 		}
 	}
-	if msg.Platform == "telegram" && msg.Metadata != nil {
-		if chatID, ok := msg.Metadata["chat_id"]; ok && chatID != "" {
-			target = chatID
-		}
+	if groupID != "" {
+		return groupID
 	}
-	return target
+	return userID
 }
 
 func (r *Router) dispatchFakeMessage(pluginID string, action plugincore.FakeMessageAction) error {
@@ -715,24 +693,7 @@ func (r *Router) sendPluginMessage(pluginID string, action plugincore.SendMessag
 	if adp == nil {
 		return fmt.Errorf("适配器不存在: %s", platform)
 	}
-	target := userID
-	if groupID != "" {
-		target = groupID
-	}
-	if platform == "qq" && groupID != "" {
-		target = "group_" + groupID
-	}
-	if platform == "qq_office" {
-		if groupID != "" {
-			if strings.HasPrefix(groupID, "dms_") || strings.HasPrefix(groupID, "user_") || strings.HasPrefix(groupID, "group_") {
-				target = groupID
-			} else {
-				target = "dms_" + groupID
-			}
-		} else if strings.HasPrefix(userID, "user_") || strings.HasPrefix(userID, "group_") || strings.HasPrefix(userID, "dms_") {
-			target = userID
-		}
-	}
+	target := resolveSendTarget(adp, userID, groupID)
 	log.Printf("[SYSTEM] Plugin %s send message: platform=%s adapter_id=%s user=%s group=%s text=%s", pluginID, platform, adapterID, userID, groupID, text)
 	return adp.SendMessage(target, text)
 }
@@ -879,6 +840,23 @@ func pluginResponseLogPrefix(msg *types.Message, plugin *types.Plugin) string {
 		scope = msg.GroupID
 	}
 	return fmt.Sprintf("[响应][%s][%s][%s(%s)][插件:%s]", msg.Platform, adapterLogName(msg), msg.UserID, scope, plugin.Name)
+}
+
+func pluginResponseLogMessageID(msg *types.Message) string {
+	if msg == nil {
+		return "-"
+	}
+	if id := strings.TrimSpace(msg.ID); id != "" {
+		return id
+	}
+	if msg.Metadata != nil {
+		for _, key := range []string{"qq_office_msg_id", "message_id", "msg_id"} {
+			if id := strings.TrimSpace(msg.Metadata[key]); id != "" {
+				return id
+			}
+		}
+	}
+	return "-"
 }
 
 func adapterLogName(msg *types.Message) string {

@@ -129,7 +129,7 @@ func (m *KeywordReplyManager) reply(item *config.KeywordReply, msg *types.Messag
 	case "audio":
 		return adp.SendFile(target, item.Content)
 	default:
-		return adp.SendMessage(target, mentionReplyText(msg, item.Content))
+		return adp.SendMessage(target, formatReplyText(adp, msg, item.Content))
 	}
 }
 
@@ -218,7 +218,7 @@ func (m *KeywordReplyManager) releaseRestart() {
 }
 
 func (m *KeywordReplyManager) sendText(adp adapter.Adapter, target string, msg *types.Message, text string) error {
-	return adp.SendMessage(target, mentionReplyText(msg, text))
+	return adp.SendMessage(target, formatReplyText(adp, msg, text))
 }
 
 func (m *KeywordReplyManager) adapterAndTarget(msg *types.Message) (adapter.Adapter, string) {
@@ -226,33 +226,7 @@ func (m *KeywordReplyManager) adapterAndTarget(msg *types.Message) (adapter.Adap
 		return nil, ""
 	}
 	adp := m.adapterFor(msg)
-	target := msg.UserID
-	if msg.GroupID != "" {
-		target = msg.GroupID
-	}
-	if msg.Platform == "qq" && msg.GroupID != "" {
-		target = "group_" + msg.GroupID
-	}
-	if msg.Platform == "qq_office" && msg.Metadata != nil {
-		if replyTarget := strings.TrimSpace(msg.Metadata["reply_target"]); replyTarget != "" {
-			return adp, replyTarget
-		}
-		if groupOpenID := strings.TrimSpace(msg.Metadata["qq_office_group_openid"]); groupOpenID != "" {
-			return adp, "group_" + groupOpenID
-		}
-		if userOpenID := strings.TrimSpace(msg.Metadata["qq_office_user_openid"]); userOpenID != "" {
-			return adp, "user_" + userOpenID
-		}
-		if guildID := strings.TrimSpace(msg.Metadata["qq_office_guild_id"]); guildID != "" {
-			return adp, "dms_" + guildID
-		}
-	}
-	if msg.Platform == "telegram" && msg.Metadata != nil {
-		if chatID := strings.TrimSpace(msg.Metadata["chat_id"]); chatID != "" {
-			target = chatID
-		}
-	}
-	return adp, target
+	return adp, resolveReplyTarget(adp, msg)
 }
 
 func (m *KeywordReplyManager) userIdentityInfo(msg *types.Message) string {

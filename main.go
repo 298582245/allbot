@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/allbot/allbot/core/adapter/_loader"
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/deps"
 	"github.com/allbot/allbot/core/plugin"

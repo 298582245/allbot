@@ -64,6 +64,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/system/message-stats", s.handleMessageStats)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/settings/password", s.handleChangePassword)
+	mux.HandleFunc("/api/adapter-platforms", s.handleAdapterPlatforms)
 	mux.HandleFunc("/api/adapters", s.handleAdapters)
 	mux.HandleFunc("/api/adapters/", s.handleAdapterDetail)
 	mux.HandleFunc("/api/logs", s.handleLogs)

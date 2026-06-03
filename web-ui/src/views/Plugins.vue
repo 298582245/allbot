@@ -520,7 +520,7 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, shallowRef 
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
-import { getAdapters, getPlugins, controlPlugin, deletePlugin, getPluginTemplates, previewCreatePlugin, validateCreatePlugin, createPlugin } from '@/api'
+import { getAdapterPlatforms, getAdapters, getPlugins, controlPlugin, deletePlugin, getPluginTemplates, previewCreatePlugin, validateCreatePlugin, createPlugin } from '@/api'
 import request from '@/utils/request'
 import { EditorView, basicSetup } from 'codemirror'
 import { javascript } from '@codemirror/lang-javascript'
@@ -535,13 +535,14 @@ const adapters = ref([])
 const currentPage = ref(1)
 const pageSize = 9
 const pluginDefaultPlatforms = ['qq', 'qq_office', 'telegram']
-const pluginPlatformOptions = [
+const pluginPlatformFallback = [
   { label: 'QQ', value: 'qq' },
   { label: 'QQ 官方机器人', value: 'qq_office' },
   { label: '微信', value: 'wechat' },
   { label: 'Telegram', value: 'telegram' }
 ]
-const pluginPlatformNames = Object.fromEntries(pluginPlatformOptions.map(option => [option.value, option.label]))
+const pluginPlatformOptions = ref([...pluginPlatformFallback])
+const pluginPlatformNames = computed(() => Object.fromEntries(pluginPlatformOptions.value.map(option => [option.value, option.label])))
 const configDialogVisible = ref(false)
 const createDialogVisible = ref(false)
 const createSaving = ref(false)
@@ -665,6 +666,29 @@ const loadAdapters = async () => {
   }
 }
 
+const loadAdapterPlatforms = async () => {
+  try {
+    const items = await getAdapterPlatforms()
+    if (Array.isArray(items) && items.length) {
+      const options = items
+        .filter(item => item && item.platform)
+        .map(item => ({ label: item.display_name || item.platform, value: item.platform }))
+      pluginPlatformOptions.value = mergePluginPlatformFallback(options)
+    }
+  } catch (error) {
+    pluginPlatformOptions.value = [...pluginPlatformFallback]
+  }
+}
+
+function mergePluginPlatformFallback(options) {
+  const merged = [...options]
+  const exists = new Set(merged.map(option => option.value))
+  pluginPlatformFallback.forEach(option => {
+    if (!exists.has(option.value)) merged.push(option)
+  })
+  return merged
+}
+
 const loadPluginTemplates = async () => {
   try {
     const templates = await getPluginTemplates()
@@ -676,7 +700,7 @@ const loadPluginTemplates = async () => {
   }
 }
 
-const getPlatformName = (platform) => pluginPlatformNames[platform] || platform
+const getPlatformName = (platform) => pluginPlatformNames.value[platform] || platform
 
 const getAdapterLabel = (adapter) => {
   const name = adapter.remark || `${getPlatformName(adapter.platform)} #${adapter.id}`
@@ -1534,6 +1558,7 @@ const handleDelete = async (plugin) => {
 
 onMounted(() => {
   createPresets.value = loadCreatePresets()
+  loadAdapterPlatforms()
   loadPluginTemplates()
   loadPlugins()
   loadAdapters()

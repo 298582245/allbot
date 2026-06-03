@@ -148,6 +148,15 @@ export const updateOpenApiCode = (id, data) => {
   })
 }
 
+// 获取适配器平台列表
+export const getAdapterPlatforms = () => {
+  return request({
+    url: '/adapter-platforms',
+    method: 'get',
+    silent: true
+  })
+}
+
 // 获取适配器列表
 export const getAdapters = () => {
   return request({

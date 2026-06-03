@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/allbot/allbot/core/adapter"
+	"github.com/allbot/allbot/core/adapter/_registry"
 	"github.com/allbot/allbot/core/types"
 )
 
@@ -64,41 +65,17 @@ func (m *AdapterManager) startAdapter(config *AdapterConfig) error {
 		delete(m.adapters, config.ID)
 	}
 
-	var adp adapter.Adapter
-	var err error
-
-	switch config.Platform {
-	case "qq":
-		qqConfig, err := ParseQQConfig(config.Config)
-		if err != nil {
-			return fmt.Errorf("解析 QQ 配置失败: %w", err)
-		}
-		adp = adapter.NewQQAdapter(qqConfig.ServerURL, qqConfig.AccessToken)
-
-	case "qq_office":
-		qqOfficeConfig, err := ParseQQOfficeConfig(config.Config)
-		if err != nil {
-			return fmt.Errorf("解析 QQ 官方机器人配置失败: %w", err)
-		}
-		adp = adapter.NewQQOfficeAdapter(
-			qqOfficeConfig.AppID,
-			qqOfficeConfig.ClientSecret,
-			qqOfficeConfig.APIBaseURL,
-			qqOfficeConfig.TokenURL,
-		)
-
-	case "wechat":
-		return fmt.Errorf("微信适配器尚未实现")
-
-	case "telegram":
-		telegramConfig, err := ParseTelegramConfig(config.Config)
-		if err != nil {
-			return fmt.Errorf("解析 Telegram 配置失败: %w", err)
-		}
-		adp = adapter.NewTelegramAdapter(telegramConfig.BotToken, telegramConfig.ProxyURL)
-
-	default:
+	desc, ok := registry.Get(config.Platform)
+	if !ok {
 		return fmt.Errorf("不支持的平台: %s", config.Platform)
+	}
+	parsedConfig, err := desc.ParseConfig(config.Config)
+	if err != nil {
+		return fmt.Errorf("解析 %s 配置失败: %w", desc.DisplayName, err)
+	}
+	adp, err := desc.NewAdapter(parsedConfig)
+	if err != nil {
+		return fmt.Errorf("创建 %s 适配器失败: %w", desc.DisplayName, err)
 	}
 
 	if m.messageHandler != nil {

@@ -262,6 +262,15 @@ func TestPluginTemplatesAPI(t *testing.T) {
 		if item["version"] == "" || item["runtime"] == "" {
 			t.Fatalf("template missing version/runtime: %#v", item)
 		}
+		if id == "basic" {
+			defaults := item["defaults"].(map[string]interface{})
+			platforms := interfaceSliceToStringSet(defaults["platforms"])
+			for _, platform := range []string{"qq", "qq_office", "telegram"} {
+				if !platforms[platform] {
+					t.Fatalf("basic template missing platform %s: %#v", platform, defaults["platforms"])
+				}
+			}
+		}
 		if id == "nodejs_account_ql" || id == "python_account_ql" {
 			defaults := item["defaults"].(map[string]interface{})
 			if defaults["script_runtime"] == "" {
@@ -272,6 +281,22 @@ func TestPluginTemplatesAPI(t *testing.T) {
 	for _, id := range []string{"basic", "nodejs_account_ql", "python_account_ql"} {
 		if !ids[id] {
 			t.Fatalf("missing template %s: %#v", id, result)
+		}
+	}
+}
+
+func TestBuildCreatePluginPlanUsesRegistryDefaultPlatforms(t *testing.T) {
+	plan, err := buildCreatePluginPlan(createPluginRequest{Name: "默认平台插件", Runtime: "nodejs", Trigger: "^默认$", Enabled: true})
+	if err != nil {
+		t.Fatalf("buildCreatePluginPlan returned error: %v", err)
+	}
+	platforms := make(map[string]bool)
+	for _, platform := range plan.Config.Platforms {
+		platforms[platform] = true
+	}
+	for _, platform := range []string{"qq", "qq_office", "telegram"} {
+		if !platforms[platform] {
+			t.Fatalf("default platforms missing %s: %#v", platform, plan.Config.Platforms)
 		}
 	}
 }
@@ -702,6 +727,21 @@ func readTextFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func interfaceSliceToStringSet(value interface{}) map[string]bool {
+	result := make(map[string]bool)
+	items, ok := value.([]interface{})
+	if !ok {
+		return result
+	}
+	for _, item := range items {
+		text, ok := item.(string)
+		if ok && text != "" {
+			result[text] = true
+		}
+	}
+	return result
 }
 
 func assertContains(t *testing.T, value, expected string) {

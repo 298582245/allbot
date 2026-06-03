@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/allbot/allbot/core/adapter/_registry"
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/router"
 	"github.com/allbot/allbot/core/types"
@@ -138,7 +139,7 @@ type accountQLRouteTemplate struct {
 
 const accountQLTemplateVersion = "3.0.0"
 
-var defaultPluginPlatforms = []string{"qq", "qq_office", "telegram"}
+var defaultPluginPlatformFallback = []string{"qq", "qq_office", "telegram"}
 
 var (
 	accountQLIdentifierPattern     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -147,6 +148,20 @@ var (
 	pluginIDSanitizePattern        = regexp.MustCompile(`[^a-z0-9_\-]+`)
 	configKeySanitizePattern       = regexp.MustCompile(`[^A-Za-z0-9_]+`)
 )
+
+func defaultPluginPlatforms() []string {
+	items := registry.List()
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Capabilities.SendText {
+			result = append(result, item.Platform)
+		}
+	}
+	if len(result) == 0 {
+		return append([]string(nil), defaultPluginPlatformFallback...)
+	}
+	return result
+}
 
 func (s *Server) handleCreatePlugin(w http.ResponseWriter, r *http.Request) {
 	var req createPluginRequest
@@ -324,7 +339,7 @@ func buildCreatePluginPlan(req createPluginRequest) (*createPluginPlan, error) {
 		return nil, fmt.Errorf("运行时只支持 nodejs 或 python")
 	}
 	if len(req.Platforms) == 0 {
-		req.Platforms = append([]string(nil), defaultPluginPlatforms...)
+		req.Platforms = defaultPluginPlatforms()
 	}
 	if accountTemplate == nil {
 		req.Trigger = strings.TrimSpace(req.Trigger)
@@ -517,7 +532,7 @@ func buildCreateValidationIssue(err error) createValidationIssue {
 
 func pluginCreateTemplates() []pluginTemplateInfo {
 	return []pluginTemplateInfo{
-		{ID: "basic", Name: "普通插件", Runtime: "nodejs", Version: accountQLTemplateVersion, Description: "生成基础 Node.js 或 Python 插件骨架", Features: []string{"基础触发正则", "用户配置", "空依赖"}, Defaults: map[string]interface{}{"runtime": "nodejs", "version": "1.0.0", "platforms": append([]string(nil), defaultPluginPlatforms...)}},
+		{ID: "basic", Name: "普通插件", Runtime: "nodejs", Version: accountQLTemplateVersion, Description: "生成基础 Node.js 或 Python 插件骨架", Features: []string{"基础触发正则", "用户配置", "空依赖"}, Defaults: map[string]interface{}{"runtime": "nodejs", "version": "1.0.0", "platforms": defaultPluginPlatforms()}},
 		{ID: "nodejs_account_ql", Name: "Node.js 青龙账号插件", Runtime: "nodejs", Version: accountQLTemplateVersion, Description: "生成 Node.js 青龙账号插件、任务脚本和账号授权配置", Features: []string{"账号登录", "账号查询", "青龙脚本运行", "CK 检测", "自定义指令"}, Defaults: accountQLTemplateDefaults("nodejs")},
 		{ID: "python_account_ql", Name: "Python 青龙账号插件", Runtime: "python", Version: accountQLTemplateVersion, Description: "生成 Python 青龙账号插件、任务脚本和账号授权配置", Features: []string{"账号登录", "账号查询", "青龙脚本运行", "CK 检测", "自定义指令"}, Defaults: accountQLTemplateDefaults("python")},
 	}

@@ -8,13 +8,17 @@ import (
 	"time"
 
 	"github.com/allbot/allbot/core/adapter"
+	qqofficeadapter "github.com/allbot/allbot/core/adapter/qq_office"
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/types"
 )
 
 type keywordReplyFakeAdapter struct {
-	mu       sync.Mutex
-	messages []sentKeywordReplyMessage
+	mu             sync.Mutex
+	messages       []sentKeywordReplyMessage
+	targetResolver adapter.ReplyTargetResolver
+	textFormatter  adapter.ReplyTextFormatter
+	sendResolver   adapter.SendTargetResolver
 }
 
 type sentKeywordReplyMessage struct {
@@ -23,6 +27,35 @@ type sentKeywordReplyMessage struct {
 }
 
 func (a *keywordReplyFakeAdapter) GetPlatform() string { return "qq" }
+
+func newReplyCapableKeywordReplyFakeAdapter(targetResolver adapter.ReplyTargetResolver, textFormatter adapter.ReplyTextFormatter) *keywordReplyFakeAdapter {
+	fake := &keywordReplyFakeAdapter{targetResolver: targetResolver, textFormatter: textFormatter}
+	if sendResolver, ok := targetResolver.(adapter.SendTargetResolver); ok {
+		fake.sendResolver = sendResolver
+	}
+	return fake
+}
+
+func (a *keywordReplyFakeAdapter) ReplyTarget(msg *types.Message) string {
+	if a.targetResolver == nil {
+		return ""
+	}
+	return a.targetResolver.ReplyTarget(msg)
+}
+
+func (a *keywordReplyFakeAdapter) FormatReplyText(msg *types.Message, text string) string {
+	if a.textFormatter == nil {
+		return text
+	}
+	return a.textFormatter.FormatReplyText(msg, text)
+}
+
+func (a *keywordReplyFakeAdapter) SendTarget(userID string, groupID string) string {
+	if a.sendResolver == nil {
+		return ""
+	}
+	return a.sendResolver.SendTarget(userID, groupID)
+}
 
 func (a *keywordReplyFakeAdapter) SendMessage(target string, text string) error {
 	a.mu.Lock()
@@ -269,7 +302,8 @@ func TestKeywordReplyRestartHandlerFailureReleasesRequest(t *testing.T) {
 }
 
 func TestKeywordReplyQQOfficeUsesReplyTarget(t *testing.T) {
-	fake := &keywordReplyFakeAdapter{}
+	qqOffice := qqofficeadapter.NewQQOfficeAdapter("app123", "secret456", "", "")
+	fake := newReplyCapableKeywordReplyFakeAdapter(qqOffice, qqOffice)
 	db, manager := newKeywordReplyTestManager(t, fake, true)
 	defer db.Close()
 
@@ -286,7 +320,8 @@ func TestKeywordReplyQQOfficeUsesReplyTarget(t *testing.T) {
 }
 
 func TestKeywordReplyQQOfficeUsesGuildIDFallback(t *testing.T) {
-	fake := &keywordReplyFakeAdapter{}
+	qqOffice := qqofficeadapter.NewQQOfficeAdapter("app123", "secret456", "", "")
+	fake := newReplyCapableKeywordReplyFakeAdapter(qqOffice, qqOffice)
 	db, manager := newKeywordReplyTestManager(t, fake, true)
 	defer db.Close()
 
@@ -306,7 +341,8 @@ func TestKeywordReplyQQOfficeUsesGuildIDFallback(t *testing.T) {
 }
 
 func TestKeywordReplyQQOfficeUsesOpenIDFallbacks(t *testing.T) {
-	fake := &keywordReplyFakeAdapter{}
+	qqOffice := qqofficeadapter.NewQQOfficeAdapter("app123", "secret456", "", "")
+	fake := newReplyCapableKeywordReplyFakeAdapter(qqOffice, qqOffice)
 	db, manager := newKeywordReplyTestManager(t, fake, true)
 	defer db.Close()
 
