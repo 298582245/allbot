@@ -1,6 +1,6 @@
 {
   "packages": {
-    "cs": "latest",
+    "cs": "3.4.0",
     "requests": "2.31.0"
   }
 }

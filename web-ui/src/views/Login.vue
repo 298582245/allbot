@@ -47,7 +47,7 @@
       </el-form>
 
       <div class="login-footer">
-        <p>默认账号：admin / admin123</p>
+        <p>首次启动会在控制台输出随机管理员密码</p>
       </div>
     </div>
   </div>
@@ -69,7 +69,7 @@ const loading = ref(false)
 
 const form = reactive({
   username: 'admin',
-  password: 'admin123'
+  password: ''
 })
 
 const rules = {
@@ -148,5 +148,25 @@ const handleLogin = async () => {
 .login-footer p {
   font-size: 12px;
   color: #999;
+}
+
+@media (max-width: 768px) {
+  .login-container {
+    padding: 16px;
+  }
+
+  .login-box {
+    width: 100%;
+    max-width: 400px;
+    padding: 28px 20px;
+  }
+
+  .login-header {
+    margin-bottom: 28px;
+  }
+
+  .login-header h1 {
+    font-size: 28px;
+  }
 }
 </style>

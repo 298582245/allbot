@@ -1,234 +1,443 @@
 package adapter
 
 import (
+	"bufio"
 	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/allbot/allbot/core/types"
 )
 
-// QQAdapter QQ 平台适配器（基于 go-cqhttp）
+// QQAdapter QQ 平台适配器，主动连接 NapCat 提供的 OneBot 正向 WebSocket 服务。
 type QQAdapter struct {
+	serverURL      string
+	accessToken    string
 	apiURL         string
-	listenAddr     string
 	messageHandler func(*types.Message)
-	httpServer     *http.Server
+	conn           net.Conn
+	reader         *bufio.Reader
+	pending        map[string]chan oneBotAPIResponse
+	selfID         string
+	recentSent     map[string]time.Time
+	mu             sync.Mutex
+	recentMu       sync.Mutex
+	writeMu        sync.Mutex
+	closed         chan struct{}
+	closeOnce      sync.Once
 }
 
-// NewQQAdapter 创建 QQ 适配器
-func NewQQAdapter(apiURL string, listenAddr string) *QQAdapter {
+type oneBotAPIResponse struct {
+	Status  string          `json:"status"`
+	RetCode int             `json:"retcode"`
+	Data    json.RawMessage `json:"data"`
+	Message string          `json:"message"`
+	Wording string          `json:"wording"`
+	Echo    string          `json:"echo"`
+}
+
+// NewQQAdapter 创建 QQ 适配器。
+func NewQQAdapter(serverURL string, accessToken string) *QQAdapter {
 	return &QQAdapter{
-		apiURL:     apiURL,
-		listenAddr: listenAddr,
+		serverURL:   strings.TrimSpace(serverURL),
+		accessToken: strings.TrimSpace(accessToken),
+		apiURL:      oneBotAPIURL(serverURL),
+		pending:     make(map[string]chan oneBotAPIResponse),
+		recentSent:  make(map[string]time.Time),
+		closed:      make(chan struct{}),
 	}
 }
 
-// GetPlatform 获取平台名称
+// GetPlatform 获取平台名称。
 func (a *QQAdapter) GetPlatform() string {
 	return "qq"
 }
 
-// SetMessageHandler 设置消息处理器
+// SetMessageHandler 设置消息处理器。
 func (a *QQAdapter) SetMessageHandler(handler func(*types.Message)) {
 	a.messageHandler = handler
 }
 
-// Start 启动适配器
+// Start 连接 NapCat OneBot WebSocket 服务。
 func (a *QQAdapter) Start() error {
-	// 启动 HTTP 服务器接收 go-cqhttp 的上报
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", a.handleWebhook)
-
-	a.httpServer = &http.Server{
-		Addr:    a.listenAddr,
-		Handler: mux,
+	if a.serverURL == "" {
+		return fmt.Errorf("NapCat 服务地址不能为空")
 	}
-
-	go func() {
-		log.Printf("QQ Adapter listening on %s", a.listenAddr)
-		if err := a.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("QQ Adapter HTTP server error: %v", err)
-		}
-	}()
-
-	return nil
-}
-
-// Stop 停止适配器
-func (a *QQAdapter) Stop() error {
-	if a.httpServer != nil {
-		return a.httpServer.Close()
-	}
-	return nil
-}
-
-// handleWebhook 处理 go-cqhttp 的上报
-func (a *QQAdapter) handleWebhook(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	conn, reader, err := dialOneBotWebSocket(a.serverURL, a.accessToken)
 	if err != nil {
-		log.Printf("Failed to read webhook body: %v", err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
+		return fmt.Errorf("连接 NapCat OneBot WebSocket 失败: %w", err)
 	}
 
+	a.mu.Lock()
+	a.conn = conn
+	a.reader = reader
+	a.mu.Unlock()
+
+	log.Printf("QQ Adapter 已连接 NapCat: %s", a.serverURL)
+	go a.readLoop()
+	go a.refreshSelfID()
+	return nil
+}
+
+// Stop 停止适配器。
+func (a *QQAdapter) Stop() error {
+	a.closeOnce.Do(func() {
+		close(a.closed)
+	})
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.conn != nil {
+		err := a.conn.Close()
+		a.conn = nil
+		returnPending := a.pending
+		a.pending = make(map[string]chan oneBotAPIResponse)
+		for _, ch := range returnPending {
+			close(ch)
+		}
+		return err
+	}
+	return nil
+}
+
+func (a *QQAdapter) readLoop() {
+	for {
+		select {
+		case <-a.closed:
+			return
+		default:
+		}
+
+		messageType, payload, err := readWebSocketFrame(a.reader)
+		if err != nil {
+			select {
+			case <-a.closed:
+				return
+			default:
+				log.Printf("QQ Adapter 读取 NapCat 消息失败: %v", err)
+				_ = a.Stop()
+				return
+			}
+		}
+
+		switch messageType {
+		case 1, 2:
+			a.handleOneBotPayload(payload)
+		case 8:
+			_ = a.Stop()
+			return
+		case 9:
+			_ = a.writeWebSocketFrame(10, payload)
+		}
+	}
+}
+
+func (a *QQAdapter) handleOneBotPayload(payload []byte) {
 	var event map[string]interface{}
-	if err := json.Unmarshal(body, &event); err != nil {
-		log.Printf("Failed to parse webhook body: %v", err)
-		w.WriteHeader(http.StatusBadRequest)
+	if err := json.Unmarshal(payload, &event); err != nil {
+		log.Printf("QQ Adapter 解析 NapCat 消息失败: %v", err)
 		return
 	}
 
-	// 处理消息事件
-	postType, _ := event["post_type"].(string)
-	if postType == "message" {
+	if echo := stringValue(event["echo"]); echo != "" {
+		a.resolveAPIResponse(echo, payload)
+		return
+	}
+
+	if stringValue(event["post_type"]) == "message" {
 		a.handleMessageEvent(event)
 	}
-
-	w.WriteHeader(http.StatusOK)
 }
 
-// handleMessageEvent 处理消息事件
+func (a *QQAdapter) resolveAPIResponse(echo string, payload []byte) {
+	var response oneBotAPIResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		log.Printf("QQ Adapter 解析 API 响应失败: %v", err)
+		return
+	}
+
+	a.mu.Lock()
+	ch := a.pending[echo]
+	delete(a.pending, echo)
+	a.mu.Unlock()
+
+	if ch != nil {
+		ch <- response
+		close(ch)
+	}
+}
+
 func (a *QQAdapter) handleMessageEvent(event map[string]interface{}) {
-	messageType, _ := event["message_type"].(string)
-	userID := fmt.Sprintf("%v", event["user_id"])
-	content, _ := event["message"].(string)
-	messageID := fmt.Sprintf("%v", event["message_id"])
+	messageType := stringValue(event["message_type"])
+	userID := stringValue(event["user_id"])
+	selfID := stringValue(event["self_id"])
+	if selfID == "" {
+		a.mu.Lock()
+		selfID = a.selfID
+		a.mu.Unlock()
+	}
+	if selfID != "" && selfID == userID {
+		return
+	}
+	content := messageText(event["message"])
+	messageID := stringValue(event["message_id"])
+
+	if content == "" {
+		return
+	}
 
 	msg := &types.Message{
 		ID:       messageID,
 		Platform: "qq",
 		UserID:   userID,
 		Content:  content,
-		Metadata: make(map[string]string),
+		Metadata: map[string]string{
+			"message_type": messageType,
+		},
 	}
 
-	// 群消息
+	chatInfo := "私聊"
+	targetID := userID
 	if messageType == "group" {
-		msg.GroupID = fmt.Sprintf("%v", event["group_id"])
+		msg.GroupID = stringValue(event["group_id"])
+		targetID = msg.GroupID
+		chatInfo = "群组" + msg.GroupID
 	}
+	if a.isRecentSent(messageType, targetID, content) {
+		return
+	}
+
+	log.Printf("[接收][QQ][%s(%s)]：%s", userID, chatInfo, content)
 
 	if a.messageHandler != nil {
 		a.messageHandler(msg)
 	}
 }
 
-// SendMessage 发送消息
+// SendMessage 发送消息。
 func (a *QQAdapter) SendMessage(target string, text string) error {
-	// 判断是群消息还是私聊
-	// 简化实现：如果 target 包含 "group_"，则为群消息
-	var messageType string
-	var targetID string
-
-	if len(target) > 6 && target[:6] == "group_" {
+	messageType := "private"
+	targetID := target
+	if strings.HasPrefix(target, "group_") {
 		messageType = "group"
-		targetID = target[6:]
-	} else {
-		messageType = "private"
-		targetID = target
+		targetID = strings.TrimPrefix(target, "group_")
 	}
 
-	data := map[string]interface{}{
+	params := map[string]interface{}{
 		"message_type": messageType,
 		"message":      text,
 	}
-
 	if messageType == "group" {
-		data["group_id"] = targetID
+		params["group_id"] = parseQQID(targetID)
 	} else {
-		data["user_id"] = targetID
+		params["user_id"] = parseQQID(targetID)
 	}
 
-	return a.callAPI("/send_msg", data)
+	log.Printf("[发送][QQ][%s]：%s", target, text)
+	a.markRecentSent(messageType, targetID, text)
+	return a.callAPI("send_msg", params)
 }
 
-// SendImage 发送图片
+func (a *QQAdapter) refreshSelfID() {
+	var data map[string]interface{}
+	if err := a.callAPIWithResult("get_login_info", map[string]interface{}{}, &data); err != nil {
+		log.Printf("QQ Adapter 获取自身账号失败: %v", err)
+		return
+	}
+	selfID := stringValue(data["user_id"])
+	if selfID == "" {
+		return
+	}
+	a.mu.Lock()
+	a.selfID = selfID
+	a.mu.Unlock()
+	log.Printf("QQ Adapter 自身账号: %s", selfID)
+}
+
+func (a *QQAdapter) markRecentSent(messageType string, targetID string, content string) {
+	a.recentMu.Lock()
+	defer a.recentMu.Unlock()
+	now := time.Now()
+	for key, expiresAt := range a.recentSent {
+		if now.After(expiresAt) {
+			delete(a.recentSent, key)
+		}
+	}
+	a.recentSent[recentSentKey(messageType, targetID, content)] = now.Add(30 * time.Second)
+}
+
+func (a *QQAdapter) isRecentSent(messageType string, targetID string, content string) bool {
+	a.recentMu.Lock()
+	defer a.recentMu.Unlock()
+	key := recentSentKey(messageType, targetID, content)
+	expiresAt, ok := a.recentSent[key]
+	if !ok {
+		return false
+	}
+	if time.Now().After(expiresAt) {
+		delete(a.recentSent, key)
+		return false
+	}
+	return true
+}
+
+func recentSentKey(messageType string, targetID string, content string) string {
+	return messageType + "|" + targetID + "|" + content
+}
+
+// SendImage 发送图片。
 func (a *QQAdapter) SendImage(target string, imageURL string) error {
 	message := fmt.Sprintf("[CQ:image,file=%s]", imageURL)
 	return a.SendMessage(target, message)
 }
 
-// SendFile 发送文件
+// SendFile 发送文件。
 func (a *QQAdapter) SendFile(target string, filePath string) error {
-	// go-cqhttp 文件上传实现
-	return fmt.Errorf("file sending not implemented yet")
+	return fmt.Errorf("QQ 文件发送暂未实现")
 }
 
-// GetUserInfo 获取用户信息
+// GetUserInfo 获取用户信息。
 func (a *QQAdapter) GetUserInfo(userID string) (*UserInfo, error) {
-	var result map[string]interface{}
-	if err := a.callAPIWithResult("/get_stranger_info", map[string]interface{}{
-		"user_id": userID,
-	}, &result); err != nil {
+	var data map[string]interface{}
+	if err := a.callAPIWithResult("get_stranger_info", map[string]interface{}{"user_id": parseQQID(userID)}, &data); err != nil {
 		return nil, err
 	}
-
-	data, _ := result["data"].(map[string]interface{})
 	return &UserInfo{
 		UserID:   userID,
-		Nickname: fmt.Sprintf("%v", data["nickname"]),
+		Nickname: stringValue(data["nickname"]),
 		Avatar:   fmt.Sprintf("https://q1.qlogo.cn/g?b=qq&nk=%s&s=640", userID),
 		Extra:    make(map[string]string),
 	}, nil
 }
 
-// GetGroupInfo 获取群组信息
+// GetGroupInfo 获取群组信息。
 func (a *QQAdapter) GetGroupInfo(groupID string) (*GroupInfo, error) {
-	var result map[string]interface{}
-	if err := a.callAPIWithResult("/get_group_info", map[string]interface{}{
-		"group_id": groupID,
-	}, &result); err != nil {
+	var data map[string]interface{}
+	if err := a.callAPIWithResult("get_group_info", map[string]interface{}{"group_id": parseQQID(groupID)}, &data); err != nil {
 		return nil, err
 	}
-
-	data, _ := result["data"].(map[string]interface{})
-	memberCount, _ := data["member_count"].(float64)
-
 	return &GroupInfo{
 		GroupID:     groupID,
-		Name:        fmt.Sprintf("%v", data["group_name"]),
-		MemberCount: int(memberCount),
+		Name:        stringValue(data["group_name"]),
+		MemberCount: int(numberValue(data["member_count"])),
 		Extra:       make(map[string]string),
 	}, nil
 }
 
-// AtUser @某人
+// AtUser @某人。
 func (a *QQAdapter) AtUser(groupID string, userID string) error {
 	message := fmt.Sprintf("[CQ:at,qq=%s]", userID)
 	return a.SendMessage("group_"+groupID, message)
 }
 
-// callAPI 调用 go-cqhttp API
-func (a *QQAdapter) callAPI(endpoint string, data map[string]interface{}) error {
-	jsonData, err := json.Marshal(data)
-	if err != nil {
+func (a *QQAdapter) callAPI(action string, params map[string]interface{}) error {
+	var response oneBotAPIResponse
+	if err := a.callAPIWithResponse(action, params, &response); err != nil {
 		return err
 	}
-
-	resp, err := http.Post(a.apiURL+endpoint, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return err
+	if response.Status != "ok" && response.RetCode != 0 {
+		message := response.Message
+		if message == "" {
+			message = response.Wording
+		}
+		return fmt.Errorf("OneBot API %s 失败: retcode=%d %s", action, response.RetCode, message)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("API call failed with status: %d", resp.StatusCode)
-	}
-
 	return nil
 }
 
-// callAPIWithResult 调用 API 并返回结果
-func (a *QQAdapter) callAPIWithResult(endpoint string, data map[string]interface{}, result interface{}) error {
-	jsonData, err := json.Marshal(data)
+func (a *QQAdapter) callAPIWithResult(action string, params map[string]interface{}, result interface{}) error {
+	var response oneBotAPIResponse
+	if err := a.callAPIWithResponse(action, params, &response); err != nil {
+		return err
+	}
+	if response.Status != "ok" && response.RetCode != 0 {
+		return fmt.Errorf("OneBot API %s 失败: retcode=%d %s", action, response.RetCode, response.Message)
+	}
+	if len(response.Data) == 0 || string(response.Data) == "null" {
+		return nil
+	}
+	return json.Unmarshal(response.Data, result)
+}
+
+func (a *QQAdapter) callAPIWithResponse(action string, params map[string]interface{}, result *oneBotAPIResponse) error {
+	if err := a.callWebSocketAPI(action, params, result); err == nil {
+		return nil
+	}
+	if a.apiURL == "" {
+		return fmt.Errorf("OneBot WebSocket 调用失败，且 HTTP API 地址不可用")
+	}
+	return a.callHTTPAPI(action, params, result)
+}
+
+func (a *QQAdapter) callWebSocketAPI(action string, params map[string]interface{}, result *oneBotAPIResponse) error {
+	echo := fmt.Sprintf("allbot-%d", time.Now().UnixNano())
+	ch := make(chan oneBotAPIResponse, 1)
+
+	a.mu.Lock()
+	if a.conn == nil {
+		a.mu.Unlock()
+		return fmt.Errorf("WebSocket 未连接")
+	}
+	a.pending[echo] = ch
+	a.mu.Unlock()
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"action": action,
+		"params": params,
+		"echo":   echo,
+	})
+	if err := a.writeWebSocketFrame(1, payload); err != nil {
+		a.mu.Lock()
+		delete(a.pending, echo)
+		a.mu.Unlock()
+		return err
+	}
+
+	select {
+	case response, ok := <-ch:
+		if !ok {
+			return fmt.Errorf("WebSocket 已关闭")
+		}
+		*result = response
+		return nil
+	case <-time.After(10 * time.Second):
+		a.mu.Lock()
+		delete(a.pending, echo)
+		a.mu.Unlock()
+		return fmt.Errorf("OneBot API %s 响应超时", action)
+	}
+}
+
+func (a *QQAdapter) callHTTPAPI(action string, params map[string]interface{}, result *oneBotAPIResponse) error {
+	jsonData, err := json.Marshal(params)
 	if err != nil {
 		return err
 	}
 
-	resp, err := http.Post(a.apiURL+endpoint, "application/json", bytes.NewBuffer(jsonData))
+	request, err := http.NewRequest(http.MethodPost, strings.TrimRight(a.apiURL, "/")+"/"+action, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if a.accessToken != "" {
+		request.Header.Set("Authorization", "Bearer "+a.accessToken)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(request)
 	if err != nil {
 		return err
 	}
@@ -238,6 +447,260 @@ func (a *QQAdapter) callAPIWithResult(endpoint string, data map[string]interface
 	if err != nil {
 		return err
 	}
-
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP API 状态码 %d: %s", resp.StatusCode, string(body))
+	}
 	return json.Unmarshal(body, result)
+}
+
+func dialOneBotWebSocket(rawURL string, accessToken string) (net.Conn, *bufio.Reader, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	if parsed.Scheme != "ws" && parsed.Scheme != "wss" {
+		return nil, nil, fmt.Errorf("服务地址必须以 ws:// 或 wss:// 开头")
+	}
+
+	if parsed.Path == "" {
+		parsed.Path = "/"
+	}
+
+	address := parsed.Host
+	if !strings.Contains(address, ":") {
+		if parsed.Scheme == "wss" {
+			address += ":443"
+		} else {
+			address += ":80"
+		}
+	}
+
+	dialer := net.Dialer{Timeout: 10 * time.Second}
+	conn, err := dialer.DialContext(context.Background(), "tcp", address)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if parsed.Scheme == "wss" {
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("暂不支持 wss，请在本地 NapCat 使用 ws://")
+	}
+
+	keyBytes := make([]byte, 16)
+	if _, err := rand.Read(keyBytes); err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+	secKey := base64.StdEncoding.EncodeToString(keyBytes)
+
+	path := parsed.RequestURI()
+	if path == "" {
+		path = "/"
+	}
+	headers := []string{
+		fmt.Sprintf("GET %s HTTP/1.1", path),
+		"Host: " + parsed.Host,
+		"Upgrade: websocket",
+		"Connection: Upgrade",
+		"Sec-WebSocket-Key: " + secKey,
+		"Sec-WebSocket-Version: 13",
+	}
+	if accessToken != "" {
+		headers = append(headers, "Authorization: Bearer "+accessToken)
+	}
+	headers = append(headers, "\r\n")
+	if _, err := conn.Write([]byte(strings.Join(headers, "\r\n"))); err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+
+	reader := bufio.NewReader(conn)
+	status, err := reader.ReadString('\n')
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+	if !strings.Contains(status, " 101 ") {
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("WebSocket 握手失败: %s", strings.TrimSpace(status))
+	}
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			_ = conn.Close()
+			return nil, nil, err
+		}
+		if strings.TrimSpace(line) == "" {
+			break
+		}
+	}
+
+	return conn, reader, nil
+}
+
+func (a *QQAdapter) writeWebSocketFrame(opcode byte, payload []byte) error {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+
+	a.mu.Lock()
+	conn := a.conn
+	a.mu.Unlock()
+	if conn == nil {
+		return fmt.Errorf("WebSocket 未连接")
+	}
+
+	frame := bytes.Buffer{}
+	frame.WriteByte(0x80 | opcode)
+	length := len(payload)
+	switch {
+	case length < 126:
+		frame.WriteByte(0x80 | byte(length))
+	case length <= math.MaxUint16:
+		frame.WriteByte(0x80 | 126)
+		_ = binary.Write(&frame, binary.BigEndian, uint16(length))
+	default:
+		frame.WriteByte(0x80 | 127)
+		_ = binary.Write(&frame, binary.BigEndian, uint64(length))
+	}
+
+	maskKey := make([]byte, 4)
+	if _, err := rand.Read(maskKey); err != nil {
+		return err
+	}
+	frame.Write(maskKey)
+	masked := make([]byte, len(payload))
+	for index, value := range payload {
+		masked[index] = value ^ maskKey[index%4]
+	}
+	frame.Write(masked)
+
+	_, err := conn.Write(frame.Bytes())
+	return err
+}
+
+func readWebSocketFrame(reader *bufio.Reader) (byte, []byte, error) {
+	first, err := reader.ReadByte()
+	if err != nil {
+		return 0, nil, err
+	}
+	second, err := reader.ReadByte()
+	if err != nil {
+		return 0, nil, err
+	}
+	opcode := first & 0x0f
+	masked := second&0x80 != 0
+	length := uint64(second & 0x7f)
+	switch length {
+	case 126:
+		var value uint16
+		if err := binary.Read(reader, binary.BigEndian, &value); err != nil {
+			return 0, nil, err
+		}
+		length = uint64(value)
+	case 127:
+		if err := binary.Read(reader, binary.BigEndian, &length); err != nil {
+			return 0, nil, err
+		}
+	}
+
+	var maskKey []byte
+	if masked {
+		maskKey = make([]byte, 4)
+		if _, err := io.ReadFull(reader, maskKey); err != nil {
+			return 0, nil, err
+		}
+	}
+
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return 0, nil, err
+	}
+	if masked {
+		for index := range payload {
+			payload[index] ^= maskKey[index%4]
+		}
+	}
+	return opcode, payload, nil
+}
+
+func oneBotAPIURL(serverURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(serverURL))
+	if err != nil {
+		return ""
+	}
+	if parsed.Scheme == "ws" {
+		parsed.Scheme = "http"
+	} else if parsed.Scheme == "wss" {
+		parsed.Scheme = "https"
+	} else {
+		return ""
+	}
+	parsed.Path = "/"
+	parsed.RawQuery = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func messageText(value interface{}) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case []interface{}:
+		parts := make([]string, 0, len(typed))
+		for _, item := range typed {
+			segment, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			segmentType := stringValue(segment["type"])
+			data, _ := segment["data"].(map[string]interface{})
+			switch segmentType {
+			case "text":
+				parts = append(parts, stringValue(data["text"]))
+			case "at":
+				parts = append(parts, "[CQ:at,qq="+stringValue(data["qq"])+"]")
+			case "image":
+				parts = append(parts, "[图片]")
+			}
+		}
+		return strings.TrimSpace(strings.Join(parts, ""))
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", value))
+	}
+}
+
+func stringValue(value interface{}) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case float64:
+		return strconv.FormatInt(int64(typed), 10)
+	case json.Number:
+		return typed.String()
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", typed)
+	}
+}
+
+func numberValue(value interface{}) int64 {
+	switch typed := value.(type) {
+	case float64:
+		return int64(typed)
+	case string:
+		parsed, _ := strconv.ParseInt(typed, 10, 64)
+		return parsed
+	case json.Number:
+		parsed, _ := typed.Int64()
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func parseQQID(value string) interface{} {
+	if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return parsed
+	}
+	return value
 }

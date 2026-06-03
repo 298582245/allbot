@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/allbot/allbot/core/types"
@@ -30,7 +31,7 @@ type TelegramAdapter struct {
 func NewTelegramAdapter(botToken string, proxyURL string) *TelegramAdapter {
 	// 创建 HTTP 客户端
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: 40 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
 		},
@@ -128,6 +129,7 @@ func (a *TelegramAdapter) deleteWebhook() error {
 
 // pollUpdates 长轮询获取更新
 func (a *TelegramAdapter) pollUpdates() {
+	failureCount := 0
 	for {
 		select {
 		case <-a.stopChan:
@@ -135,9 +137,22 @@ func (a *TelegramAdapter) pollUpdates() {
 		default:
 			updates, err := a.getUpdates()
 			if err != nil {
-				log.Printf("[ERROR][Telegram] 获取更新失败: %s", utils.MaskSensitiveError(err))
-				time.Sleep(3 * time.Second)
+				failureCount++
+				maskedError := utils.MaskSensitiveError(err)
+				if failureCount == 1 {
+					log.Printf("[WARN][Telegram] 获取更新异常: %s", maskedError)
+				} else if failureCount%10 == 0 {
+					log.Printf("[WARN][Telegram] 获取更新持续异常 %d 次，最近一次: %s", failureCount, maskedError)
+				}
+				if !a.waitBeforeRetry(telegramPollRetryDelay(failureCount)) {
+					return
+				}
 				continue
+			}
+
+			if failureCount > 0 {
+				log.Printf("[INFO][Telegram] 网络轮询已恢复，之前连续异常 %d 次", failureCount)
+				failureCount = 0
 			}
 
 			for _, update := range updates {
@@ -145,6 +160,31 @@ func (a *TelegramAdapter) pollUpdates() {
 			}
 		}
 	}
+}
+
+func (a *TelegramAdapter) waitBeforeRetry(delay time.Duration) bool {
+	select {
+	case <-a.stopChan:
+		return false
+	case <-time.After(delay):
+		return true
+	}
+}
+
+func telegramPollRetryDelay(failureCount int) time.Duration {
+	if failureCount <= 1 {
+		return 3 * time.Second
+	}
+	if failureCount <= 3 {
+		return 5 * time.Second
+	}
+	if failureCount <= 6 {
+		return 10 * time.Second
+	}
+	if failureCount <= 10 {
+		return 30 * time.Second
+	}
+	return 60 * time.Second
 }
 
 // getUpdates 获取更新
@@ -204,6 +244,7 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 	if !ok {
 		return
 	}
+	text = normalizeTelegramCommandText(text, message)
 
 	from, ok := message["from"].(map[string]interface{})
 	if !ok {
@@ -223,6 +264,7 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 	userID := fmt.Sprintf("%.0f", userIDNum)
 	chatID := fmt.Sprintf("%.0f", chatIDNum)
 	messageID := fmt.Sprintf("%.0f", messageIDNum)
+	fromName := telegramDisplayName(from)
 
 	// 判断是群组还是私聊
 	chatType, _ := chat["type"].(string)
@@ -239,7 +281,8 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 		UserID:   userID,
 		Content:  text,
 		Metadata: map[string]string{
-			"chat_id": chatID, // 保存chat_id用于回复
+			"chat_id":   chatID, // 保存chat_id用于回复
+			"from_name": fromName,
 		},
 	}
 
@@ -254,6 +297,58 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 }
 
 // SendMessage 发送消息
+func normalizeTelegramCommandText(text string, message map[string]interface{}) string {
+	entities, ok := message["entities"].([]interface{})
+	if !ok {
+		return text
+	}
+
+	for _, item := range entities {
+		entity, ok := item.(map[string]interface{})
+		if !ok || entity["type"] != "bot_command" {
+			continue
+		}
+
+		offset, ok := entity["offset"].(float64)
+		if !ok || int(offset) != 0 {
+			continue
+		}
+
+		length, ok := entity["length"].(float64)
+		if !ok {
+			continue
+		}
+
+		commandEnd := int(length)
+		if commandEnd > len(text) {
+			continue
+		}
+
+		command := strings.TrimPrefix(text[:commandEnd], "/")
+		if atIndex := strings.Index(command, "@"); atIndex >= 0 {
+			command = command[:atIndex]
+		}
+
+		return strings.TrimSpace(command + text[commandEnd:])
+	}
+
+	return text
+}
+
+func telegramDisplayName(from map[string]interface{}) string {
+	if username, ok := from["username"].(string); ok && strings.TrimSpace(username) != "" {
+		return "@" + strings.TrimSpace(username)
+	}
+	parts := make([]string, 0, 2)
+	if firstName, ok := from["first_name"].(string); ok && strings.TrimSpace(firstName) != "" {
+		parts = append(parts, strings.TrimSpace(firstName))
+	}
+	if lastName, ok := from["last_name"].(string); ok && strings.TrimSpace(lastName) != "" {
+		parts = append(parts, strings.TrimSpace(lastName))
+	}
+	return strings.Join(parts, " ")
+}
+
 func (a *TelegramAdapter) SendMessage(target string, text string) error {
 	// Telegram API要求chat_id是数字类型，需要转换
 	var chatID interface{}
@@ -269,6 +364,9 @@ func (a *TelegramAdapter) SendMessage(target string, text string) error {
 	data := map[string]interface{}{
 		"chat_id": chatID,
 		"text":    text,
+	}
+	if strings.Contains(text, "tg://user?id=") {
+		data["parse_mode"] = "HTML"
 	}
 
 	// 发送前记录日志

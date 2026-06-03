@@ -1,49 +1,57 @@
-# 运行时文件
-*.exe
+# 数据库与 SQLite 运行文件
 *.db
-*.log
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
 config.db
-allbot
-allbot.exe
 
-# Python
-runtime/
+# 插件备份包
+plugins/*.backup*.zip
+plugins/**/*.backup*.zip
+
+# 缓存与依赖目录
+.gocache/
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-*.egg-info/
-dist/
-build/
-
-# Node.js
+.pytest_cache/
 node_modules/
+web-ui/node_modules/
+runtime/python/
+runtime/node/
+runtime/.venv/
+
+# 本地编译产物（保留 allbot-linux-amd64）
+allbot
+allbot.exe
+allbot-*.exe
+
+# 日志与覆盖率
+logs/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.coverage
+htmlcov/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Claude Code
+# 临时 worktree 与本地 Claude 配置
+.claude/worktrees/
 .claude/settings.local.json
+.claude/operations-log.md
+.claude/review-report.md
 
 # 临时文件
 *.tmp
 *.bak
 *.orig
+*.swp
+*.swo
+*~
+.DS_Store
 
-# 测试
-.pytest_cache/
-.coverage
-htmlcov/
-
-# 构建产物
-web/assets/
-web/index.html
+# IDE
+.vscode/
+.idea/

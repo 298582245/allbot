@@ -51,7 +51,7 @@ fanyi How are you?
 通过正则表达式检测文本中是否包含中文字符：
 ```python
 def contains_chinese(text):
-    return bool(re.search(r'[\u4e00-\u9fff]', text))
+    return bool(re.search(r'[一-鿿]', text))
 ```
 
 ### 翻译 API
@@ -132,11 +132,11 @@ async def translate_text(text, from_lang, to_lang):
 
 ```python
 def detect_language(text):
-    if re.search(r'[\u4e00-\u9fff]', text):
+    if re.search(r'[一-鿿]', text):
         return 'zh'
-    elif re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text):
+    elif re.search(r'[぀-ゟ゠-ヿ]', text):
         return 'ja'  # 日文
-    elif re.search(r'[\uac00-\ud7af]', text):
+    elif re.search(r'[가-힯]', text):
         return 'ko'  # 韩文
     else:
         return 'en'

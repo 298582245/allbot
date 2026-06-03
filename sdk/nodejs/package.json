@@ -1,13 +1,9 @@
 {
   "name": "@allbot/sdk",
   "version": "0.1.0",
-  "description": "AllBot Node.js SDK for plugin development",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "npm run build"
-  },
+  "description": "AllBot Node.js Direct SDK for plugin development",
+  "main": "allbot_direct.js",
+  "scripts": {},
   "keywords": [
     "allbot",
     "bot",
@@ -18,12 +14,6 @@
   ],
   "author": "AllBot",
   "license": "MIT",
-  "dependencies": {
-    "@grpc/grpc-js": "^1.9.0",
-    "@grpc/proto-loader": "^0.7.0"
-  },
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
-  }
+  "dependencies": {},
+  "devDependencies": {}
 }

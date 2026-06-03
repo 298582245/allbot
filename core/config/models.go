@@ -1,34 +1,56 @@
 package config
 
-import (
-	"time"
-)
+import "time"
 
-// AdapterConfig 平台适配器配置
+// AdapterConfig 表示一个机器人账号的适配器配置，同一平台可以有多个账号。
 type AdapterConfig struct {
-	ID        int64     `json:"id"`
-	Platform  string    `json:"platform"`  // qq, wechat, telegram, discord
-	Enabled   bool      `json:"enabled"`   // 是否启用
-	Config    string    `json:"config"`    // JSON 配置（不同平台配置不同）
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          int64     `json:"id"`
+	Platform    string    `json:"platform"`
+	Remark      string    `json:"remark"`
+	Description string    `json:"description"`
+	Enabled     bool      `json:"enabled"`
+	Config      string    `json:"config"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-// QQConfig QQ 平台配置
 type QQConfig struct {
-	APIURL     string `json:"api_url"`      // go-cqhttp API 地址
-	ListenAddr string `json:"listen_addr"`  // 监听地址
+	ServerURL   string `json:"server_url"`
+	AccessToken string `json:"access_token,omitempty"`
 }
 
-// WeChatConfig 微信平台配置
+type QQOfficeConfig struct {
+	AppID        string `json:"app_id"`
+	ClientSecret string `json:"client_secret"`
+	APIBaseURL   string `json:"api_base_url,omitempty"`
+	TokenURL     string `json:"token_url,omitempty"`
+}
+
 type WeChatConfig struct {
 	AppID     string `json:"app_id"`
 	AppSecret string `json:"app_secret"`
 }
 
-// TelegramConfig Telegram 平台配置
 type TelegramConfig struct {
-	BotToken  string `json:"bot_token"`
-	ProxyURL  string `json:"proxy_url,omitempty"`  // 代理地址，如：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080
+	BotToken string `json:"bot_token"`
+	ProxyURL string `json:"proxy_url,omitempty"`
 }
 
+type UserAccount struct {
+	ID        int64     `json:"id"`
+	Platform  string    `json:"platform"`
+	UserID    string    `json:"user_id"`
+	UnionID   string    `json:"union_id"`
+	Points    int64     `json:"points"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type UserBindCode struct {
+	Code      string    `json:"code"`
+	Platform  string    `json:"platform"`
+	UserID    string    `json:"user_id"`
+	UnionID   string    `json:"union_id"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}

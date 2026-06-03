@@ -51,7 +51,7 @@ go build -o allbot
 
 启动后访问：
 - **Web UI**：http://localhost:3000
-- **默认账号**：admin / admin123
+- **管理员账号**：默认用户名为 `admin`，首次启动会在控制台输出随机密码
 
 **Web UI 功能**：
 - 📊 仪表盘 - 系统状态、统计图表、快速操作
@@ -144,7 +144,7 @@ allbot/
 - HTTP 通信协议（核心框架 ↔ 插件）
 - Python SDK（Context API + HTTP 服务器）
 - Node.js SDK（Context API）
-- QQ 平台适配器（基于 go-cqhttp）
+- QQ 平台适配器（基于 NapCat OneBot 正向 WebSocket）
 - **Telegram 平台适配器**（Bot API 长轮询）✨
 - 示例插件（天气插件、翻译插件）
 - **全局依赖管理系统**（Python + Node.js）
@@ -253,7 +253,7 @@ AllBot 支持动态配置，无需重启即可修改平台设置！
 5. 点击"保存" - **配置立即生效！**
 
 **支持的平台**：
-- **QQ**：基于 go-cqhttp
+- **QQ**：基于 NapCat OneBot 正向 WebSocket
 - **微信**：企业微信/公众号（开发中）
 - **Telegram**：Bot API（开发中）
 

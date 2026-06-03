@@ -5,6 +5,7 @@
   "entry": "main.py",
   "platforms": ["qq", "wechat", "telegram"],
   "trigger": "天气.*",
+  "priority": 0,
   "dependencies": {
     "requests": "2.31.0"
   }

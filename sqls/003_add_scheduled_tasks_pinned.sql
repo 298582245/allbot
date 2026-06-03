@@ -1,0 +1,1 @@
+ALTER TABLE scheduled_tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;

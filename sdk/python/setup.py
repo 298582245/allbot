@@ -3,13 +3,11 @@ from setuptools import setup, find_packages
 setup(
     name="allbot-sdk",
     version="0.1.0",
-    description="AllBot Python SDK for plugin development",
+    description="AllBot Python Direct SDK for plugin development",
     author="AllBot",
     packages=find_packages(),
-    install_requires=[
-        "grpcio>=1.50.0",
-        "grpcio-tools>=1.50.0",
-    ],
+    py_modules=["allbot_direct"],
+    install_requires=[],
     python_requires=">=3.7",
     classifiers=[
         "Development Status :: 3 - Alpha",

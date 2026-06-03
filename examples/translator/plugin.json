@@ -6,6 +6,7 @@
   "entry": "main.py",
   "platforms": ["qq", "telegram", "wechat"],
   "trigger": "^(翻译|translate|fanyi)\\s+.+",
+  "priority": 0,
   "dependencies": {
     "requests": "2.31.0"
   }

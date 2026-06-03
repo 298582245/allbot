@@ -13,9 +13,9 @@ allbot.exe --plugins=./plugins
 ## 访问 Web UI
 
 1. 打开浏览器访问：http://localhost:3000
-2. 使用默认账号登录：
+2. 使用管理员账号登录：
    - 用户名：`admin`
-   - 密码：`admin123`
+   - 密码：首次启动时控制台输出的随机密码
 
 ## 配置平台适配器
 
@@ -30,24 +30,14 @@ allbot.exe --plugins=./plugins
 
 ### QQ 平台配置示例
 
-**前置条件**：需要先安装并运行 [go-cqhttp](https://github.com/Mrs4s/go-cqhttp)
+**前置条件**：需要先安装并运行 NapCat，并开启 OneBot 正向 WebSocket 服务。
 
 **配置项**：
-- **API 地址**：`http://localhost:5700`（go-cqhttp 的 HTTP API 地址）
-- **监听地址**：`:8080`（AllBot 接收消息的端口）
+- **服务地址**：`ws://127.0.0.1:3001`（NapCat 提供的 OneBot WebSocket 地址）
+- **访问令牌**：如果 NapCat 配置了 Access Token，这里填写同一个值；没有配置可留空
 - **状态**：启用
 
-**go-cqhttp 配置**：
-```yaml
-# config.yml
-servers:
-  - http:
-      host: 0.0.0.0
-      port: 5700
-      post:
-        - url: http://localhost:8080  # AllBot 的监听地址
-          secret: ''
-```
+AllBot 不再本地开启 QQ 回调端口，而是主动连接 NapCat。本地测试时只要 NapCat 服务地址能从本机访问即可。
 
 ### 微信平台配置
 
@@ -150,38 +140,38 @@ allbot.exe --plugins=./plugins > allbot.log 2>&1
 ### Python 插件示例
 
 ```python
-from allbot_sdk import Plugin, Message
+import os
+import sys
 
-plugin = Plugin(
-    name="示例插件",
-    version="1.0.0",
-    description="这是一个示例插件"
-)
+sdk_path = os.path.join(os.path.dirname(__file__), "../../sdk/python")
+sys.path.insert(0, sdk_path)
 
-@plugin.on_message(r"^你好")
-async def handle_hello(msg: Message):
-    await msg.reply("你好！我是机器人")
+from allbot_direct import run_direct
+
+
+async def handle(ctx):
+    if ctx.content.startswith("你好"):
+        await ctx.reply("你好！我是机器人")
 
 if __name__ == "__main__":
-    plugin.run()
+    run_direct(handle)
 ```
 
 ### Node.js 插件示例
 
 ```javascript
-const { Plugin } = require('allbot-sdk');
+const path = require('path');
 
-const plugin = new Plugin({
-    name: '示例插件',
-    version: '1.0.0',
-    description: '这是一个示例插件'
-});
+const sdkPath = path.join(__dirname, '../../sdk/nodejs');
+const { runDirect } = require(path.join(sdkPath, 'allbot_direct'));
 
-plugin.onMessage(/^你好/, async (msg) => {
-    await msg.reply('你好！我是机器人');
-});
+async function handle(ctx) {
+    if ((ctx.content || '').startsWith('你好')) {
+        await ctx.reply('你好！我是机器人');
+    }
+}
 
-plugin.run();
+runDirect(handle);
 ```
 
 ## 技术架构
@@ -189,7 +179,7 @@ plugin.run();
 - **核心框架**：Go 1.21+
 - **Web UI**：原生 HTML/CSS/JavaScript（Vue 3 版本开发中）
 - **数据库**：SQLite 3
-- **插件通信**：HTTP + JSON
+- **插件通信**：Direct stdin/stdout JSON 行协议
 - **支持语言**：Python 3.7+、Node.js 14+
 
 ## 更多信息

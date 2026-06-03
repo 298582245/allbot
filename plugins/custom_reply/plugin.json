@@ -1,0 +1,50 @@
+{
+  "access_control": {
+    "blocked_groups": [],
+    "blocked_user_ids": [],
+    "inherit_system": true,
+    "whitelist_groups": [],
+    "whitelist_user_ids": []
+  },
+  "allowed_adapter_ids": [],
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
+  "enabled": true,
+  "entry": "main.js",
+  "name": "自定义回答插件",
+  "open_api": {
+    "enabled": false,
+    "method": "POST",
+    "path": "custom_reply",
+    "runtime": "nodejs",
+    "token": ""
+  },
+  "platforms": [
+    "qq",
+    "wechat",
+    "telegram",
+    "qq_office"
+  ],
+  "priority": -1000,
+  "runtime": "nodejs",
+  "trigger": "^(.*)$",
+  "user_config": {
+    "api_key": "cs",
+    "enabled_detail": true
+  },
+  "user_config_schema": [
+    {
+      "key": "api_key",
+      "label": "API Key",
+      "type": "text"
+    },
+    {
+      "default": true,
+      "key": "enabled_detail",
+      "label": "显示详情",
+      "type": "boolean"
+    }
+  ],
+  "version": "1.0.0"
+}

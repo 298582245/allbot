@@ -1,0 +1,11 @@
+{
+  "name": "数据库示例插件",
+  "version": "1.0.0",
+  "runtime": "python",
+  "entry": "main.py",
+  "platforms": ["qq", "wechat", "telegram"],
+  "priority": 0,
+  "trigger": "^(记账|账单|清空账单).*",
+  "enabled": true,
+  "dependencies": {}
+}

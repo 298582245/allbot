@@ -1,0 +1,108 @@
+{
+  "access_control": {
+    "blocked_groups": [],
+    "blocked_user_ids": [],
+    "inherit_system": true,
+    "whitelist_groups": [],
+    "whitelist_user_ids": []
+  },
+  "allowed_adapter_ids": [],
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
+  "enabled": true,
+  "entry": "main.js",
+  "name": "粉象生活",
+  "open_api": {
+    "enabled": false,
+    "method": "POST",
+    "path": "fxsh",
+    "runtime": "nodejs",
+    "token": ""
+  },
+  "platforms": [
+    "qq",
+    "telegram",
+    "qq_office"
+  ],
+  "priority": 298582245,
+  "runtime": "nodejs",
+  "trigger": "^(粉象)(登录|账号|管理|查询|运行|一键运行|提现|授权|充值|签到|过期检测|CK检测)$",
+  "user_config": {
+    "auth_price_per_month": 100,
+    "ck_check_cron": "25 9 * * *",
+    "cron": "38 0,22 * * *",
+    "expire_check_cron": "15 9 * * *",
+    "expire_delete_after_days": 7,
+    "expire_notify_days": "7,3,1,0",
+    "run_wait_timeout": 7200,
+    "scheduled_content": "粉象一键运行",
+    "task_script": "scripts/fxsh_task.js"
+  },
+  "user_config_schema": [
+    {
+      "default": 0,
+      "description": "用户自助授权单个账号每月扣除的积分，0 表示免费授权",
+      "key": "auth_price_per_month",
+      "label": "账号授权价格",
+      "type": "number"
+    },
+    {
+      "default": "38 0,22 * * *",
+      "description": "插件触发一次后自动声明默认定时任务",
+      "key": "cron",
+      "label": "默认定时表达式",
+      "type": "text"
+    },
+    {
+      "default": "粉象一键运行",
+      "description": "定时任务伪造发送的消息内容，应使用管理员一键运行指令",
+      "key": "scheduled_content",
+      "label": "默认定时触发内容",
+      "type": "text"
+    },
+    {
+      "default": "scripts/fxsh_task.js",
+      "description": "相对插件目录的脚本路径，原青龙脚本不需要修改",
+      "key": "task_script",
+      "label": "青龙脚本路径",
+      "type": "text"
+    },
+    {
+      "default": 7200,
+      "description": "用户运行时等待脚本结束并回传查询结果，超时后可到后台脚本任务查看",
+      "key": "run_wait_timeout",
+      "label": "等待脚本完成秒数",
+      "type": "number"
+    },
+    {
+      "default": "15 9 * * *",
+      "description": "每日检测账号授权到期并推送续费提醒",
+      "key": "expire_check_cron",
+      "label": "过期检测定时表达式",
+      "type": "text"
+    },
+    {
+      "default": "7,3,1,0",
+      "description": "逗号分隔，0 表示到期当天，负数表示已过期天数",
+      "key": "expire_notify_days",
+      "label": "过期提醒天数",
+      "type": "text"
+    },
+    {
+      "default": -1,
+      "description": "-1 表示不自动删除；0 表示到期后检测到就删除；正数表示过期 N 天后删除",
+      "key": "expire_delete_after_days",
+      "label": "过期后自动删除天数",
+      "type": "number"
+    },
+    {
+      "default": "25 9 * * *",
+      "description": "每日检测账号 CK 是否失效，仅通知用户，不自动删除账号",
+      "key": "ck_check_cron",
+      "label": "CK 检测定时表达式",
+      "type": "text"
+    }
+  ],
+  "version": "1.0.5-allbot"
+}

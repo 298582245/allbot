@@ -1,0 +1,11 @@
+{
+  "id": "test",
+  "name": "test",
+  "path": "test",
+  "method": "GET",
+  "enabled": true,
+  "token": "test",
+  "runtime": "nodejs",
+  "entry": "test.js",
+  "description": "test"
+}

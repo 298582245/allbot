@@ -5,7 +5,28 @@
   "entry": "main.py",
   "platforms": ["qq", "wechat", "telegram"],
   "trigger": "^天气\\s*(.+)",
+  "priority": 0,
   "enabled": true,
+  "user_config_schema": [
+    {
+      "key": "city_alias",
+      "label": "默认城市",
+      "type": "text",
+      "placeholder": "例如：广州",
+      "description": "用户只发送“天气”时使用的默认城市。"
+    },
+    {
+      "key": "show_detail",
+      "label": "显示详细信息",
+      "type": "boolean",
+      "default": true,
+      "description": "开启后插件可以返回更完整的天气说明。"
+    }
+  ],
+  "user_config": {
+    "city_alias": "",
+    "show_detail": true
+  },
   "dependencies": {
     "requests": "2.31.0"
   }

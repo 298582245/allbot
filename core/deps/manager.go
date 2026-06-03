@@ -6,29 +6,30 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
-// Manager 全局依赖管理器
+// Manager 全局依赖管理器。
 type Manager struct {
-	pythonVenv    string // Python 虚拟环境路径
-	nodeModules   string // Node.js 全局 node_modules 路径
+	pythonVenv     string // Python 虚拟环境路径
+	nodeModules    string // Node.js 全局 node_modules 路径
 	pythonDepsFile string // Python 依赖清单文件
 	nodeDepsFile   string // Node.js 依赖清单文件
-	mu            sync.RWMutex
+	mu             sync.RWMutex
 }
 
-// PythonDeps Python 依赖清单
+// PythonDeps Python 依赖清单。
 type PythonDeps struct {
-	Packages map[string]string `json:"packages"` // package: version
+	Packages map[string]string `json:"packages"`
 }
 
-// NodeDeps Node.js 依赖清单
+// NodeDeps Node.js 依赖清单。
 type NodeDeps struct {
 	Dependencies map[string]string `json:"dependencies"`
 }
 
-// NewManager 创建依赖管理器
+// NewManager 创建依赖管理器。
 func NewManager(runtimeDir string) *Manager {
 	return &Manager{
 		pythonVenv:     filepath.Join(runtimeDir, ".venv"),
@@ -38,9 +39,8 @@ func NewManager(runtimeDir string) *Manager {
 	}
 }
 
-// InitPythonEnv 初始化 Python 虚拟环境
+// InitPythonEnv 初始化 Python 虚拟环境。
 func (m *Manager) InitPythonEnv() error {
-	// 检查虚拟环境是否存在
 	if _, err := os.Stat(m.pythonVenv); os.IsNotExist(err) {
 		fmt.Println("正在创建 Python 虚拟环境...")
 		cmd := exec.Command("python", "-m", "venv", m.pythonVenv)
@@ -50,164 +50,189 @@ func (m *Manager) InitPythonEnv() error {
 		fmt.Println("Python 虚拟环境创建成功")
 	}
 
-	// 初始化依赖清单文件
 	if _, err := os.Stat(m.pythonDepsFile); os.IsNotExist(err) {
 		deps := PythonDeps{Packages: make(map[string]string)}
 		data, _ := json.MarshalIndent(deps, "", "  ")
-		os.WriteFile(m.pythonDepsFile, data, 0644)
+		if err := os.WriteFile(m.pythonDepsFile, data, 0644); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-// InitNodeEnv 初始化 Node.js 环境
+// InitNodeEnv 初始化 Node.js 环境。
 func (m *Manager) InitNodeEnv() error {
-	// 创建 runtime 目录
 	runtimeDir := filepath.Dir(m.nodeModules)
-	os.MkdirAll(runtimeDir, 0755)
+	if err := os.MkdirAll(runtimeDir, 0755); err != nil {
+		return err
+	}
 
-	// 初始化 package.json
 	if _, err := os.Stat(m.nodeDepsFile); os.IsNotExist(err) {
 		fmt.Println("正在初始化 Node.js 环境...")
 		deps := NodeDeps{Dependencies: make(map[string]string)}
 		data, _ := json.MarshalIndent(deps, "", "  ")
-		os.WriteFile(m.nodeDepsFile, data, 0644)
+		if err := os.WriteFile(m.nodeDepsFile, data, 0644); err != nil {
+			return err
+		}
 		fmt.Println("Node.js 环境初始化成功")
 	}
 
 	return nil
 }
 
-// InstallPythonDeps 安装 Python 依赖
+// InstallPythonDeps 安装 Python 依赖，版本为空或 latest 时安装最新版并记录实际版本号。
 func (m *Manager) InstallPythonDeps(deps map[string]string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 读取已安装的依赖
 	installed, err := m.loadPythonDeps()
 	if err != nil {
 		return err
 	}
 
-	// 获取 pip 路径
 	pipPath := m.getPipPath()
-
-	// 安装缺失的依赖
 	for pkg, version := range deps {
-		installedVersion, exists := installed.Packages[pkg]
-		if exists && installedVersion == version && version != "" {
-			fmt.Printf("Python 包 %s==%s 已安装\n", pkg, version)
-			continue
-		}
-
-		// 构建安装命令
-		var packageSpec string
-		if version == "" || version == "latest" {
-			fmt.Printf("正在安装 Python 包: %s (最新版)\n", pkg)
-			packageSpec = pkg
+		packageSpec := pkg
+		forceUpgrade := version == "" || version == "latest"
+		if forceUpgrade {
+			fmt.Printf("正在安装或更新 Python 包: %s（最新版）\n", pkg)
 		} else {
+			if installedVersion, exists := installed.Packages[pkg]; exists && isVersionSatisfied(installedVersion, version) {
+				fmt.Printf("Python 包 %s==%s 已安装\n", pkg, version)
+				continue
+			}
 			fmt.Printf("正在安装 Python 包: %s==%s\n", pkg, version)
 			packageSpec = fmt.Sprintf("%s==%s", pkg, version)
 		}
 
-		cmd := exec.Command(pipPath, "install", packageSpec)
+		args := []string{"install"}
+		if forceUpgrade {
+			args = append(args, "--upgrade")
+		}
+		args = append(args, packageSpec)
+		cmd := exec.Command(pipPath, args...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("安装 %s 失败: %w", pkg, err)
 		}
 
-		// 更新已安装清单
-		if version == "" || version == "latest" {
-			// 获取实际安装的版本（简化处理，记录为 "latest"）
-			installed.Packages[pkg] = "latest"
-		} else {
-			installed.Packages[pkg] = version
+		actualVersion, err := m.getPythonPackageVersion(pkg)
+		if err != nil {
+			return err
 		}
+		installed.Packages[pkg] = actualVersion
 	}
 
-	// 保存依赖清单
 	return m.savePythonDeps(installed)
 }
 
-// InstallNodeDeps 安装 Node.js 依赖
+// InstallNodeDeps 安装 Node.js 依赖，版本为空或 latest 时安装最新版并记录实际版本号。
 func (m *Manager) InstallNodeDeps(deps map[string]string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 读取 package.json
 	nodeDeps, err := m.loadNodeDeps()
 	if err != nil {
 		return err
 	}
 
-	// 合并依赖
-	needInstall := false
-	for pkg, version := range deps {
-		// 处理空版本或 latest
-		targetVersion := version
-		if version == "" || version == "latest" {
-			targetVersion = "latest"
-		}
-
-		if nodeDeps.Dependencies[pkg] != targetVersion {
-			nodeDeps.Dependencies[pkg] = targetVersion
-			needInstall = true
-			fmt.Printf("添加 Node.js 包: %s@%s\n", pkg, targetVersion)
-		}
-	}
-
-	if !needInstall {
-		fmt.Println("Node.js 依赖已是最新")
-		return nil
-	}
-
-	// 保存 package.json
-	if err := m.saveNodeDeps(nodeDeps); err != nil {
+	runtimeDir := filepath.Dir(m.nodeModules)
+	if err := os.MkdirAll(runtimeDir, 0755); err != nil {
 		return err
 	}
 
-	// 执行 npm install
-	fmt.Println("正在安装 Node.js 依赖...")
-	runtimeDir := filepath.Dir(m.nodeModules)
-	cmd := exec.Command("npm", "install")
-	cmd.Dir = runtimeDir // 设置工作目录为 runtime 目录
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("npm install 失败: %w", err)
+	for pkg, version := range deps {
+		forceLatest := version == "" || version == "latest"
+		packageSpec := pkg
+		if forceLatest {
+			if installedVersion := nodeDeps.Dependencies[pkg]; installedVersion != "" {
+				fmt.Printf("Node.js 包 %s@%s 已安装\n", pkg, installedVersion)
+				continue
+			}
+			if actualVersion, err := m.getNodePackageVersion(pkg); err == nil && actualVersion != "" {
+				nodeDeps.Dependencies[pkg] = actualVersion
+				fmt.Printf("Node.js 包 %s@%s 已安装\n", pkg, actualVersion)
+				continue
+			}
+			fmt.Printf("正在安装 Node.js 包: %s（最新版）\n", pkg)
+		} else {
+			if installedVersion := nodeDeps.Dependencies[pkg]; isVersionSatisfied(installedVersion, version) {
+				fmt.Printf("Node.js 包 %s@%s 已安装\n", pkg, version)
+				continue
+			}
+			fmt.Printf("正在安装 Node.js 包: %s@%s\n", pkg, version)
+			packageSpec = fmt.Sprintf("%s@%s", pkg, version)
+		}
+
+		cmd := exec.Command("npm", "install", packageSpec, "--save-exact")
+		cmd.Dir = runtimeDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("npm install 失败: %w", err)
+		}
+
+		actualVersion, err := m.getNodePackageVersion(pkg)
+		if err != nil {
+			return err
+		}
+		nodeDeps.Dependencies[pkg] = actualVersion
 	}
 
-	fmt.Println("Node.js 依赖安装成功")
-	return nil
+	return m.saveNodeDeps(nodeDeps)
 }
 
-// GetPythonPath 获取 Python 解释器路径
+func isVersionSatisfied(installedVersion, requestedVersion string) bool {
+	installedVersion = strings.TrimSpace(installedVersion)
+	requestedVersion = strings.TrimSpace(requestedVersion)
+	if installedVersion == "" || requestedVersion == "" || requestedVersion == "latest" {
+		return false
+	}
+	if installedVersion == requestedVersion {
+		return true
+	}
+	trimmedRequested := strings.TrimLeft(requestedVersion, "^~=")
+	trimmedInstalled := strings.TrimLeft(installedVersion, "^~=")
+	return trimmedInstalled == trimmedRequested
+}
+
+// GetPythonPath 获取 Python 解释器路径。
 func (m *Manager) GetPythonPath() string {
+	pythonPath := ""
 	if os.PathSeparator == '\\' {
-		// Windows
-		return filepath.Join(m.pythonVenv, "Scripts", "python.exe")
+		pythonPath = filepath.Join(m.pythonVenv, "Scripts", "python.exe")
+	} else {
+		pythonPath = filepath.Join(m.pythonVenv, "bin", "python")
 	}
-	// Linux/Mac
-	return filepath.Join(m.pythonVenv, "bin", "python")
+	if absPath, err := filepath.Abs(pythonPath); err == nil {
+		return absPath
+	}
+	return pythonPath
 }
 
-// GetNodePath 获取 Node.js NODE_PATH 环境变量
+// GetNodePath 获取 Node.js NODE_PATH 环境变量。
 func (m *Manager) GetNodePath() string {
+	if absPath, err := filepath.Abs(m.nodeModules); err == nil {
+		return absPath
+	}
 	return m.nodeModules
 }
 
-// getPipPath 获取 pip 路径
 func (m *Manager) getPipPath() string {
+	pipPath := ""
 	if os.PathSeparator == '\\' {
-		// Windows
-		return filepath.Join(m.pythonVenv, "Scripts", "pip.exe")
+		pipPath = filepath.Join(m.pythonVenv, "Scripts", "pip.exe")
+	} else {
+		pipPath = filepath.Join(m.pythonVenv, "bin", "pip")
 	}
-	// Linux/Mac
-	return filepath.Join(m.pythonVenv, "bin", "pip")
+	if absPath, err := filepath.Abs(pipPath); err == nil {
+		return absPath
+	}
+	return pipPath
 }
 
-// loadPythonDeps 加载 Python 依赖清单
 func (m *Manager) loadPythonDeps() (*PythonDeps, error) {
 	data, err := os.ReadFile(m.pythonDepsFile)
 	if err != nil {
@@ -218,15 +243,12 @@ func (m *Manager) loadPythonDeps() (*PythonDeps, error) {
 	if err := json.Unmarshal(data, &deps); err != nil {
 		return nil, err
 	}
-
 	if deps.Packages == nil {
 		deps.Packages = make(map[string]string)
 	}
-
 	return &deps, nil
 }
 
-// savePythonDeps 保存 Python 依赖清单
 func (m *Manager) savePythonDeps(deps *PythonDeps) error {
 	data, err := json.MarshalIndent(deps, "", "  ")
 	if err != nil {
@@ -235,7 +257,6 @@ func (m *Manager) savePythonDeps(deps *PythonDeps) error {
 	return os.WriteFile(m.pythonDepsFile, data, 0644)
 }
 
-// loadNodeDeps 加载 Node.js 依赖清单
 func (m *Manager) loadNodeDeps() (*NodeDeps, error) {
 	data, err := os.ReadFile(m.nodeDepsFile)
 	if err != nil {
@@ -246,15 +267,12 @@ func (m *Manager) loadNodeDeps() (*NodeDeps, error) {
 	if err := json.Unmarshal(data, &deps); err != nil {
 		return nil, err
 	}
-
 	if deps.Dependencies == nil {
 		deps.Dependencies = make(map[string]string)
 	}
-
 	return &deps, nil
 }
 
-// saveNodeDeps 保存 Node.js 依赖清单
 func (m *Manager) saveNodeDeps(deps *NodeDeps) error {
 	data, err := json.MarshalIndent(deps, "", "  ")
 	if err != nil {
@@ -263,44 +281,76 @@ func (m *Manager) saveNodeDeps(deps *NodeDeps) error {
 	return os.WriteFile(m.nodeDepsFile, data, 0644)
 }
 
-// GetPythonDeps 获取已安装的 Python 依赖
+// GetPythonDeps 获取已安装的 Python 依赖。
 func (m *Manager) GetPythonDeps() (map[string]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	deps, err := m.loadPythonDeps()
 	if err != nil {
 		return nil, err
 	}
+	changed := false
+	for pkg, version := range deps.Packages {
+		if version != "latest" && version != "" {
+			continue
+		}
+		actualVersion, err := m.getPythonPackageVersion(pkg)
+		if err == nil && actualVersion != "" {
+			deps.Packages[pkg] = actualVersion
+			changed = true
+		}
+	}
+	if changed {
+		if err := m.savePythonDeps(deps); err != nil {
+			return nil, err
+		}
+	}
 	return deps.Packages, nil
 }
 
-// GetNodeDeps 获取已安装的 Node.js 依赖
+// GetNodeDeps 获取已安装的 Node.js 依赖。
 func (m *Manager) GetNodeDeps() (map[string]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	deps, err := m.loadNodeDeps()
 	if err != nil {
 		return nil, err
 	}
+	changed := false
+	for pkg, version := range deps.Dependencies {
+		if version != "latest" && version != "" {
+			continue
+		}
+		actualVersion, err := m.getNodePackageVersion(pkg)
+		if err == nil && actualVersion != "" {
+			deps.Dependencies[pkg] = actualVersion
+			changed = true
+		}
+	}
+	if changed {
+		if err := m.saveNodeDeps(deps); err != nil {
+			return nil, err
+		}
+	}
 	return deps.Dependencies, nil
 }
 
-// UninstallPythonDep 卸载 Python 依赖
+// UninstallPythonDep 卸载 Python 依赖。
 func (m *Manager) UninstallPythonDep(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 读取已安装的依赖
 	installed, err := m.loadPythonDeps()
 	if err != nil {
 		return err
 	}
-
-	// 检查是否已安装
 	if _, exists := installed.Packages[name]; !exists {
 		return fmt.Errorf("依赖 %s 未安装", name)
 	}
 
-	// 获取 pip 路径
 	pipPath := m.getPipPath()
-
-	// 卸载依赖
 	fmt.Printf("正在卸载 Python 包: %s\n", name)
 	cmd := exec.Command(pipPath, "uninstall", "-y", name)
 	cmd.Stdout = os.Stdout
@@ -309,38 +359,23 @@ func (m *Manager) UninstallPythonDep(name string) error {
 		return fmt.Errorf("卸载 %s 失败: %w", name, err)
 	}
 
-	// 更新已安装清单
 	delete(installed.Packages, name)
-
-	// 保存依赖清单
 	return m.savePythonDeps(installed)
 }
 
-// UninstallNodeDep 卸载 Node.js 依赖
+// UninstallNodeDep 卸载 Node.js 依赖。
 func (m *Manager) UninstallNodeDep(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 读取 package.json
 	nodeDeps, err := m.loadNodeDeps()
 	if err != nil {
 		return err
 	}
-
-	// 检查是否已安装
 	if _, exists := nodeDeps.Dependencies[name]; !exists {
 		return fmt.Errorf("依赖 %s 未安装", name)
 	}
 
-	// 删除依赖
-	delete(nodeDeps.Dependencies, name)
-
-	// 保存 package.json
-	if err := m.saveNodeDeps(nodeDeps); err != nil {
-		return err
-	}
-
-	// 执行 npm uninstall
 	fmt.Printf("正在卸载 Node.js 包: %s\n", name)
 	runtimeDir := filepath.Dir(m.nodeModules)
 	cmd := exec.Command("npm", "uninstall", name)
@@ -351,6 +386,45 @@ func (m *Manager) UninstallNodeDep(name string) error {
 		return fmt.Errorf("npm uninstall 失败: %w", err)
 	}
 
+	delete(nodeDeps.Dependencies, name)
+	if err := m.saveNodeDeps(nodeDeps); err != nil {
+		return err
+	}
 	fmt.Println("Node.js 依赖卸载成功")
 	return nil
+}
+
+func (m *Manager) getPythonPackageVersion(pkg string) (string, error) {
+	cmd := exec.Command(m.GetPythonPath(), "-m", "pip", "show", pkg)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("获取 Python 包 %s 版本失败: %w", pkg, err)
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, "Version:") {
+			version := strings.TrimSpace(strings.TrimPrefix(line, "Version:"))
+			if version != "" {
+				return version, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("获取 Python 包 %s 版本失败: 未找到版本号", pkg)
+}
+
+func (m *Manager) getNodePackageVersion(pkg string) (string, error) {
+	packageJSON := filepath.Join(m.nodeModules, pkg, "package.json")
+	data, err := os.ReadFile(packageJSON)
+	if err != nil {
+		return "", fmt.Errorf("获取 Node.js 包 %s 版本失败: %w", pkg, err)
+	}
+	var info struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &info); err != nil {
+		return "", err
+	}
+	if info.Version == "" {
+		return "", fmt.Errorf("获取 Node.js 包 %s 版本失败: 未找到版本号", pkg)
+	}
+	return info.Version, nil
 }
