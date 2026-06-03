@@ -65,7 +65,7 @@
           </el-table-column>
           <el-table-column label="伪造身份" min-width="220">
             <template #default="{ row }">
-              <div>{{ row.platform }}{{ row.adapter_id ? ` #${row.adapter_id}` : '' }} / {{ row.user_id }}</div>
+              <div>{{ taskIdentityText(row) }}</div>
               <div class="task-desc">{{ row.group_id ? `群 ${row.group_id}` : '私聊' }}</div>
             </template>
           </el-table-column>
@@ -102,7 +102,7 @@
                 <div><span>来源</span><strong>{{ sourceName(row.source) }}</strong></div>
                 <div v-if="row.plugin_id"><span>插件</span><strong>{{ row.plugin_id }}</strong></div>
                 <div><span>表达式</span><strong>{{ row.cron }}</strong></div>
-                <div><span>身份</span><strong>{{ row.platform }}{{ row.adapter_id ? ` #${row.adapter_id}` : '' }} / {{ row.user_id }}</strong></div>
+                <div><span>身份</span><strong>{{ taskIdentityText(row) }}</strong></div>
                 <div><span>会话</span><strong>{{ row.group_id ? `群 ${row.group_id}` : '私聊' }}</strong></div>
                 <div><span>状态</span><strong>{{ row.enabled ? '启用' : '禁用' }}</strong></div>
                 <div><span>上次执行</span><strong>{{ formatTime(row.last_run_at) }}</strong></div>
@@ -154,14 +154,13 @@
           <span class="hint">多个表达式按行填写；@once 表示只允许手动启动，不自动定时执行。</span>
         </el-form-item>
         <el-form-item label="平台">
-          <el-select v-model="form.platform" filterable allow-create default-first-option placeholder="qq / telegram" style="width: 100%">
-            <el-option label="QQ" value="qq" />
-            <el-option label="Telegram" value="telegram" />
+          <el-select v-model="form.platform" filterable allow-create default-first-option placeholder="选择或输入平台" style="width: 100%" @change="handlePlatformChange">
+            <el-option v-for="option in adapterPlatformOptions" :key="option.value" :label="option.label" :value="option.value" />
           </el-select>
         </el-form-item>
         <el-form-item label="机器人实例">
           <el-select v-model="form.adapter_id" clearable filterable placeholder="不选则使用该平台第一个启用机器人" style="width: 100%">
-            <el-option v-for="adapter in adapterOptions" :key="adapter.value" :label="adapter.label" :value="adapter.value" />
+            <el-option v-for="adapter in filteredAdapterOptions" :key="adapter.value" :label="adapter.label" :value="adapter.value" />
           </el-select>
         </el-form-item>
         <el-form-item label="用户 ID">
@@ -190,7 +189,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/utils/request'
-import { getAdapters } from '@/api'
+import { getAdapterPlatforms, getAdapters } from '@/api'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -198,6 +197,12 @@ const runningId = ref(0)
 const dialogVisible = ref(false)
 const items = ref([])
 const adapters = ref([])
+const adapterPlatformFallback = [
+  { label: 'QQ', value: 'qq' },
+  { label: 'QQ 官方机器人', value: 'qq_office' },
+  { label: 'Telegram', value: 'telegram' }
+]
+const adapterPlatformOptions = ref([...adapterPlatformFallback])
 const searchKeyword = ref('')
 const statusFilter = ref('all')
 const selectedItems = ref([])
@@ -223,6 +228,8 @@ const statusCounters = computed(() => ({
 }))
 
 const hasSelection = computed(() => selectedItems.value.length > 0)
+const adapterPlatformNames = computed(() => Object.fromEntries(adapterPlatformOptions.value.map((option) => [option.value, option.label])))
+const adapterById = computed(() => Object.fromEntries(adapters.value.map((adapter) => [String(adapter.id), adapter])))
 
 const filteredItems = computed(() => {
   const keyword = searchKeyword.value.trim().toLowerCase()
@@ -236,6 +243,10 @@ const filteredItems = computed(() => {
       item.task_key,
       item.description,
       item.plugin_id,
+      item.platform,
+      getPlatformName(item.platform),
+      item.adapter_id,
+      adapterLabelById(item.adapter_id),
       sourceName(item.source)
     ]
     return fields.some((field) => String(field || '').toLowerCase().includes(keyword))
@@ -252,6 +263,8 @@ const adapterOptions = computed(() => adapters.value.map((adapter) => ({
   value: String(adapter.id),
   platform: adapter.platform
 })))
+
+const filteredAdapterOptions = computed(() => adapterOptions.value.filter((adapter) => adapter.platform === form.platform))
 
 watch([searchKeyword, statusFilter], () => {
   page.value = 1
@@ -270,12 +283,14 @@ watch([filteredItems, pageSize], () => {
 const loadItems = async () => {
   loading.value = true
   try {
-    const [taskItems, adapterItems] = await Promise.all([
+    const [taskItems, adapterItems, platformItems] = await Promise.all([
       request.get('/scheduled-tasks'),
-      getAdapters()
+      getAdapters(),
+      getAdapterPlatforms().catch(() => [])
     ])
     items.value = taskItems
     adapters.value = adapterItems
+    adapterPlatformOptions.value = normalizeAdapterPlatforms(platformItems)
   } finally {
     loading.value = false
   }
@@ -284,6 +299,7 @@ const loadItems = async () => {
 const openDialog = (item) => {
   Object.assign(form, createEmptyForm(), item ? { ...item } : {})
   if (!form.source) form.source = item?.source || 'user'
+  ensureSelectedAdapterMatchesPlatform()
   dialogVisible.value = true
 }
 
@@ -356,6 +372,10 @@ const deleteSelectedItems = async () => {
   }
 }
 
+const handlePlatformChange = () => {
+  ensureSelectedAdapterMatchesPlatform()
+}
+
 const runItem = async (item) => {
   runningId.value = item.id
   try {
@@ -388,6 +408,20 @@ function createEmptyForm() {
   }
 }
 
+function normalizeAdapterPlatforms(items) {
+  const options = Array.isArray(items)
+    ? items
+      .filter((item) => item && item.platform)
+      .map((item) => ({ label: item.display_name || item.platform, value: item.platform }))
+    : []
+  const merged = [...options]
+  const exists = new Set(merged.map((option) => option.value))
+  adapterPlatformFallback.forEach((option) => {
+    if (!exists.has(option.value)) merged.push(option)
+  })
+  return merged
+}
+
 function normalizeForm(value) {
   return {
     ...value,
@@ -412,9 +446,30 @@ function sourceName(source) {
   return source === 'plugin' ? '插件声明' : '管理员添加'
 }
 
+function getPlatformName(platform) {
+  return adapterPlatformNames.value[platform] || platform || '-'
+}
+
 function adapterLabel(adapter) {
-  const name = adapter.remark || adapter.description || adapter.platform
-  return `${adapter.platform} #${adapter.id} ${name}`
+  const name = adapter.remark || adapter.description || `${getPlatformName(adapter.platform)} #${adapter.id}`
+  return `${name}（${getPlatformName(adapter.platform)} / ID ${adapter.id}）`
+}
+
+function adapterLabelById(adapterId) {
+  const adapter = adapterById.value[String(adapterId || '')]
+  return adapter ? adapterLabel(adapter) : ''
+}
+
+function taskIdentityText(task) {
+  const adapterLabelText = adapterLabelById(task.adapter_id)
+  const platformText = adapterLabelText || `${getPlatformName(task.platform)}${task.adapter_id ? ` #${task.adapter_id}` : ''}`
+  return `${platformText} / ${task.user_id || '-'}`
+}
+
+function ensureSelectedAdapterMatchesPlatform() {
+  if (!form.adapter_id) return
+  const adapter = adapterById.value[String(form.adapter_id)]
+  if (!adapter || adapter.platform !== form.platform) form.adapter_id = ''
 }
 
 function formatTime(value) {

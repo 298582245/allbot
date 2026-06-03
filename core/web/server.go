@@ -21,6 +21,7 @@ import (
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/router"
+	"github.com/allbot/allbot/core/updater"
 	"github.com/allbot/allbot/core/utils"
 )
 
@@ -32,6 +33,7 @@ type Server struct {
 	logManager     *LogManager
 	startTime      time.Time
 	webFS          fs.FS
+	releaseClient  updater.ReleaseClient
 	sessionMu      sync.RWMutex
 	sessions       map[string]time.Time
 	serverMu       sync.Mutex
@@ -39,7 +41,7 @@ type Server struct {
 }
 
 func NewServer(port string, pluginManager *plugin.Manager, router *router.Router, adapterManager *config.AdapterManager, webFS fs.FS) *Server {
-	return &Server{port: port, pluginManager: pluginManager, router: router, adapterManager: adapterManager, logManager: NewLogManager(500), startTime: time.Now(), webFS: webFS, sessions: map[string]time.Time{}}
+	return &Server{port: port, pluginManager: pluginManager, router: router, adapterManager: adapterManager, logManager: NewLogManager(500), startTime: time.Now(), webFS: webFS, releaseClient: updater.NewGitHubClient(), sessions: map[string]time.Time{}}
 }
 
 func (s *Server) GetLogManager() *LogManager { return s.logManager }
@@ -61,6 +63,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/plugins", s.handlePlugins)
 	mux.HandleFunc("/api/plugins/", s.handlePluginDetail)
 	mux.HandleFunc("/api/system/status", s.handleSystemStatus)
+	mux.HandleFunc("/api/system/update", s.handleSystemUpdate)
 	mux.HandleFunc("/api/system/message-stats", s.handleMessageStats)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/settings/password", s.handleChangePassword)

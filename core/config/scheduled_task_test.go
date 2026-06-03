@@ -70,3 +70,30 @@ func TestDisablePluginScheduledTasksRejectsBlankPluginID(t *testing.T) {
 		t.Fatal("expected blank plugin id to be rejected")
 	}
 }
+
+func TestUpsertPluginScheduledTaskDoesNotOverwriteExistingTask(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	firstNextRunAt := time.Now().Add(time.Hour)
+	first, err := db.UpsertPluginScheduledTask("demo", &ScheduledTask{TaskKey: "daily", Name: "默认任务", Description: "默认描述", Enabled: true, Pinned: false, Cron: "0 8 * * *", Platform: "qq", AdapterID: "1", UserID: "admin", GroupID: "", Content: "默认内容", NextRunAt: &firstNextRunAt}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changedNextRunAt := time.Now().Add(2 * time.Hour)
+	second, err := db.UpsertPluginScheduledTask("demo", &ScheduledTask{TaskKey: "daily", Name: "覆盖任务", Description: "覆盖描述", Enabled: false, Pinned: true, Cron: "0 9 * * *", Platform: "telegram", AdapterID: "2", UserID: "other-admin", GroupID: "group", Content: "覆盖内容", NextRunAt: &changedNextRunAt}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if second.ID != first.ID {
+		t.Fatalf("id = %d, expected %d", second.ID, first.ID)
+	}
+	if second.Name != "默认任务" || second.Description != "默认描述" || !second.Enabled || second.Pinned || second.Cron != "0 8 * * *" || second.Platform != "qq" || second.AdapterID != "1" || second.UserID != "admin" || second.GroupID != "" || second.Content != "默认内容" {
+		t.Fatalf("existing task was overwritten: %#v", second)
+	}
+}

@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -11,6 +12,8 @@ import (
 	qqofficeadapter "github.com/allbot/allbot/core/adapter/qq_office"
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/types"
+	"github.com/allbot/allbot/core/updater"
+	"github.com/allbot/allbot/core/version"
 )
 
 type keywordReplyFakeAdapter struct {
@@ -24,6 +27,15 @@ type keywordReplyFakeAdapter struct {
 type sentKeywordReplyMessage struct {
 	target string
 	text   string
+}
+
+type fakeReleaseClient struct {
+	release *updater.ReleaseInfo
+	err     error
+}
+
+func (c fakeReleaseClient) LatestRelease(ctx context.Context) (*updater.ReleaseInfo, error) {
+	return c.release, c.err
 }
 
 func (a *keywordReplyFakeAdapter) GetPlatform() string { return "qq" }
@@ -118,6 +130,68 @@ func TestKeywordReplyRegisterExistingUserRepliesAlreadyRegistered(t *testing.T) 
 	}
 	if !strings.Contains(messages[1].text, "已注册，无需重复注册") {
 		t.Fatalf("second message = %q, expected already registered tip", messages[1].text)
+	}
+}
+
+func TestKeywordReplyVersionShowsLatestRelease(t *testing.T) {
+	original := version.Version
+	version.Version = "v1.0.0"
+	defer func() { version.Version = original }()
+
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+	manager.SetReleaseClient(fakeReleaseClient{release: &updater.ReleaseInfo{Version: "v1.0.1", Body: "1. 修复问题"}})
+
+	if !manager.Handle(&types.Message{Platform: "telegram", UserID: "7089240306", Content: "version"}) {
+		t.Fatal("Handle returned false")
+	}
+	messages := fake.sentMessages()
+	if len(messages) != 1 {
+		t.Fatalf("messages len = %d", len(messages))
+	}
+	for _, expected := range []string{"AllBot v1.0.0", "当前版本：v1.0.0", "最新版本：v1.0.1", "更新内容：", "1. 修复问题", "发送「更新」可升级到最新版本。"} {
+		if !strings.Contains(messages[0].text, expected) {
+			t.Fatalf("version message missing %q: %s", expected, messages[0].text)
+		}
+	}
+}
+
+func TestKeywordReplyVersionAlreadyLatest(t *testing.T) {
+	original := version.Version
+	version.Version = "v1.0.1"
+	defer func() { version.Version = original }()
+
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+	manager.SetReleaseClient(fakeReleaseClient{release: &updater.ReleaseInfo{Version: "v1.0.1"}})
+
+	if !manager.Handle(&types.Message{Platform: "telegram", UserID: "7089240306", Content: "version"}) {
+		t.Fatal("Handle returned false")
+	}
+	messages := fake.sentMessages()
+	if len(messages) != 1 || !strings.Contains(messages[0].text, "当前已是最新版本。") {
+		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestKeywordReplyVersionReleaseFailure(t *testing.T) {
+	original := version.Version
+	version.Version = "v1.0.0"
+	defer func() { version.Version = original }()
+
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+	manager.SetReleaseClient(fakeReleaseClient{err: errors.New("网络失败")})
+
+	if !manager.Handle(&types.Message{Platform: "telegram", UserID: "7089240306", Content: "version"}) {
+		t.Fatal("Handle returned false")
+	}
+	messages := fake.sentMessages()
+	if len(messages) != 1 || !strings.Contains(messages[0].text, "最新版本：获取失败") || !strings.Contains(messages[0].text, "网络失败") {
+		t.Fatalf("messages = %#v", messages)
 	}
 }
 

@@ -52,19 +52,54 @@
         </section>
 
         <section class="form-section">
-          <div class="section-title">系统信息</div>
-          <div class="info-grid">
+          <div class="section-header">
+            <div class="section-title">系统信息</div>
+            <div class="section-actions">
+              <el-button size="small" :loading="checkingUpdate" @click="loadUpdateInfo">检查更新</el-button>
+              <el-tooltip :content="upgradeButtonTip" placement="top">
+                <span class="disabled-button-wrap">
+                  <el-button size="small" type="primary" disabled>升级</el-button>
+                </span>
+              </el-tooltip>
+            </div>
+          </div>
+          <div class="info-grid" v-loading="checkingUpdate">
             <div class="info-item">
               <span>版本</span>
-              <strong>AllBot v1.0.0</strong>
+              <strong>{{ displayValue(systemInfo.version) }}</strong>
+            </div>
+            <div class="info-item">
+              <span>Commit</span>
+              <strong>{{ displayValue(systemInfo.commit) }}</strong>
+            </div>
+            <div class="info-item">
+              <span>构建时间</span>
+              <strong>{{ displayValue(systemInfo.buildTime) }}</strong>
             </div>
             <div class="info-item">
               <span>Go 版本</span>
-              <strong>1.21+</strong>
+              <strong>{{ displayValue(systemInfo.goVersion) }}</strong>
+            </div>
+            <div class="info-item">
+              <span>最新版本</span>
+              <strong>{{ displayValue(systemInfo.latestVersion) }}</strong>
+            </div>
+            <div class="info-item">
+              <span>更新状态</span>
+              <el-tag :type="updateStatusType" effect="plain">{{ updateStatusText }}</el-tag>
+              <p v-if="updateInfo.error" class="info-tip error">{{ updateInfo.error }}</p>
+              <p v-if="systemInfo.upgradeMessage" class="info-tip">{{ systemInfo.upgradeMessage }}</p>
             </div>
             <div class="info-item wide">
-              <span>数据库</span>
-              <strong>SQLite 3（配置保存在 system_settings 表）</strong>
+              <span>Release 内容</span>
+              <pre class="release-body">{{ displayValue(systemInfo.releaseBody, '暂无 Release 内容') }}</pre>
+            </div>
+            <div class="info-item wide">
+              <span>Release 链接</span>
+              <el-link v-if="systemInfo.releaseUrl" :href="systemInfo.releaseUrl" target="_blank" type="primary">
+                {{ systemInfo.releaseUrl }}
+              </el-link>
+              <strong v-else>{{ displayValue(systemInfo.releaseUrl) }}</strong>
             </div>
           </div>
         </section>
@@ -97,15 +132,17 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { getUpdateInfo } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import request from '@/utils/request'
 
 const authStore = useAuthStore()
 const loading = ref(false)
 const saving = ref(false)
+const checkingUpdate = ref(false)
 const pageDescription = '管理 Web UI、插件加载和系统基础信息。'
 
 const showPageDescription = () => {
@@ -124,6 +161,46 @@ const form = reactive({
   auto_load_plugins: true,
   points_unit: '积分',
   access_control: createAccessControl()
+})
+
+const updateInfo = reactive(createEmptyUpdateInfo())
+
+const systemInfo = computed(() => {
+  const current = objectValue(updateInfo.current)
+  const latest = objectValue(updateInfo.latest)
+  const release = objectValue(updateInfo.release)
+  return {
+    version: firstText(updateInfo.displayVersion, updateInfo.display_version, updateInfo.version, updateInfo.currentVersion, updateInfo.current_version, current.displayVersion, current.display_version, current.version),
+    commit: firstText(updateInfo.commit, current.commit),
+    buildTime: firstText(updateInfo.buildTime, updateInfo.build_time, current.buildTime, current.build_time),
+    goVersion: firstText(updateInfo.goVersion, updateInfo.go_version, current.goVersion, current.go_version),
+    latestVersion: firstText(updateInfo.latestVersion, updateInfo.latest_version, latest.version, latest.tagName, latest.tag_name, release.version),
+    hasUpdate: Boolean(firstDefined(updateInfo.hasUpdate, updateInfo.has_update)),
+    upgradeSupported: Boolean(firstDefined(updateInfo.upgradeSupported, updateInfo.upgrade_supported)),
+    upgradeMessage: firstText(updateInfo.upgradeMessage, updateInfo.upgrade_message, updateInfo.message),
+    releaseBody: firstText(updateInfo.releaseBody, updateInfo.release_body, updateInfo.body, latest.body, release.body),
+    releaseUrl: firstText(updateInfo.releaseUrl, updateInfo.release_url, updateInfo.url, updateInfo.htmlUrl, updateInfo.html_url, latest.url, latest.htmlUrl, latest.html_url, release.url, release.htmlUrl, release.html_url)
+  }
+})
+
+const updateStatusText = computed(() => {
+  if (!updateInfo.loaded) return '未检查'
+  if (updateInfo.error) return '检查失败'
+  if (systemInfo.value.hasUpdate) return '发现新版本'
+  return '已是最新'
+})
+
+const updateStatusType = computed(() => {
+  if (updateInfo.error) return 'danger'
+  if (systemInfo.value.hasUpdate) return 'warning'
+  if (updateInfo.loaded) return 'success'
+  return 'info'
+})
+
+const upgradeButtonTip = computed(() => {
+  if (!systemInfo.value.hasUpdate) return systemInfo.value.upgradeMessage || '当前没有可升级版本'
+  if (!systemInfo.value.upgradeSupported) return systemInfo.value.upgradeMessage || '当前环境暂不支持在线升级'
+  return systemInfo.value.upgradeMessage || '升级功能暂未开放'
 })
 
 const passwordDialogVisible = ref(false)
@@ -167,6 +244,27 @@ const loadSettings = async () => {
   }
 }
 
+const loadUpdateInfo = async () => {
+  checkingUpdate.value = true
+  try {
+    const data = await getUpdateInfo()
+    Object.assign(updateInfo, createEmptyUpdateInfo(), normalizeUpdateInfo(data), {
+      loaded: true
+    })
+  } catch (error) {
+    Object.assign(updateInfo, createEmptyUpdateInfo(), {
+      loaded: true,
+      error: error?.response?.data?.error || error?.message || '检查更新失败'
+    })
+  } finally {
+    checkingUpdate.value = false
+  }
+}
+
+const loadPageData = () => {
+  Promise.allSettled([loadSettings(), loadUpdateInfo()])
+}
+
 const showPasswordDialog = () => {
   passwordForm.oldPassword = ''
   passwordForm.newPassword = ''
@@ -203,7 +301,64 @@ const handleSave = async () => {
   }
 }
 
-onMounted(loadSettings)
+onMounted(loadPageData)
+
+function createEmptyUpdateInfo() {
+  return {
+    loaded: false,
+    error: '',
+    version: '',
+    displayVersion: '',
+    display_version: '',
+    currentVersion: '',
+    current_version: '',
+    commit: '',
+    buildTime: '',
+    build_time: '',
+    goVersion: '',
+    go_version: '',
+    latestVersion: '',
+    latest_version: '',
+    hasUpdate: false,
+    has_update: false,
+    upgradeSupported: false,
+    upgrade_supported: false,
+    upgradeMessage: '',
+    upgrade_message: '',
+    releaseBody: '',
+    release_body: '',
+    releaseUrl: '',
+    release_url: '',
+    url: '',
+    htmlUrl: '',
+    html_url: '',
+    body: '',
+    current: null,
+    latest: null,
+    release: null
+  }
+}
+
+function normalizeUpdateInfo(value) {
+  return value && typeof value === 'object' ? value : {}
+}
+
+function objectValue(value) {
+  return value && typeof value === 'object' ? value : {}
+}
+
+function firstDefined(...items) {
+  return items.find(item => item !== undefined && item !== null)
+}
+
+function firstText(...items) {
+  const value = firstDefined(...items)
+  return value === undefined ? '' : String(value).trim()
+}
+
+function displayValue(value, fallback = '未知') {
+  return String(value || '').trim() || fallback
+}
 
 function createAccessControl() {
   return {
@@ -261,6 +416,23 @@ function normalizeAccessControl(value) {
   color: #303133;
 }
 
+.section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.disabled-button-wrap {
+  display: inline-flex;
+}
+
 .hint { margin-left: 10px; color: #999; }
 
 .info-grid {
@@ -279,6 +451,27 @@ function normalizeAccessControl(value) {
 .info-item.wide { grid-column: 1 / -1; }
 .info-item span { display: block; margin-bottom: 6px; color: #909399; font-size: 12px; }
 .info-item strong { color: #303133; font-weight: 600; word-break: break-all; }
+
+.info-tip {
+  margin: 8px 0 0;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.info-tip.error { color: #f56c6c; }
+
+.release-body {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  color: #303133;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 .form-actions {
   position: sticky;
@@ -303,6 +496,14 @@ function normalizeAccessControl(value) {
   .page-header p { display: none; font-size: 12px; line-height: 1.5; }
   .settings-form { padding-right: 0; }
   .form-section { padding: 12px; border-radius: 12px; }
+  .section-header { display: block; }
+  .section-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-bottom: 14px;
+  }
+  .section-actions .el-button,
+  .disabled-button-wrap { width: 100%; }
   .settings :deep(.el-form-item) { display: block; margin-bottom: 16px; }
   .settings :deep(.el-form-item__label) {
     width: 100% !important;

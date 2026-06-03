@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -18,9 +19,9 @@ import (
 	"github.com/allbot/allbot/core/adapter"
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/types"
+	"github.com/allbot/allbot/core/updater"
+	"github.com/allbot/allbot/core/version"
 )
-
-const FrameworkVersion = "AllBot v1.0.0"
 
 type RestartRequest struct {
 	MessageKey string
@@ -37,13 +38,21 @@ type KeywordReplyManager struct {
 	adapterFor       func(msg *types.Message) adapter.Adapter
 	adminCheck       func(platform, userID string) bool
 	startTime        time.Time
+	releaseClient    updater.ReleaseClient
 	restartHandler   func(RestartRequest) error
 	restartMu        sync.Mutex
 	restartRequested bool
 }
 
 func NewKeywordReplyManager(database *config.Database, adapterFor func(msg *types.Message) adapter.Adapter, adminCheck func(platform, userID string) bool, startTime time.Time) *KeywordReplyManager {
-	return &KeywordReplyManager{database: database, adapterFor: adapterFor, adminCheck: adminCheck, startTime: startTime}
+	return &KeywordReplyManager{database: database, adapterFor: adapterFor, adminCheck: adminCheck, startTime: startTime, releaseClient: updater.NewGitHubClient()}
+}
+
+func (m *KeywordReplyManager) SetReleaseClient(client updater.ReleaseClient) {
+	if client == nil {
+		client = updater.NewGitHubClient()
+	}
+	m.releaseClient = client
 }
 
 func (m *KeywordReplyManager) SetRestartHandler(handler func(RestartRequest) error) {
@@ -157,7 +166,7 @@ func (m *KeywordReplyManager) replyBuiltin(keyword string, msg *types.Message) e
 	case "system":
 		return m.sendText(adp, target, msg, m.systemInfo())
 	case "version":
-		return m.sendText(adp, target, msg, FrameworkVersion)
+		return m.sendText(adp, target, msg, m.versionInfo())
 	case "重启":
 		return m.replyRestart(adp, target, msg)
 	default:
@@ -344,6 +353,50 @@ func (m *KeywordReplyManager) pointsUnit() string {
 
 func userRegisterGuide() string {
 	return "当前用户还未注册。\n请选择：\n1. 发送「注册」自动注册当前平台账号\n2. 如需绑定其他平台，请先到已注册平台私聊发送「绑定码」，再回到当前平台私聊发送「绑定 绑定码」"
+}
+
+func (m *KeywordReplyManager) versionInfo() string {
+	current := strings.TrimSpace(version.Version)
+	if current == "" {
+		current = "unknown"
+	}
+	lines := []string{
+		version.DisplayVersion(),
+		"",
+		"版本信息：",
+		"当前版本：" + current,
+	}
+	client := m.releaseClient
+	if client == nil {
+		client = updater.NewGitHubClient()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	release, err := client.LatestRelease(ctx)
+	if err != nil {
+		lines = append(lines, "最新版本：获取失败", "", "失败原因："+err.Error())
+		return strings.Join(lines, "\n")
+	}
+	latest := strings.TrimSpace(release.Version)
+	if latest == "" {
+		latest = "未知"
+	}
+	lines = append(lines, "最新版本："+latest)
+	compare, compareErr := updater.CompareVersion(current, latest)
+	body := strings.TrimSpace(release.Body)
+	if body != "" {
+		lines = append(lines, "", "更新内容：", body)
+	}
+	if compareErr != nil {
+		lines = append(lines, "", "版本比较失败："+compareErr.Error())
+		return strings.Join(lines, "\n")
+	}
+	if compare < 0 {
+		lines = append(lines, "", "发送「更新」可升级到最新版本。")
+	} else {
+		lines = append(lines, "", "当前已是最新版本。")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *KeywordReplyManager) systemInfo() string {

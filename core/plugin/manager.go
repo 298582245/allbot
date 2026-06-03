@@ -305,7 +305,7 @@ func (m *Manager) StartPluginByID(pluginID string) error {
 	return m.ReloadPlugin(pluginID)
 }
 
-func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte, replyFunc func(string) error, imageFunc func(string) error, fileFunc func(string) error, listenFunc func(timeout int) string, dataViewFunc func(config.DataViewConfig) error, dbFunc func(pluginID string, action PluginDBAction) PluginDBResult, fakeMessageFunc func(pluginID string, action FakeMessageAction) error, sendMessageFunc func(pluginID string, action SendMessageAction) PluginUserResult, userFunc func() PluginUserResult, configFunc func(pluginID string, action PluginConfigAction) PluginUserResult, scheduleFunc func(pluginID string, action ScheduledTaskAction) PluginUserResult, accountFunc func(pluginID string, action PluginAccountAction) PluginUserResult, authFunc func(pluginID string, action PluginAuthorizationAction) PluginUserResult, scriptFunc func(pluginID string, action ScriptRunAction) PluginUserResult) error {
+func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte, replyFunc func(string) error, imageFunc func(string) error, fileFunc func(string) error, listenFunc func(timeout int) string, dataViewFunc func(config.DataViewConfig) error, dbFunc func(pluginID string, action PluginDBAction) PluginDBResult, fakeMessageFunc func(pluginID string, action FakeMessageAction) error, sendMessageFunc func(pluginID string, action SendMessageAction) PluginUserResult, userFunc func() PluginUserResult, adminFunc func(platform string) PluginUserResult, configFunc func(pluginID string, action PluginConfigAction) PluginUserResult, scheduleFunc func(pluginID string, action ScheduledTaskAction) PluginUserResult, accountFunc func(pluginID string, action PluginAccountAction) PluginUserResult, authFunc func(pluginID string, action PluginAuthorizationAction) PluginUserResult, scriptFunc func(pluginID string, action ScriptRunAction) PluginUserResult) error {
 	cmd, err := m.newDirectCommand(plugin, pluginPath)
 	if err != nil {
 		return err
@@ -474,6 +474,14 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 				result = userFunc()
 			}
 			response, _ := json.Marshal(map[string]interface{}{"action": "union_id_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
+			response = append(response, '\n')
+			_, _ = stdin.Write(response)
+		case "list_platform_admins":
+			result := PluginUserResult{Success: false, Error: "管理员身份执行器不可用"}
+			if adminFunc != nil {
+				result = adminFunc(action.Platform)
+			}
+			response, _ := json.Marshal(map[string]interface{}{"action": "platform_admins_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
 			response = append(response, '\n')
 			_, _ = stdin.Write(response)
 		case "set_access_control":

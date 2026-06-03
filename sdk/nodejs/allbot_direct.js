@@ -209,6 +209,26 @@ class Context {
         return this.setAccessControl(config);
     }
 
+    async listPlatformAdmins(options = {}) {
+        const data = await this._request({
+            action: 'list_platform_admins',
+            platform: String(options.platform || '')
+        }, 'platform_admins_response');
+        return Array.isArray(data) ? data : [];
+    }
+
+    async list_platform_admins(options = {}) {
+        return this.listPlatformAdmins(options);
+    }
+
+    async getPlatformAdmins(options = {}) {
+        return this.listPlatformAdmins(options);
+    }
+
+    async get_platform_admins(options = {}) {
+        return this.listPlatformAdmins(options);
+    }
+
     async setScheduledTask(options = {}) {
         return this._request({
             action: 'set_scheduled_task',

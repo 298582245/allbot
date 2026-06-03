@@ -17,6 +17,14 @@ export const getSystemStatus = () => {
   })
 }
 
+// 获取更新信息
+export const getUpdateInfo = () => {
+  return request({
+    url: '/system/update',
+    method: 'get'
+  })
+}
+
 // 获取仪表盘消息统计
 export const getMessageStats = (params = {}) => {
   return request({

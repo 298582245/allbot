@@ -354,6 +354,18 @@ class AccountQLPlugin {
   }
 
   async ensureSchedules(ctx) {
+    let admins = [];
+    try {
+      admins = await ctx.listPlatformAdmins();
+    } catch (error) {
+      console.log(`声明${this.prefix}定时任务失败：获取管理员身份失败：${error.message}`);
+      return;
+    }
+    const admin = admins[0];
+    if (!admin) {
+      console.log(`声明${this.prefix}定时任务失败：没有已启动平台的管理员身份`);
+      return;
+    }
     for (const schedule of normalizeSchedules(this.prefix, this.schedules)) {
       try {
         await ctx.setScheduledTask({
@@ -361,6 +373,10 @@ class AccountQLPlugin {
           name: schedule.name,
           description: schedule.description,
           cron: String(ctx.config(schedule.cronConfig, schedule.cron) || schedule.cron),
+          platform: admin.platform,
+          adapterId: admin.adapter_id,
+          userId: admin.user_id,
+          groupId: '',
           content: schedule.content,
           maxCount: schedule.maxCount || 3
         });

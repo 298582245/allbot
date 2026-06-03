@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Prepare metadata
+        id: meta
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          COMMIT="${GITHUB_SHA}"
+          BUILD_TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
+          echo "build_time=${BUILD_TIME}" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        shell: bash
+        run: go test ./...
+
+      - name: Build release assets
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+          BUILD_TIME: ${{ steps.meta.outputs.build_time }}
+        run: |
+          mkdir -p dist
+          LDFLAGS="-s -w -X github.com/allbot/allbot/core/version.Version=${TAG} -X github.com/allbot/allbot/core/version.Commit=${COMMIT} -X github.com/allbot/allbot/core/version.BuildTime=${BUILD_TIME}"
+
+          GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o "dist/allbot-${TAG}-windows-amd64.exe" .
+          GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o "dist/allbot-${TAG}-linux-amd64" .
+          GOOS=linux GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o "dist/allbot-${TAG}-linux-arm64" .
+
+          cd dist
+          sha256sum allbot-${TAG}-* > "checksums-${TAG}.txt"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: AllBot ${{ steps.meta.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/allbot-${{ steps.meta.outputs.tag }}-windows-amd64.exe
+            dist/allbot-${{ steps.meta.outputs.tag }}-linux-amd64
+            dist/allbot-${{ steps.meta.outputs.tag }}-linux-arm64
+            dist/checksums-${{ steps.meta.outputs.tag }}.txt

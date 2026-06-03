@@ -84,6 +84,67 @@ func (r *Router) SetAdminChecker(checker func(platform, userID string) bool) {
 	r.adminChecker = checker
 }
 
+func (r *Router) startedPlatformAdmins(filterPlatform string) ([]map[string]string, error) {
+	r.mu.RLock()
+	database := r.database
+	messageGetter := r.messageGetter
+	adapterGetter := r.adapterGetter
+	r.mu.RUnlock()
+	if database == nil {
+		return nil, fmt.Errorf("数据库不可用")
+	}
+	settings, err := database.GetSystemSettings()
+	if err != nil {
+		return nil, err
+	}
+	adapterItems, err := database.GetAllAdapters()
+	if err != nil {
+		return nil, err
+	}
+	filterPlatform = strings.TrimSpace(filterPlatform)
+	runningAdapterByPlatform := make(map[string]string)
+	for _, item := range adapterItems {
+		if item == nil || !item.Enabled {
+			continue
+		}
+		platform := strings.TrimSpace(item.Platform)
+		if platform == "" || (filterPlatform != "" && platform != filterPlatform) {
+			continue
+		}
+		adapterID := strconv.FormatInt(item.ID, 10)
+		running := false
+		if messageGetter != nil {
+			running = messageGetter(&types.Message{Platform: platform, Metadata: map[string]string{"adapter_id": adapterID}}) != nil
+		} else if adapterGetter != nil {
+			running = adapterGetter(platform) != nil
+		}
+		if running && runningAdapterByPlatform[platform] == "" {
+			runningAdapterByPlatform[platform] = adapterID
+		}
+	}
+
+	result := make([]map[string]string, 0)
+	seen := make(map[string]bool)
+	for _, admin := range settings.PlatformAdmins {
+		platform := strings.TrimSpace(admin.Platform)
+		userID := strings.TrimSpace(admin.UserID)
+		if platform == "" || userID == "" || (filterPlatform != "" && platform != filterPlatform) {
+			continue
+		}
+		adapterID := runningAdapterByPlatform[platform]
+		if adapterID == "" {
+			continue
+		}
+		key := platform + "\x00" + userID + "\x00" + adapterID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, map[string]string{"platform": platform, "user_id": userID, "adapter_id": adapterID})
+	}
+	return result, nil
+}
+
 func (r *Router) SetKeywordReplyManager(manager *KeywordReplyManager) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -401,6 +462,13 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		}
 		return plugincore.PluginUserResult{Success: true, Data: map[string]interface{}{"union_id": account.UnionID, "platform": account.Platform, "user_id": account.UserID, "points": account.Points}}
 	}
+	adminFunc := func(platform string) plugincore.PluginUserResult {
+		items, err := r.startedPlatformAdmins(platform)
+		if err != nil {
+			return plugincore.PluginUserResult{Success: false, Error: err.Error()}
+		}
+		return plugincore.PluginUserResult{Success: true, Data: items}
+	}
 	configFunc := func(pluginID string, action plugincore.PluginConfigAction) plugincore.PluginUserResult {
 		if err := r.pluginManager.SavePluginAccessControl(pluginID, action.AccessControl); err != nil {
 			return plugincore.PluginUserResult{Success: false, Error: err.Error()}
@@ -536,7 +604,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		return r.pluginManager.RunPluginScript(filepath.Join("plugins", pluginID), action)
 	}
 
-	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc); err != nil {
+	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc); err != nil {
 		log.Printf("Failed to execute plugin %s: %v", plugin.Name, err)
 	}
 }

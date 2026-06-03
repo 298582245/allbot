@@ -117,32 +117,19 @@ func (d *Database) UpsertPluginScheduledTask(pluginID string, item *ScheduledTas
 	if strings.TrimSpace(item.TaskKey) == "" {
 		return nil, fmt.Errorf("任务 key 不能为空")
 	}
-	if err := normalizeScheduledTask(item); err != nil {
-		return nil, err
-	}
-	now := time.Now()
 	var existingID int64
 	err := d.db.QueryRow(`SELECT id FROM scheduled_tasks WHERE plugin_id = ? AND task_key = ?`, item.PluginID, item.TaskKey).Scan(&existingID)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
 	if err == nil {
-		item.ID = existingID
-		if item.Enabled && item.NextRunAt == nil && !strings.EqualFold(strings.TrimSpace(item.Cron), "@once") {
-			var existingNextRunAt sql.NullTime
-			if err := d.db.QueryRow(`SELECT next_run_at FROM scheduled_tasks WHERE id = ?`, item.ID).Scan(&existingNextRunAt); err != nil {
-				return nil, err
-			}
-			if existingNextRunAt.Valid && existingNextRunAt.Time.After(now) {
-				item.NextRunAt = &existingNextRunAt.Time
-			}
-		}
-		_, err = d.db.Exec(`
-			UPDATE scheduled_tasks
-			SET name = ?, description = ?, enabled = ?, pinned = ?, cron = ?, platform = ?, adapter_id = ?, user_id = ?, group_id = ?, content = ?, source = 'plugin', next_run_at = ?, updated_at = ?
-			WHERE id = ?
-		`, item.Name, item.Description, boolInt(item.Enabled), boolInt(item.Pinned), item.Cron, item.Platform, item.AdapterID, item.UserID, item.GroupID, item.Content, item.NextRunAt, now, item.ID)
-	} else {
+		return d.GetScheduledTask(existingID)
+	}
+	if err := normalizeScheduledTask(item); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	{
 		result, insertErr := d.db.Exec(`
 			INSERT INTO scheduled_tasks (plugin_id, task_key, name, description, enabled, pinned, cron, platform, adapter_id, user_id, group_id, content, source, next_run_at, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'plugin', ?, ?, ?)

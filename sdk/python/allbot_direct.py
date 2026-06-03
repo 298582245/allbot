@@ -204,6 +204,24 @@ class Context:
         """set_access_control 的 camelCase 别名。"""
         return await self.set_access_control(config)
 
+    async def list_platform_admins(self, **options: Any) -> List[Dict[str, Any]]:
+        """获取已启动平台上的管理员身份列表。"""
+        data = self._request({
+            "action": "list_platform_admins",
+            "platform": str(options.get("platform") or ""),
+        }, "platform_admins_response")
+        return data if isinstance(data, list) else []
+
+    async def listPlatformAdmins(self, **options: Any) -> List[Dict[str, Any]]:
+        """list_platform_admins 的 camelCase 别名。"""
+        return await self.list_platform_admins(**options)
+
+    async def get_platform_admins(self, **options: Any) -> List[Dict[str, Any]]:
+        return await self.list_platform_admins(**options)
+
+    async def getPlatformAdmins(self, **options: Any) -> List[Dict[str, Any]]:
+        return await self.list_platform_admins(**options)
+
     async def set_scheduled_task(self, **options: Any) -> Dict[str, Any]:
         """声明或更新当前插件关联的定时伪造消息任务。"""
         return self._request({
