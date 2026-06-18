@@ -65,3 +65,12 @@ htmlcov/
 
 #彩虹支付phphsdk
 pay/
+
+openapis/*
+!openapis/qrcode/
+
+# 忽略根目录下所有 .md 文件
+/*.md
+
+# 但保留 README.md
+!README.md
