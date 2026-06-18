@@ -34,6 +34,32 @@ export const getMessageStats = (params = {}) => {
   })
 }
 
+// 获取数据统计概览
+export const getStatisticsOverview = () => {
+  return request({
+    url: '/statistics/overview',
+    method: 'get'
+  })
+}
+
+// 获取消息总量趋势
+export const getMessageTotalTrend = (params = {}) => {
+  return request({
+    url: '/statistics/message-total-trend',
+    method: 'get',
+    params
+  })
+}
+
+// 获取插件触发趋势
+export const getPluginTriggerTrend = (params = {}) => {
+  return request({
+    url: '/statistics/plugin-trigger-trend',
+    method: 'get',
+    params
+  })
+}
+
 // 获取插件列表
 export const getPlugins = () => {
   return request({
@@ -93,6 +119,23 @@ export const deletePlugin = (pluginId) => {
   return request({
     url: `/plugins/${pluginId}`,
     method: 'delete'
+  })
+}
+
+// 获取插件回收站
+export const getPluginRecycleBin = () => {
+  return request({
+    url: '/plugins/recycle-bin',
+    method: 'get'
+  })
+}
+
+// 删除插件备份压缩包
+export const deletePluginBackup = (name) => {
+  return request({
+    url: '/plugins/recycle-bin',
+    method: 'delete',
+    params: { name }
   })
 }
 
@@ -156,6 +199,69 @@ export const updateOpenApiCode = (id, data) => {
   })
 }
 
+// 获取运行环境 Profile
+export const getRuntimeProfiles = () => {
+  return request({
+    url: '/runtime-profiles',
+    method: 'get'
+  })
+}
+
+// 保存运行环境 Profile
+export const saveRuntimeProfiles = (profiles) => {
+  return request({
+    url: '/runtime-profiles',
+    method: 'put',
+    data: { profiles }
+  })
+}
+
+// 初始化运行环境 Profile
+export const initRuntimeProfile = (data) => {
+  return request({
+    url: '/runtime-profiles/init',
+    method: 'post',
+    data,
+    timeout: 15 * 60 * 1000
+  })
+}
+
+// 获取运行环境 Profile 初始化任务
+export const getRuntimeProfileInitJob = (jobId) => {
+  return request({
+    url: `/runtime-profiles/init/${encodeURIComponent(String(jobId))}`,
+    method: 'get',
+    silent: true
+  })
+}
+
+// 获取运行环境 Profile 最新初始化任务
+export const getLatestRuntimeProfileInitJob = (profileId) => {
+  return request({
+    url: '/runtime-profiles/init/latest',
+    method: 'get',
+    params: { profile_id: profileId },
+    silent: true
+  })
+}
+
+// 获取运行环境 Profile 状态
+export const getRuntimeProfileStatus = () => {
+  return request({
+    url: '/runtime-profiles/status',
+    method: 'get'
+  })
+}
+
+// 测试运行环境 Profile
+export const testRuntimeProfile = (profile) => {
+  return request({
+    url: '/runtime-profiles/test',
+    method: 'post',
+    data: profile
+  })
+}
+
 // 获取适配器平台列表
 export const getAdapterPlatforms = () => {
   return request({
@@ -210,6 +316,85 @@ export const getLogs = () => {
 export const clearLogs = () => {
   return request({
     url: '/logs',
+    method: 'delete'
+  })
+}
+
+// 获取备份概览
+export const getBackups = () => {
+  return request({
+    url: '/backups',
+    method: 'get'
+  })
+}
+
+// 保存备份配置
+export const saveBackupSettings = (data) => {
+  return request({
+    url: '/backups/settings',
+    method: 'put',
+    data
+  })
+}
+
+// 手动创建备份
+export const createBackup = () => {
+  return request({
+    url: '/backups',
+    method: 'post',
+    timeout: 10 * 60 * 1000
+  })
+}
+
+// 删除备份文件
+export const deleteBackup = (name) => {
+  return request({
+    url: `/backups/${encodeURIComponent(String(name))}/delete`,
+    method: 'delete'
+  })
+}
+
+// 获取图床配置
+export const getImageSettings = () => {
+  return request({
+    url: '/images/settings',
+    method: 'get'
+  })
+}
+
+// 保存图床配置
+export const saveImageSettings = (data) => {
+  return request({
+    url: '/images/settings',
+    method: 'put',
+    data
+  })
+}
+
+// 获取图床图片列表
+export const listImages = (params = {}) => {
+  return request({
+    url: '/images',
+    method: 'get',
+    params
+  })
+}
+
+// 上传图床图片
+export const uploadImage = (formData) => {
+  return request({
+    url: '/images',
+    method: 'post',
+    data: formData,
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000
+  })
+}
+
+// 删除图床图片
+export const deleteImage = (id) => {
+  return request({
+    url: `/images/${encodeURIComponent(String(id))}`,
     method: 'delete'
   })
 }

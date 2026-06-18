@@ -189,6 +189,21 @@ func (d *Database) ensureUserPoints(unionID string) error {
 	return err
 }
 
+func (d *Database) GetUserPoints(unionID string) (int64, error) {
+	unionID = strings.TrimSpace(unionID)
+	if unionID == "" {
+		return 0, fmt.Errorf("用户 union_id 不能为空")
+	}
+	if err := d.ensureUserPoints(unionID); err != nil {
+		return 0, err
+	}
+	var points int64
+	if err := d.db.QueryRow(`SELECT points FROM user_points WHERE union_id = ?`, unionID).Scan(&points); err != nil {
+		return 0, err
+	}
+	return points, nil
+}
+
 func (d *Database) ConsumeUserPoints(unionID string, amount int64) (int64, error) {
 	d.pointsMu.Lock()
 	defer d.pointsMu.Unlock()

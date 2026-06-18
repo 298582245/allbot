@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -179,12 +180,35 @@ func (m *AdapterManager) ReloadAdapterByID(id int64) error {
 }
 
 func (m *AdapterManager) GetAdapter(platform string) adapter.Adapter {
+	platform = strings.TrimSpace(platform)
+	if platform == "" {
+		return nil
+	}
+	if m.db != nil {
+		configs, err := m.db.GetAllAdapters()
+		if err == nil {
+			for _, config := range configs {
+				if config == nil || !config.Enabled || config.Platform != platform {
+					continue
+				}
+				if adp := m.GetAdapterByID(config.ID); adp != nil {
+					return adp
+				}
+			}
+			return nil
+		}
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
-	for id, adp := range m.adapters {
-		config, err := m.db.GetAdapterByID(id)
-		if err == nil && config != nil && config.Platform == platform {
+	ids := make([]int64, 0, len(m.adapters))
+	for id := range m.adapters {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		adp := m.adapters[id]
+		if adp != nil && adp.GetPlatform() == platform {
 			return adp
 		}
 	}
@@ -198,18 +222,19 @@ func (m *AdapterManager) GetAdapterByID(id int64) adapter.Adapter {
 }
 
 func (m *AdapterManager) GetAdapterForMessage(msg *types.Message) adapter.Adapter {
-	if msg != nil && msg.Metadata != nil {
-		if adapterIDText := msg.Metadata["adapter_id"]; adapterIDText != "" {
-			if adapterID, err := strconv.ParseInt(adapterIDText, 10, 64); err == nil {
-				if adp := m.GetAdapterByID(adapterID); adp != nil {
-					return adp
-				}
-			}
-		}
-	}
-
 	if msg == nil {
 		return nil
+	}
+	adapterIDText := strings.TrimSpace(msg.AdapterID)
+	if adapterIDText == "" && msg.Metadata != nil {
+		adapterIDText = strings.TrimSpace(msg.Metadata["adapter_id"])
+	}
+	if adapterIDText != "" {
+		adapterID, err := strconv.ParseInt(adapterIDText, 10, 64)
+		if err != nil || adapterID <= 0 {
+			return nil
+		}
+		return m.GetAdapterByID(adapterID)
 	}
 	return m.GetAdapter(msg.Platform)
 }

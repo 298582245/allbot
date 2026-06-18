@@ -11,44 +11,72 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/allbot/allbot/core/backup"
 	"github.com/allbot/allbot/core/config"
+	"github.com/allbot/allbot/core/imagehost"
 	"github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/router"
 	"github.com/allbot/allbot/core/updater"
 	"github.com/allbot/allbot/core/utils"
 )
 
+type pluginBackupFile struct {
+	Name      string    `json:"name"`
+	Path      string    `json:"path"`
+	Size      int64     `json:"size"`
+	ModTime   time.Time `json:"mod_time"`
+	PluginID  string    `json:"plugin_id"`
+	Timestamp string    `json:"timestamp,omitempty"`
+}
+
 type Server struct {
-	port           string
-	pluginManager  *plugin.Manager
-	router         *router.Router
-	adapterManager *config.AdapterManager
-	logManager     *LogManager
-	startTime      time.Time
-	webFS          fs.FS
-	releaseClient  updater.ReleaseClient
-	sessionMu      sync.RWMutex
-	sessions       map[string]time.Time
-	serverMu       sync.Mutex
-	httpServer     *http.Server
+	port             string
+	pluginManager    *plugin.Manager
+	router           *router.Router
+	adapterManager   *config.AdapterManager
+	logManager       *LogManager
+	startTime        time.Time
+	webFS            fs.FS
+	releaseClient    updater.ReleaseClient
+	backupService    *backup.Service
+	imageHostService *imagehost.Service
+	runtimeInitJobs  *runtimeProfileInitJobStore
+	sessionMu        sync.RWMutex
+	sessions         map[string]time.Time
+	serverMu         sync.Mutex
+	httpServer       *http.Server
 }
 
 func NewServer(port string, pluginManager *plugin.Manager, router *router.Router, adapterManager *config.AdapterManager, webFS fs.FS) *Server {
-	return &Server{port: port, pluginManager: pluginManager, router: router, adapterManager: adapterManager, logManager: NewLogManager(500), startTime: time.Now(), webFS: webFS, releaseClient: updater.NewGitHubClient(), sessions: map[string]time.Time{}}
+	return &Server{port: port, pluginManager: pluginManager, router: router, adapterManager: adapterManager, logManager: NewLogManager(500), startTime: time.Now(), webFS: webFS, releaseClient: updater.NewGitHubClient(), runtimeInitJobs: newRuntimeProfileInitJobStore(), sessions: map[string]time.Time{}}
 }
 
 func (s *Server) GetLogManager() *LogManager { return s.logManager }
 
+func (s *Server) SetBackupService(service *backup.Service) {
+	s.backupService = service
+}
+
+func (s *Server) SetImageHostService(service *imagehost.Service) {
+	s.imageHostService = service
+}
+
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/login", s.handleLogin)
+	mux.HandleFunc("/api/open/payments/notify/epay", s.handlePaymentNotifyEpay)
+	mux.HandleFunc("/api/open/payments/return/epay", s.handlePaymentReturnEpay)
+	mux.HandleFunc("/api/open/payments/qrcode/", s.handlePaymentQRCode)
+	mux.HandleFunc("/api/open/images/", s.handleOpenImage)
 	mux.HandleFunc("/api/open/", s.handleOpenAPI)
 	mux.HandleFunc("/api/open-apis", s.handleOpenAPIConfigs)
 	mux.HandleFunc("/api/open-apis/", s.handleOpenAPIConfigDetail)
@@ -60,13 +88,22 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/plugins/templates", s.handlePluginTemplates)
 	mux.HandleFunc("/api/plugins/preview", s.handlePluginCreatePreview)
 	mux.HandleFunc("/api/plugins/validate", s.handlePluginCreateValidate)
+	mux.HandleFunc("/api/plugins/recycle-bin", s.handlePluginRecycleBin)
 	mux.HandleFunc("/api/plugins", s.handlePlugins)
 	mux.HandleFunc("/api/plugins/", s.handlePluginDetail)
 	mux.HandleFunc("/api/system/status", s.handleSystemStatus)
 	mux.HandleFunc("/api/system/update", s.handleSystemUpdate)
 	mux.HandleFunc("/api/system/message-stats", s.handleMessageStats)
+	mux.HandleFunc("/api/statistics/overview", s.handleStatisticsOverview)
+	mux.HandleFunc("/api/statistics/message-total-trend", s.handleMessageTotalTrend)
+	mux.HandleFunc("/api/statistics/plugin-trigger-trend", s.handlePluginTriggerTrend)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/settings/password", s.handleChangePassword)
+	mux.HandleFunc("/api/payments/settings", s.handlePaymentSettings)
+	mux.HandleFunc("/api/payments/orders", s.handlePaymentOrders)
+	mux.HandleFunc("/api/payments/orders/", s.handlePaymentOrderDetail)
+	mux.HandleFunc("/api/images", s.handleImages)
+	mux.HandleFunc("/api/images/", s.handleImageDetail)
 	mux.HandleFunc("/api/adapter-platforms", s.handleAdapterPlatforms)
 	mux.HandleFunc("/api/adapters", s.handleAdapters)
 	mux.HandleFunc("/api/adapters/", s.handleAdapterDetail)
@@ -80,6 +117,13 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/plugin/listen", s.handlePluginListen)
 	mux.HandleFunc("/api/dependencies", s.handleDependencies)
 	mux.HandleFunc("/api/dependencies/", s.handleDependencyDetail)
+	mux.HandleFunc("/api/runtime-profiles", s.handleRuntimeProfiles)
+	mux.HandleFunc("/api/runtime-profiles/init", s.handleRuntimeProfileInit)
+	mux.HandleFunc("/api/runtime-profiles/init/", s.handleRuntimeProfileInitJob)
+	mux.HandleFunc("/api/runtime-profiles/status", s.handleRuntimeProfileStatus)
+	mux.HandleFunc("/api/runtime-profiles/test", s.handleRuntimeProfileTest)
+	mux.HandleFunc("/api/backups", s.handleBackups)
+	mux.HandleFunc("/api/backups/", s.handleBackupDetail)
 	mux.HandleFunc("/api/sdk/files", s.handleSDKFiles)
 	mux.HandleFunc("/api/sdk/reference", s.handleSDKReference)
 	mux.HandleFunc("/api/data/tables", s.handleDataTables)
@@ -190,6 +234,7 @@ func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 			"name":                stringValue(config, "name", pluginID),
 			"version":             stringValue(config, "version", "unknown"),
 			"runtime":             stringValue(config, "runtime", "unknown"),
+			"runtime_profile":     stringValue(config, "runtime_profile", ""),
 			"status":              status,
 			"port":                port,
 			"trigger":             stringValue(config, "trigger", ""),
@@ -205,7 +250,7 @@ func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 }
 
 func pluginError(pluginID, message string) map[string]interface{} {
-	return map[string]interface{}{"id": pluginID, "name": pluginID, "version": "unknown", "runtime": "unknown", "status": "error", "port": 0, "trigger": "", "priority": 0, "platforms": []string{}, "allowed_adapter_ids": []string{}, "user_config_schema": []interface{}{}, "user_config": map[string]interface{}{}, "enabled": false, "error": message}
+	return map[string]interface{}{"id": pluginID, "name": pluginID, "version": "unknown", "runtime": "unknown", "runtime_profile": "", "status": "error", "port": 0, "trigger": "", "priority": 0, "platforms": []string{}, "allowed_adapter_ids": []string{}, "user_config_schema": []interface{}{}, "user_config": map[string]interface{}{}, "enabled": false, "error": message}
 }
 
 func (s *Server) handlePluginDetail(w http.ResponseWriter, r *http.Request) {
@@ -247,6 +292,108 @@ func (s *Server) handlePluginDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+func (s *Server) handlePluginRecycleBin(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		items, err := listPluginBackupFiles()
+		if err != nil {
+			s.jsonError(w, "读取插件回收站失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.jsonResponse(w, map[string]interface{}{"items": items})
+	case http.MethodDelete:
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		if name == "" {
+			var req struct {
+				Name string `json:"name"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			name = strings.TrimSpace(req.Name)
+		}
+		backupPath, err := safePluginBackupPath(name)
+		if err != nil {
+			s.jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := os.Remove(backupPath); err != nil {
+			if os.IsNotExist(err) {
+				s.jsonError(w, "备份文件不存在", http.StatusNotFound)
+				return
+			}
+			s.jsonError(w, "删除备份文件失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if s.logManager != nil {
+			s.logManager.AddLog("info", fmt.Sprintf("删除插件回收站备份: %s", name))
+		}
+		s.jsonResponse(w, map[string]interface{}{"message": "备份文件已删除"})
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func listPluginBackupFiles() ([]pluginBackupFile, error) {
+	entries, err := os.ReadDir("plugins")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []pluginBackupFile{}, nil
+		}
+		return nil, err
+	}
+	items := make([]pluginBackupFile, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || !isPluginBackupZipName(entry.Name()) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
+		}
+		pluginID, timestamp := parsePluginBackupName(entry.Name())
+		items = append(items, pluginBackupFile{Name: entry.Name(), Path: filepath.ToSlash(filepath.Join("plugins", entry.Name())), Size: info.Size(), ModTime: info.ModTime(), PluginID: pluginID, Timestamp: timestamp})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].ModTime.After(items[j].ModTime)
+	})
+	return items, nil
+}
+
+func safePluginBackupPath(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("备份文件名不能为空")
+	}
+	if name != filepath.Base(filepath.Clean(name)) || strings.ContainsAny(name, `/\\`) {
+		return "", fmt.Errorf("备份文件名无效")
+	}
+	if !isPluginBackupZipName(name) {
+		return "", fmt.Errorf("只能删除插件备份 zip 文件")
+	}
+	return filepath.Join("plugins", name), nil
+}
+
+func isPluginBackupZipName(name string) bool {
+	if !strings.HasSuffix(strings.ToLower(name), ".zip") {
+		return false
+	}
+	base := strings.TrimSuffix(name, filepath.Ext(name))
+	parts := strings.Split(base, ".backup")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+		return false
+	}
+	return parts[1] == "" || (strings.HasPrefix(parts[1], ".") && len(parts[1]) > 1)
+}
+
+func parsePluginBackupName(name string) (string, string) {
+	base := strings.TrimSuffix(name, filepath.Ext(name))
+	parts := strings.SplitN(base, ".backup", 2)
+	if len(parts) != 2 {
+		return strings.TrimSpace(base), ""
+	}
+	timestamp := strings.TrimPrefix(parts[1], ".")
+	return parts[0], timestamp
 }
 
 func (s *Server) backupAndDeletePlugin(pluginID string) (string, error) {
@@ -372,14 +519,29 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	adapterCount := 0
+	runningAdapterCount := 0
 	if s.adapterManager != nil {
-		adapterCount = len(s.adapterManager.GetAllAdapters())
+		runningAdapterCount = len(s.adapterManager.GetAllAdapters())
+		if s.adapterManager.GetDatabase() != nil {
+			if adapters, err := s.adapterManager.GetDatabase().GetAllAdapters(); err == nil {
+				adapterCount = len(adapters)
+			}
+		}
+		if adapterCount == 0 {
+			adapterCount = runningAdapterCount
+		}
 	}
-	messageCount := uint64(0)
-	if s.router != nil {
-		messageCount = s.router.MessageCount()
+	messageCount := int64(0)
+	todayMessageCount := int64(0)
+	if s.adapterManager != nil && s.adapterManager.GetDatabase() != nil {
+		if summary, err := s.adapterManager.GetDatabase().GetMessageCountSummary(); err == nil {
+			messageCount = summary.Total
+			todayMessageCount = summary.Today
+		}
+	} else if s.router != nil {
+		messageCount = int64(s.router.MessageCount())
 	}
-	s.jsonResponse(w, map[string]interface{}{"uptime": formatDuration(time.Since(s.startTime)), "pluginCount": len(plugins), "enabledPluginCount": enabledPluginCount, "adapterCount": adapterCount, "messageCount": messageCount})
+	s.jsonResponse(w, map[string]interface{}{"uptime": formatDuration(time.Since(s.startTime)), "pluginCount": len(plugins), "enabledPluginCount": enabledPluginCount, "adapterCount": adapterCount, "runningAdapterCount": runningAdapterCount, "messageCount": messageCount, "todayMessageCount": todayMessageCount})
 }
 
 func (s *Server) handleMessageStats(w http.ResponseWriter, r *http.Request) {
@@ -555,10 +717,13 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 			config["user_config"] = map[string]interface{}{}
 		}
 		if _, ok := config["access_control"]; !ok {
-			config["access_control"] = map[string]interface{}{"inherit_system": true, "whitelist_groups": []string{}, "blocked_groups": []string{}, "whitelist_user_ids": []string{}, "blocked_user_ids": []string{}}
+			config["access_control"] = map[string]interface{}{"inherit_system": true, "whitelist_groups": []string{}, "blocked_groups": []string{}, "whitelist_user_ids": []string{}, "blocked_user_ids": []string{}, "whitelist_union_ids": []string{}, "blocked_union_ids": []string{}}
+		}
+		if _, ok := config["runtime_profile"]; !ok {
+			config["runtime_profile"] = ""
 		}
 		if _, ok := config["open_api"]; !ok {
-			config["open_api"] = map[string]interface{}{"enabled": false, "path": pluginID, "method": "POST", "token": "", "runtime": stringValue(config, "runtime", "nodejs")}
+			config["open_api"] = map[string]interface{}{"enabled": false, "path": pluginID, "method": "POST", "token": "", "runtime": stringValue(config, "runtime", "nodejs"), "runtime_profile": stringValue(config, "runtime_profile", "")}
 		}
 		s.jsonResponse(w, config)
 		return
@@ -595,24 +760,59 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDependencies(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		pythonDeps, _ := s.pluginManager.GetDepsManager().GetPythonDeps()
-		nodeDeps, _ := s.pluginManager.GetDepsManager().GetNodeDeps()
-		s.jsonResponse(w, map[string]interface{}{"python": pythonDeps, "nodejs": nodeDeps})
+	depsManager := s.pluginManager.GetDepsManager()
+	switch r.Method {
+	case http.MethodGet:
+		runtimeName := normalizeDependencyRuntime(r.URL.Query().Get("runtime"))
+		profileID := dependencyProfileID(r)
+		if runtimeName == "" {
+			pythonDeps, err := depsManager.GetPythonDeps()
+			if err != nil {
+				s.jsonError(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			nodeDeps, err := depsManager.GetNodeDeps()
+			if err != nil {
+				s.jsonError(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			s.jsonResponse(w, map[string]interface{}{"python": pythonDeps, "nodejs": nodeDeps})
+			return
+		}
+		if runtimeName != "python" && runtimeName != "nodejs" {
+			s.jsonError(w, "不支持的运行时", http.StatusBadRequest)
+			return
+		}
+		deps, err := dependencyListByRuntime(depsManager, runtimeName, profileID)
+		if err != nil {
+			s.jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.jsonResponse(w, map[string]interface{}{"runtime": runtimeName, "profile_id": profileID, "dependencies": deps})
 		return
-	}
-	if r.Method == http.MethodPost {
-		var req struct{ Runtime, Name, Version string }
+	case http.MethodPost:
+		var req struct {
+			Runtime   string `json:"runtime"`
+			ProfileID string `json:"profile_id"`
+			Name      string `json:"name"`
+			Version   string `json:"version"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			s.jsonError(w, "Invalid request", http.StatusBadRequest)
 			return
 		}
-		deps := map[string]string{req.Name: req.Version}
+		runtimeName := normalizeDependencyRuntime(req.Runtime)
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			s.jsonError(w, "依赖包名不能为空", http.StatusBadRequest)
+			return
+		}
+		deps := map[string]string{name: strings.TrimSpace(req.Version)}
 		var err error
-		if req.Runtime == "python" {
-			err = s.pluginManager.GetDepsManager().InstallPythonDeps(deps)
-		} else if req.Runtime == "nodejs" {
-			err = s.pluginManager.GetDepsManager().InstallNodeDeps(deps)
+		if runtimeName == "python" {
+			err = depsManager.InstallPythonDepsForProfile(req.ProfileID, deps)
+		} else if runtimeName == "nodejs" {
+			err = depsManager.InstallNodeDepsForProfile(req.ProfileID, deps)
 		} else {
 			s.jsonError(w, "不支持的运行时", http.StatusBadRequest)
 			return
@@ -623,8 +823,9 @@ func (s *Server) handleDependencies(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jsonResponse(w, map[string]interface{}{"message": "依赖安装成功"})
 		return
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
 func (s *Server) handleDependencyDetail(w http.ResponseWriter, r *http.Request) {
@@ -634,11 +835,19 @@ func (s *Server) handleDependencyDetail(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var err error
-	if parts[0] == "python" {
-		err = s.pluginManager.GetDepsManager().UninstallPythonDep(parts[1])
-	} else if parts[0] == "nodejs" {
-		err = s.pluginManager.GetDepsManager().UninstallNodeDep(parts[1])
+	runtimeName := normalizeDependencyRuntime(parts[0])
+	name, err := url.PathUnescape(parts[1])
+	if err != nil || strings.TrimSpace(name) == "" {
+		s.jsonError(w, "依赖包名无效", http.StatusBadRequest)
+		return
+	}
+	name = strings.TrimSpace(name)
+	profileID := dependencyProfileID(r)
+	depsManager := s.pluginManager.GetDepsManager()
+	if runtimeName == "python" {
+		err = depsManager.UninstallPythonDepForProfile(profileID, name)
+	} else if runtimeName == "nodejs" {
+		err = depsManager.UninstallNodeDepForProfile(profileID, name)
 	} else {
 		s.jsonError(w, "不支持的运行时", http.StatusBadRequest)
 		return
@@ -648,6 +857,40 @@ func (s *Server) handleDependencyDetail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.jsonResponse(w, map[string]interface{}{"message": "依赖卸载成功"})
+}
+
+func normalizeDependencyRuntime(runtime string) string {
+	runtime = strings.ToLower(strings.TrimSpace(runtime))
+	if runtime == "node" {
+		return "nodejs"
+	}
+	if runtime == "py" || runtime == "python3" {
+		return "python"
+	}
+	return runtime
+}
+
+func dependencyProfileID(r *http.Request) string {
+	profileID := strings.TrimSpace(r.URL.Query().Get("profile_id"))
+	if profileID == "" {
+		profileID = strings.TrimSpace(r.URL.Query().Get("profileId"))
+	}
+	return profileID
+}
+
+func dependencyListByRuntime(depsManager dependencyRuntimeManager, runtimeName, profileID string) (map[string]string, error) {
+	if runtimeName == "python" {
+		return depsManager.GetPythonDepsForProfile(profileID)
+	}
+	if runtimeName == "nodejs" {
+		return depsManager.GetNodeDepsForProfile(profileID)
+	}
+	return nil, fmt.Errorf("不支持的运行时")
+}
+
+type dependencyRuntimeManager interface {
+	GetPythonDepsForProfile(profileID string) (map[string]string, error)
+	GetNodeDepsForProfile(profileID string) (map[string]string, error)
 }
 
 func (s *Server) handlePluginCode(w http.ResponseWriter, r *http.Request) {

@@ -19,8 +19,10 @@ import (
 	"time"
 
 	_ "github.com/allbot/allbot/core/adapter/_loader"
+	"github.com/allbot/allbot/core/backup"
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/deps"
+	"github.com/allbot/allbot/core/imagehost"
 	"github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/router"
 	"github.com/allbot/allbot/core/session"
@@ -126,6 +128,10 @@ func main() {
 		log.Fatalf("初始化内嵌 Web UI 失败: %v", err)
 	}
 	webServer := web.NewServer(webPort, pluginManager, messageRouter, adapterManager, webFiles)
+	backupService := backup.NewService(configDB, pluginManager.PluginDir())
+	backupService.Start()
+	webServer.SetBackupService(backupService)
+	webServer.SetImageHostService(imagehost.NewService(configDB))
 	if adminPasswordInit.Generated {
 		log.Println("首次启动已生成管理员登录密码，请立即登录后修改：")
 	} else if adminPasswordInit.Migrated {
@@ -152,6 +158,7 @@ func main() {
 
 	shutdown := func() {
 		log.Println("AllBot 关闭中...")
+		backupService.Stop()
 		scheduledTaskRunner.Stop()
 		adapterManager.StopAll()
 		for _, item := range pluginManager.GetAllPlugins() {

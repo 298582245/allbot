@@ -15,6 +15,40 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 
+_current_context = None
+_protocol_stdout = sys.stdout
+
+
+def write_protocol_action(action: Dict[str, Any]) -> None:
+    _protocol_stdout.write(json.dumps(action, ensure_ascii=False) + "\n")
+    _protocol_stdout.flush()
+
+
+class PluginStdoutProxy:
+    encoding = getattr(sys.stderr, "encoding", None)
+    errors = getattr(sys.stderr, "errors", None)
+
+    def write(self, text: str) -> int:
+        return sys.stderr.write(text)
+
+    def flush(self) -> None:
+        sys.stderr.flush()
+
+    def isatty(self) -> bool:
+        return sys.stderr.isatty()
+
+    def writable(self) -> bool:
+        return True
+
+
+def redirect_stdout_to_stderr() -> None:
+    if os.getenv("ALLBOT_PLUGIN_ID"):
+        sys.stdout = PluginStdoutProxy()
+
+
+redirect_stdout_to_stderr()
+
+
 class Context:
     """消息上下文，提供插件开发常用 API。"""
 
@@ -45,7 +79,10 @@ class Context:
         self.access_control = data.get("access_control", {}) or {}
         self.accessControl = self.access_control
         self._request_seq = 0
+        global _current_context
+        _current_context = self
         self.db = Database(self)
+        self.pay = PAY(self)
 
     def is_group(self) -> bool:
         """是否群聊消息。"""
@@ -94,6 +131,25 @@ class Context:
     async def sendMessage(self, **options: Any) -> Dict[str, Any]:
         """send_message 的 camelCase 别名。"""
         return await self.send_message(**options)
+
+    async def push(self, userId: str = "", groupId: str = "", content: Any = "", platform: str = "", adapterId: str = "", **options: Any) -> Dict[str, Any]:
+        """主动向指定用户、群或 UnionID 发送消息，不回退当前消息用户。"""
+        user_id = options["user_id"] if "user_id" in options else options.get("userId", userId)
+        group_id = options["group_id"] if "group_id" in options else options.get("groupId", groupId)
+        union_id = options["union_id"] if "union_id" in options else options.get("unionId", "")
+        user_id, union_id = split_push_user_and_union_id(user_id, union_id)
+        text = options["content"] if "content" in options else options.get("text", content)
+        target_platform = options["platform"] if "platform" in options else platform
+        adapter_id = options["adapter_id"] if "adapter_id" in options else options.get("adapterId", adapterId)
+        return self._request({
+            "action": "send_message",
+            "platform": str(target_platform or self.platform),
+            "adapter_id": str(adapter_id or ""),
+            "user_id": str(user_id or ""),
+            "group_id": str(group_id or ""),
+            "union_id": str(union_id or ""),
+            "text": str(text or ""),
+        }, "send_message_response")
 
     async def send_image(self, image_url: str) -> bool:
         """发送图片 URL 或本地路径，具体支持取决于平台适配器。"""
@@ -271,6 +327,7 @@ class Context:
         return self._request({
             "action": "run_script",
             "runtime": str(options.get("runtime") or "nodejs"),
+            "runtime_profile": str(options.get("runtime_profile") or options.get("runtimeProfile") or ""),
             "script": str(options.get("script") or options.get("path") or ""),
             "cwd": str(options.get("cwd") or ""),
             "env": normalize_env(options.get("env") or {}),
@@ -323,9 +380,40 @@ class Context:
         return response.get("data")
 
     def _send(self, action: Dict[str, Any]) -> bool:
-        sys.stdout.write(json.dumps(action, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        write_protocol_action(action)
         return True
+
+
+class PAY:
+    """支付等待封装，用于发起一次消费并等待支付结果。"""
+
+    def __init__(self, ctx: Optional[Context] = None):
+        self.ctx = ctx or _current_context
+
+    async def wait_pay(self, subject: Any, amount_rmb: Any, timeout: int = 300, **options: Any) -> Dict[str, Any]:
+        ctx = self.ctx or _current_context
+        if ctx is None:
+            raise RuntimeError("PAY 需要可用的 Context")
+        timeout_value = int(options.pop("timeout_seconds", timeout) or 300)
+        methods = options.get("methods")
+        if not isinstance(methods, list):
+            methods = []
+        metadata = options.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return ctx._request({
+            "action": "payment_wait",
+            "subject": str(subject or ""),
+            "amount": str(amount_rmb),
+            "timeout": timeout_value,
+            "methods": [str(item) for item in methods if str(item)],
+            "metadata": metadata,
+            "remark": str(options.get("remark") or ""),
+        }, "payment_response")
+
+    async def waitPay(self, subject: Any, amount_rmb: Any, timeout: int = 300, **options: Any) -> Dict[str, Any]:
+        """wait_pay 的 camelCase 别名。"""
+        return await self.wait_pay(subject, amount_rmb, timeout, **options)
 
 
 class Database:
@@ -404,6 +492,18 @@ class Database:
 
 def normalize_env(env: Dict[str, Any]) -> Dict[str, str]:
     return {str(key): str(value) for key, value in env.items() if str(key)}
+
+
+def split_push_user_and_union_id(user_id: Any, union_id: Any) -> tuple[str, str]:
+    user_text = str(user_id or "").strip()
+    union_text = str(union_id or "").strip()
+    if not union_text and user_text.startswith("union:"):
+        return "", user_text[len("union:"):].strip()
+    if not union_text and user_text.startswith("union_id:"):
+        return "", user_text[len("union_id:"):].strip()
+    if not union_text and user_text.startswith("U_"):
+        return "", user_text
+    return user_text, union_text
 
 
 def normalize_query_filters(filters: Any) -> List[Dict[str, Any]]:
@@ -579,11 +679,9 @@ def run_openapi(handler: Callable[[Context, Dict[str, Any], HTTPResponse], Any])
             sys.exit(1)
         data = json.loads(input_line)
         res = asyncio.run(run_openapi_action(handler, data))
-        sys.stdout.write(json.dumps(res.to_action(), ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        write_protocol_action(res.to_action())
     except Exception as error:
-        sys.stdout.write(json.dumps({"action": "http_response", "status": 500, "headers": {"Content-Type": "application/json; charset=utf-8"}, "json": {"error": str(error)}}, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        write_protocol_action({"action": "http_response", "status": 500, "headers": {"Content-Type": "application/json; charset=utf-8"}, "json": {"error": str(error)}})
         sys.exit(1)
 
 
@@ -609,8 +707,7 @@ if __name__ == "__main__" and len(sys.argv) >= 3 and sys.argv[1] == "openapi":
     try:
         run_auto_openapi(sys.argv[2])
     except Exception as error:
-        sys.stdout.write(json.dumps({"action": "http_response", "status": 500, "headers": {"Content-Type": "application/json; charset=utf-8"}, "json": {"error": str(error)}}, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        write_protocol_action({"action": "http_response", "status": 500, "headers": {"Content-Type": "application/json; charset=utf-8"}, "json": {"error": str(error)}})
         sys.exit(1)
 
 
@@ -622,9 +719,7 @@ def run_direct(handler: Callable[[Context], Any]) -> None:
             sys.exit(1)
         ctx = Context(json.loads(input_line))
         asyncio.run(handler(ctx))
-        sys.stdout.write(json.dumps({"action": "done", "success": True}, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        write_protocol_action({"action": "done", "success": True})
     except Exception as error:
-        sys.stdout.write(json.dumps({"action": "done", "success": False, "error": str(error)}, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        write_protocol_action({"action": "done", "success": False, "error": str(error)})
         sys.exit(1)

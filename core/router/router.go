@@ -15,6 +15,7 @@ import (
 
 	"github.com/allbot/allbot/core/adapter"
 	"github.com/allbot/allbot/core/config"
+	"github.com/allbot/allbot/core/payment"
 	plugincore "github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/session"
 	"github.com/allbot/allbot/core/types"
@@ -45,7 +46,13 @@ func NewRouter(sessionManager *session.Manager) *Router {
 }
 
 func (r *Router) SetPluginManager(pm *plugincore.Manager) {
+	r.mu.Lock()
 	r.pluginManager = pm
+	keywordReplies := r.keywordReplies
+	r.mu.Unlock()
+	if keywordReplies != nil {
+		keywordReplies.SetPluginAdminStore(pm)
+	}
 }
 
 func (r *Router) SetAdapters(adapters map[string]adapter.Adapter) {
@@ -128,6 +135,29 @@ func (r *Router) startedPlatformAdmins(filterPlatform string) ([]map[string]stri
 	for _, admin := range settings.PlatformAdmins {
 		platform := strings.TrimSpace(admin.Platform)
 		userID := strings.TrimSpace(admin.UserID)
+		unionID := strings.TrimSpace(admin.UnionID)
+		if unionID != "" {
+			accounts, err := database.ListUserAccountsByUnionID(unionID)
+			if err != nil {
+				return nil, err
+			}
+			for _, account := range accounts {
+				if account == nil || (filterPlatform != "" && account.Platform != filterPlatform) {
+					continue
+				}
+				adapterID := runningAdapterByPlatform[account.Platform]
+				if adapterID == "" {
+					continue
+				}
+				key := account.Platform + "\x00" + account.UserID + "\x00" + adapterID
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				result = append(result, map[string]string{"platform": account.Platform, "user_id": account.UserID, "union_id": unionID, "adapter_id": adapterID})
+			}
+			continue
+		}
 		if platform == "" || userID == "" || (filterPlatform != "" && platform != filterPlatform) {
 			continue
 		}
@@ -147,8 +177,41 @@ func (r *Router) startedPlatformAdmins(filterPlatform string) ([]map[string]stri
 
 func (r *Router) SetKeywordReplyManager(manager *KeywordReplyManager) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.keywordReplies = manager
+	pluginManager := r.pluginManager
+	r.mu.Unlock()
+	if manager == nil {
+		return
+	}
+	manager.SetPluginAdminStore(pluginManager)
+	manager.SetRegisterPluginFunc(r.RegisterPlugin)
+	manager.SetListenFunc(func(msg *types.Message, timeout int) string {
+		if r.sessionManager == nil || msg == nil {
+			return ""
+		}
+		ch := r.sessionManager.CreateSession("builtin:keyword-reply", msg.UserID, msg.GroupID, timeout)
+		content, ok := <-ch
+		if !ok {
+			return ""
+		}
+		return strings.TrimSpace(content)
+	})
+	manager.SetListenUntilFunc(func(msg *types.Message, timeout int, done <-chan struct{}) string {
+		if r.sessionManager == nil || msg == nil {
+			return ""
+		}
+		ch, cancel := r.sessionManager.CreateCancellableSession("builtin:keyword-reply", msg.UserID, msg.GroupID, timeout)
+		defer cancel()
+		select {
+		case content, ok := <-ch:
+			if !ok {
+				return ""
+			}
+			return strings.TrimSpace(content)
+		case <-done:
+			return ""
+		}
+	})
 }
 
 func (r *Router) GetSessionManager() *session.Manager {
@@ -198,7 +261,7 @@ func (r *Router) HandleMessage(msg *types.Message) {
 	keywordReplies := r.keywordReplies
 	r.mu.RUnlock()
 	systemAccess := r.systemAccessControl()
-	if !allowSystemHardBlock(systemAccess, msg) {
+	if !r.allowSystemHardBlock(systemAccess, msg) {
 		log.Printf("[SYSTEM] Message blocked by system access control: platform=%s user=%s group=%s", msg.Platform, msg.UserID, msg.GroupID)
 		return
 	}
@@ -211,6 +274,7 @@ func (r *Router) HandleMessage(msg *types.Message) {
 		log.Printf("[SYSTEM] No plugin matched")
 		return
 	}
+	selectedPlugin := matchedPlugins[0]
 	if database != nil {
 		if _, err := database.GetUserAccount(msg.Platform, msg.UserID); err != nil {
 			adp := r.getAdapterForMessage(msg)
@@ -219,9 +283,12 @@ func (r *Router) HandleMessage(msg *types.Message) {
 			}
 			return
 		}
+		if err := database.RecordPluginTriggerStat(selectedPlugin, msg); err != nil {
+			log.Printf("[SYSTEM] Record plugin trigger stats failed: %v", err)
+		}
 	}
 
-	go r.callPlugin(matchedPlugins[0], msg)
+	go r.callPlugin(selectedPlugin, msg)
 }
 
 func (r *Router) MessageCount() uint64 {
@@ -280,14 +347,39 @@ func (r *Router) systemAccessControl() types.AccessControlConfig {
 
 func (r *Router) allowPluginMessage(plugin *types.Plugin, msg *types.Message) bool {
 	config := plugin.AccessControl
+	unionID := r.messageUnionID(msg)
 	if config.InheritSystem {
-		return allowMessageByAccessControl(r.systemAccessControl(), msg, true)
+		return allowMessageByAccessControl(r.systemAccessControl(), msg, unionID)
 	}
-	return allowMessageByAccessControl(config, msg, true)
+	return allowMessageByAccessControl(config, msg, unionID)
 }
 
-func allowSystemHardBlock(config types.AccessControlConfig, msg *types.Message) bool {
+func (r *Router) messageUnionID(msg *types.Message) string {
+	if msg == nil {
+		return ""
+	}
+	r.mu.RLock()
+	database := r.database
+	r.mu.RUnlock()
+	if database == nil {
+		return ""
+	}
+	account, err := database.GetUserAccount(msg.Platform, msg.UserID)
+	if err != nil {
+		return ""
+	}
+	return account.UnionID
+}
+
+func (r *Router) allowSystemHardBlock(config types.AccessControlConfig, msg *types.Message) bool {
+	return allowSystemHardBlock(config, msg, r.messageUnionID(msg))
+}
+
+func allowSystemHardBlock(config types.AccessControlConfig, msg *types.Message, unionID string) bool {
 	if containsString(config.BlockedUserIDs, msg.UserID) {
+		return false
+	}
+	if unionID != "" && containsString(config.BlockedUnionIDs, unionID) {
 		return false
 	}
 	if msg.GroupID != "" && containsString(config.BlockedGroups, msg.GroupID) {
@@ -296,14 +388,20 @@ func allowSystemHardBlock(config types.AccessControlConfig, msg *types.Message) 
 	return true
 }
 
-func allowMessageByAccessControl(config types.AccessControlConfig, msg *types.Message, pluginMode bool) bool {
+func allowMessageByAccessControl(config types.AccessControlConfig, msg *types.Message, unionID string) bool {
 	if containsString(config.BlockedUserIDs, msg.UserID) {
+		return false
+	}
+	if unionID != "" && containsString(config.BlockedUnionIDs, unionID) {
 		return false
 	}
 	if msg.GroupID != "" && containsString(config.BlockedGroups, msg.GroupID) {
 		return false
 	}
 	if len(config.WhitelistUserIDs) > 0 && !containsString(config.WhitelistUserIDs, msg.UserID) {
+		return false
+	}
+	if len(config.WhitelistUnionIDs) > 0 && (unionID == "" || !containsString(config.WhitelistUnionIDs, unionID)) {
 		return false
 	}
 	if msg.GroupID != "" && len(config.WhitelistGroups) > 0 && !containsString(config.WhitelistGroups, msg.GroupID) {
@@ -412,8 +510,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 	imageFunc := func(imageURL string) error {
 		log.Printf("%s：[图片] 消息ID=%s", pluginResponseLogPrefix(msg, plugin), responseLogID)
 		if adp == nil {
-			log.Printf("[SYSTEM] Adapter not found for platform: %s, image skipped", msg.Platform)
-			return nil
+			return fmt.Errorf("适配器不存在: %s", msg.Platform)
 		}
 		return adp.SendImage(target, imageURL)
 	}
@@ -433,6 +530,19 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 			return ""
 		}
 		return content
+	}
+	listenUntilFunc := func(timeout int, done <-chan struct{}) string {
+		ch, cancel := r.sessionManager.CreateCancellableSession(plugin.ID, msg.UserID, msg.GroupID, timeout)
+		defer cancel()
+		select {
+		case content, ok := <-ch:
+			if !ok {
+				return ""
+			}
+			return content
+		case <-done:
+			return ""
+		}
 	}
 
 	pluginPath := filepath.Join("plugins", plugin.ID)
@@ -553,12 +663,18 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		}
 		switch action.Action {
 		case "points_consume":
+			if action.Amount <= 0 {
+				return plugincore.PluginUserResult{Success: false, Error: "积分数量必须大于 0"}
+			}
 			remaining, err := database.ConsumeUserPoints(authUnionID, action.Amount)
 			if err != nil {
 				return plugincore.PluginUserResult{Success: false, Error: err.Error(), Data: map[string]interface{}{"points": remaining}}
 			}
 			return plugincore.PluginUserResult{Success: true, Data: map[string]interface{}{"points": remaining}}
 		case "points_add":
+			if action.Amount <= 0 {
+				return plugincore.PluginUserResult{Success: false, Error: "积分数量必须大于 0"}
+			}
 			if !isAdmin {
 				return plugincore.PluginUserResult{Success: false, Error: "仅平台管理员可操作积分"}
 			}
@@ -603,8 +719,29 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		action.PluginID = pluginID
 		return r.pluginManager.RunPluginScript(filepath.Join("plugins", pluginID), action)
 	}
+	paymentFunc := func(pluginID string, action plugincore.PaymentWaitAction) plugincore.PluginUserResult {
+		if database == nil {
+			return plugincore.PluginUserResult{Success: false, Error: "数据库不可用"}
+		}
+		paymentUnionID := strings.TrimSpace(action.UnionID)
+		if paymentUnionID == "" {
+			paymentUnionID = unionID
+		}
+		if paymentUnionID == "" {
+			return plugincore.PluginUserResult{Success: false, Error: "用户 union_id 不能为空"}
+		}
+		service := payment.NewService(database)
+		result, err := service.WaitPay(payment.WaitPayRequest{PluginID: pluginID, Platform: msg.Platform, AdapterID: msg.AdapterID, UserID: msg.UserID, GroupID: msg.GroupID, UnionID: paymentUnionID, Subject: action.Subject, AmountRaw: action.AmountRaw, Timeout: action.Timeout, PointsUnit: pointsUnit, Methods: action.Methods, Metadata: action.Metadata, Remark: action.Remark}, payment.Interaction{Reply: replyFunc, SendImage: imageFunc, Listen: listenFunc, ListenUntil: listenUntilFunc})
+		if err != nil {
+			return plugincore.PluginUserResult{Success: false, Error: err.Error(), Data: result}
+		}
+		if result.Status != "paid" {
+			return plugincore.PluginUserResult{Success: false, Error: result.Message, Data: result}
+		}
+		return plugincore.PluginUserResult{Success: true, Error: "", Data: result}
+	}
 
-	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc); err != nil {
+	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc, paymentFunc); err != nil {
 		log.Printf("Failed to execute plugin %s: %v", plugin.Name, err)
 	}
 }
@@ -737,14 +874,18 @@ func (r *Router) sendPluginMessage(pluginID string, action plugincore.SendMessag
 		return fmt.Errorf("用户 ID 和群组 ID 不能同时为空")
 	}
 	if unionID != "" && groupID == "" {
-		if r.sendPluginMessageToUnion(pluginID, unionID, text) {
+		sent, err := r.sendPluginMessageToUnion(pluginID, unionID, platform, adapterID, text)
+		if sent {
 			return nil
+		}
+		if err != nil {
+			return err
 		}
 		if (platform == "" && adapterID == "") || userID == "" {
 			return fmt.Errorf("UnionID %s 没有可用平台账号", unionID)
 		}
 	}
-	resolvedPlatform, resolvedAdapterID, _, _, err := r.resolveAdapterInfo(platform, adapterID)
+	resolvedPlatform, resolvedAdapterID, _, _, adp, err := r.resolveSendAdapterInfo(platform, adapterID)
 	if err != nil {
 		return err
 	}
@@ -753,11 +894,6 @@ func (r *Router) sendPluginMessage(pluginID string, action plugincore.SendMessag
 	if platform == "" {
 		return fmt.Errorf("平台不能为空")
 	}
-	msg := &types.Message{Platform: platform, AdapterID: adapterID, UserID: userID, GroupID: groupID}
-	if adapterID != "" {
-		msg.Metadata = map[string]string{"adapter_id": adapterID}
-	}
-	adp := r.getAdapterForMessage(msg)
 	if adp == nil {
 		return fmt.Errorf("适配器不存在: %s", platform)
 	}
@@ -766,29 +902,46 @@ func (r *Router) sendPluginMessage(pluginID string, action plugincore.SendMessag
 	return adp.SendMessage(target, text)
 }
 
-func (r *Router) sendPluginMessageToUnion(pluginID, unionID, text string) bool {
+func (r *Router) sendPluginMessageToUnion(pluginID, unionID, platform, adapterID, text string) (bool, error) {
+	platform = strings.TrimSpace(platform)
+	adapterID = strings.TrimSpace(adapterID)
 	r.mu.RLock()
 	database := r.database
 	r.mu.RUnlock()
 	if database == nil {
-		return false
+		return false, nil
 	}
 	accounts, err := database.ListUserAccountsByUnionID(unionID)
 	if err != nil {
 		log.Printf("[SYSTEM] Plugin %s load union accounts failed: union=%s err=%v", pluginID, unionID, err)
-		return false
+		return false, err
 	}
+	matchedScope := false
+	var lastErr error
 	for _, account := range accounts {
 		if account == nil || account.Platform == "" || account.UserID == "" {
 			continue
 		}
-		if err := r.sendPluginMessage(pluginID, plugincore.SendMessageAction{Platform: account.Platform, UserID: account.UserID, Text: text}); err != nil {
-			log.Printf("[SYSTEM] Plugin %s union notify failed: union=%s platform=%s user=%s err=%v", pluginID, unionID, account.Platform, account.UserID, err)
+		if platform != "" && account.Platform != platform {
 			continue
 		}
-		return true
+		matchedScope = true
+		if err := r.sendPluginMessage(pluginID, plugincore.SendMessageAction{Platform: account.Platform, AdapterID: adapterID, UserID: account.UserID, Text: text}); err != nil {
+			log.Printf("[SYSTEM] Plugin %s union notify failed: union=%s platform=%s user=%s err=%v", pluginID, unionID, account.Platform, account.UserID, err)
+			lastErr = err
+			continue
+		}
+		return true, nil
 	}
-	return false
+	if platform != "" {
+		if lastErr != nil {
+			return false, lastErr
+		}
+		if !matchedScope {
+			return false, fmt.Errorf("UnionID %s 没有 %s 平台账号", unionID, platform)
+		}
+	}
+	return false, nil
 }
 
 func (r *Router) resolveAdapterInfo(platform string, adapterID string) (string, string, string, string, error) {
@@ -830,6 +983,82 @@ func (r *Router) resolveAdapterInfo(platform string, adapterID string) (string, 
 	return platform, "", "", "", nil
 }
 
+func (r *Router) resolveSendAdapterInfo(platform string, adapterID string) (string, string, string, string, adapter.Adapter, error) {
+	platform = strings.TrimSpace(platform)
+	adapterID = strings.TrimSpace(adapterID)
+	r.mu.RLock()
+	database := r.database
+	r.mu.RUnlock()
+	if database == nil {
+		resolvedPlatform, resolvedAdapterID, remark, description, err := r.resolveAdapterInfo(platform, adapterID)
+		if err != nil {
+			return "", "", "", "", nil, err
+		}
+		msg := &types.Message{Platform: resolvedPlatform, AdapterID: resolvedAdapterID, Metadata: map[string]string{}}
+		if resolvedAdapterID != "" {
+			msg.Metadata["adapter_id"] = resolvedAdapterID
+		}
+		adp := r.getAdapterForMessage(msg)
+		if adp == nil && resolvedAdapterID != "" {
+			adp = r.getAdapterForMessage(&types.Message{Platform: resolvedPlatform})
+		}
+		return resolvedPlatform, resolvedAdapterID, remark, description, adp, nil
+	}
+	if adapterID != "" {
+		id, err := strconv.ParseInt(adapterID, 10, 64)
+		if err != nil || id <= 0 {
+			return "", "", "", "", nil, fmt.Errorf("适配器 ID 无效: %s", adapterID)
+		}
+		item, err := database.GetAdapterByID(id)
+		if err != nil {
+			return "", "", "", "", nil, fmt.Errorf("加载适配器失败: %w", err)
+		}
+		if item == nil || !item.Enabled {
+			return "", "", "", "", nil, fmt.Errorf("适配器不存在或未启用: %s", adapterID)
+		}
+		if platform != "" && item.Platform != platform {
+			return "", "", "", "", nil, fmt.Errorf("适配器 %s 属于 %s，不属于 %s", adapterID, item.Platform, platform)
+		}
+		adp := r.getRunningAdapterByID(item.Platform, adapterID)
+		if adp == nil {
+			return "", "", "", "", nil, fmt.Errorf("适配器未运行: %s", adapterID)
+		}
+		return item.Platform, adapterID, strings.TrimSpace(item.Remark), strings.TrimSpace(item.Description), adp, nil
+	}
+	if platform == "" {
+		return "", "", "", "", nil, fmt.Errorf("平台不能为空")
+	}
+	adapters, err := database.GetAllAdapters()
+	if err != nil {
+		return "", "", "", "", nil, fmt.Errorf("加载适配器失败: %w", err)
+	}
+	for _, item := range adapters {
+		if item == nil || !item.Enabled || item.Platform != platform {
+			continue
+		}
+		idText := strconv.FormatInt(item.ID, 10)
+		adp := r.getRunningAdapterByID(platform, idText)
+		if adp != nil {
+			return platform, idText, strings.TrimSpace(item.Remark), strings.TrimSpace(item.Description), adp, nil
+		}
+	}
+	return "", "", "", "", nil, fmt.Errorf("平台没有运行中的适配器: %s", platform)
+}
+
+func (r *Router) getRunningAdapterByID(platform string, adapterID string) adapter.Adapter {
+	adapterID = strings.TrimSpace(adapterID)
+	if adapterID == "" {
+		return nil
+	}
+	r.mu.RLock()
+	messageGetter := r.messageGetter
+	r.mu.RUnlock()
+	if messageGetter == nil {
+		return nil
+	}
+	return messageGetter(&types.Message{Platform: platform, AdapterID: adapterID, Metadata: map[string]string{"adapter_id": adapterID}})
+}
+
 func executePluginDBAction(database *config.Database, pluginID string, action plugincore.PluginDBAction) plugincore.PluginDBResult {
 	if database == nil {
 		return plugincore.PluginDBResult{Success: false, Error: "数据库不可用"}
@@ -864,15 +1093,25 @@ func executePluginDBAction(database *config.Database, pluginID string, action pl
 }
 
 func (r *Router) getAdapterForMessage(msg *types.Message) adapter.Adapter {
+	if msg == nil {
+		return nil
+	}
 	r.mu.RLock()
 	messageGetter := r.messageGetter
 	adapterGetter := r.adapterGetter
 	adp := r.adapters[msg.Platform]
 	r.mu.RUnlock()
 
+	explicitAdapterID := strings.TrimSpace(msg.AdapterID)
+	if explicitAdapterID == "" && msg.Metadata != nil {
+		explicitAdapterID = strings.TrimSpace(msg.Metadata["adapter_id"])
+	}
 	if messageGetter != nil {
 		if latestAdapter := messageGetter(msg); latestAdapter != nil {
 			return latestAdapter
+		}
+		if explicitAdapterID != "" {
+			return nil
 		}
 	}
 	if adapterGetter != nil {

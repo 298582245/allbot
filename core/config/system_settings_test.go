@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/allbot/allbot/core/types"
+)
 
 func TestNewDatabaseRemovesWebPortSettings(t *testing.T) {
 	db, err := NewDatabase(":memory:")
@@ -28,6 +32,68 @@ func TestNewDatabaseRemovesWebPortSettings(t *testing.T) {
 	}
 	if _, ok := items["web_port"]; ok {
 		t.Fatal("system_settings still contains web_port")
+	}
+}
+
+func TestEnsureDefaultSystemSettingsKeepsSavedPaymentSettings(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.SavePointsPerRMB(88); err != nil {
+		t.Fatalf("SavePointsPerRMB returned error: %v", err)
+	}
+	if err := ensureDefaultSystemSettings(db.db); err != nil {
+		t.Fatalf("ensureDefaultSystemSettings returned error: %v", err)
+	}
+	pointsPerRMB, err := db.GetPointsPerRMB()
+	if err != nil {
+		t.Fatalf("GetPointsPerRMB returned error: %v", err)
+	}
+	if pointsPerRMB != 88 {
+		t.Fatalf("expected saved points_per_rmb 88, got %d", pointsPerRMB)
+	}
+}
+
+func TestNormalizeAccessControlConfigKeepsUnionIDs(t *testing.T) {
+	config := NormalizeAccessControlConfig(types.AccessControlConfig{
+		WhitelistUnionIDs: []string{"union-1", "union-1", ""},
+		BlockedUnionIDs:   []string{"union-2", ""},
+	})
+	if len(config.WhitelistUnionIDs) != 1 || config.WhitelistUnionIDs[0] != "union-1" {
+		t.Fatalf("unexpected whitelist union ids: %#v", config.WhitelistUnionIDs)
+	}
+	if len(config.BlockedUnionIDs) != 1 || config.BlockedUnionIDs[0] != "union-2" {
+		t.Fatalf("unexpected blocked union ids: %#v", config.BlockedUnionIDs)
+	}
+}
+
+func TestPlatformAdminSupportsUnionID(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	account, err := db.EnsureUserAccount("qq", "user-1")
+	if err != nil {
+		t.Fatalf("EnsureUserAccount returned error: %v", err)
+	}
+	settings, err := db.GetSystemSettings()
+	if err != nil {
+		t.Fatalf("GetSystemSettings returned error: %v", err)
+	}
+	settings.PlatformAdmins = []PlatformAdmin{{UnionID: account.UnionID}}
+	if err := db.SaveSystemSettings(settings); err != nil {
+		t.Fatalf("SaveSystemSettings returned error: %v", err)
+	}
+	if !db.IsPlatformAdmin("qq", "user-1") {
+		t.Fatal("expected union_id platform admin to match bound platform user")
+	}
+	if db.IsPlatformAdmin("qq", "user-2") {
+		t.Fatal("expected unrelated user not to be platform admin")
 	}
 }
 

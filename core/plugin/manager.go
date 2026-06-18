@@ -113,16 +113,17 @@ type PluginAccountAction struct {
 }
 
 type ScriptRunAction struct {
-	RequestID string
-	PluginID  string
-	Runtime   string
-	Script    string
-	Cwd       string
-	Env       map[string]string
-	Timeout   int
-	Wait      bool
-	RunMode   string
-	UnionID   string
+	RequestID      string
+	PluginID       string
+	Runtime        string
+	RuntimeProfile string
+	Script         string
+	Cwd            string
+	Env            map[string]string
+	Timeout        int
+	Wait           bool
+	RunMode        string
+	UnionID        string
 }
 
 type ScriptRunResult struct {
@@ -133,14 +134,15 @@ type ScriptRunResult struct {
 }
 
 type ScriptRunTask struct {
-	ID         int64     `json:"id"`
-	PluginID   string    `json:"plugin_id"`
-	UnionID    string    `json:"union_id"`
-	ScriptPath string    `json:"script_path"`
-	Runtime    string    `json:"runtime"`
-	RunMode    string    `json:"run_mode"`
-	Status     string    `json:"status"`
-	StartedAt  time.Time `json:"started_at"`
+	ID             int64     `json:"id"`
+	PluginID       string    `json:"plugin_id"`
+	UnionID        string    `json:"union_id"`
+	ScriptPath     string    `json:"script_path"`
+	Runtime        string    `json:"runtime"`
+	RuntimeProfile string    `json:"runtime_profile"`
+	RunMode        string    `json:"run_mode"`
+	Status         string    `json:"status"`
+	StartedAt      time.Time `json:"started_at"`
 }
 
 type PluginAuthorizationAction struct {
@@ -156,8 +158,28 @@ type PluginAuthorizationAction struct {
 	ExpiresAt string
 }
 
+type PaymentWaitAction struct {
+	RequestID string
+	Subject   string
+	AmountRaw json.RawMessage
+	Timeout   int
+	UnionID   string
+	Methods   []string
+	Metadata  map[string]interface{}
+	Remark    string
+}
+
 func NewManager(pluginDir string, depsManager *deps.Manager) *Manager {
 	return &Manager{plugins: make(map[string]*PluginProcess), runningScripts: make(map[int64]context.CancelFunc), scriptDone: make(map[int64]chan ScriptRunResult), pluginDir: pluginDir, depsManager: depsManager}
+}
+
+func (m *Manager) PluginDir() string {
+	if m == nil {
+		return ""
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.pluginDir
 }
 
 func (m *Manager) SetDatabase(database *config.Database) {
@@ -166,7 +188,9 @@ func (m *Manager) SetDatabase(database *config.Database) {
 	m.database = database
 }
 
-func (m *Manager) GetDepsManager() *deps.Manager { return m.depsManager }
+func (m *Manager) GetDepsManager() *deps.Manager {
+	return m.depsManager
+}
 
 func (m *Manager) LoadPlugin(pluginPath string) (*types.Plugin, error) {
 	plugin, err := m.loadPluginConfig(pluginPath)
@@ -305,7 +329,139 @@ func (m *Manager) StartPluginByID(pluginID string) error {
 	return m.ReloadPlugin(pluginID)
 }
 
-func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte, replyFunc func(string) error, imageFunc func(string) error, fileFunc func(string) error, listenFunc func(timeout int) string, dataViewFunc func(config.DataViewConfig) error, dbFunc func(pluginID string, action PluginDBAction) PluginDBResult, fakeMessageFunc func(pluginID string, action FakeMessageAction) error, sendMessageFunc func(pluginID string, action SendMessageAction) PluginUserResult, userFunc func() PluginUserResult, adminFunc func(platform string) PluginUserResult, configFunc func(pluginID string, action PluginConfigAction) PluginUserResult, scheduleFunc func(pluginID string, action ScheduledTaskAction) PluginUserResult, accountFunc func(pluginID string, action PluginAccountAction) PluginUserResult, authFunc func(pluginID string, action PluginAuthorizationAction) PluginUserResult, scriptFunc func(pluginID string, action ScriptRunAction) PluginUserResult) error {
+const (
+	pluginOutputMaxLineBytes = 4 * 1024 * 1024
+	pluginLogMergeWindow     = 30 * time.Millisecond
+)
+
+func newPluginOutputScanner(reader io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 64*1024), pluginOutputMaxLineBytes)
+	return scanner
+}
+
+type pluginProcessLogBatch struct {
+	scope  string
+	id     string
+	stream string
+	lines  []string
+}
+
+func newPluginProcessLogBatch(scope string, id string, stream string) *pluginProcessLogBatch {
+	return &pluginProcessLogBatch{scope: scope, id: id, stream: stream}
+}
+
+func (b *pluginProcessLogBatch) Add(line string) {
+	if line == "" {
+		return
+	}
+	b.lines = append(b.lines, line)
+}
+
+func (b *pluginProcessLogBatch) Flush() {
+	if len(b.lines) == 0 {
+		return
+	}
+	log.Printf("[SYSTEM][%s][%s][%s] %s", b.scope, b.id, b.stream, strings.Join(b.lines, "\n"))
+	b.lines = nil
+}
+
+func isPluginProtocolAction(action string) bool {
+	switch action {
+	case "reply", "send_image", "send_file", "listen", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "get_union_id", "list_platform_admins", "set_access_control", "set_scheduled_task", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "done":
+		return true
+	default:
+		return false
+	}
+}
+
+func isOpenAPIProtocolAction(action string) bool {
+	switch action {
+	case "http_response", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "send_message", "done":
+		return true
+	default:
+		return false
+	}
+}
+
+func scanPluginProcessStderr(reader io.Reader, scope string, id string) {
+	lineCh := make(chan string, 16)
+	errCh := make(chan error, 1)
+	go func() {
+		scanner := newPluginOutputScanner(reader)
+		for scanner.Scan() {
+			lineCh <- scanner.Text()
+		}
+		errCh <- scanner.Err()
+		close(lineCh)
+	}()
+
+	batch := newPluginProcessLogBatch(scope, id, "STDERR")
+	var timer *time.Timer
+	var timerCh <-chan time.Time
+	stopTimer := func() {
+		if timer == nil {
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer = nil
+		timerCh = nil
+	}
+	scheduleFlush := func() {
+		if timer == nil {
+			timer = time.NewTimer(pluginLogMergeWindow)
+			timerCh = timer.C
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(pluginLogMergeWindow)
+	}
+	flush := func() {
+		stopTimer()
+		batch.Flush()
+	}
+
+	for {
+		select {
+		case line, ok := <-lineCh:
+			if !ok {
+				flush()
+				if err := <-errCh; err != nil {
+					log.Printf("[SYSTEM][%s][%s][STDERR] scan error: %v", scope, id, err)
+				}
+				return
+			}
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "[PLUGIN_LOG]") && len(batch.lines) > 0 {
+				flush()
+			}
+			batch.Add(line)
+			scheduleFlush()
+		case <-timerCh:
+			flush()
+		}
+	}
+}
+
+func waitPluginProcess(cmd *exec.Cmd, stderrDone <-chan struct{}) error {
+	err := cmd.Wait()
+	<-stderrDone
+	return err
+}
+
+func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte, replyFunc func(string) error, imageFunc func(string) error, fileFunc func(string) error, listenFunc func(timeout int) string, dataViewFunc func(config.DataViewConfig) error, dbFunc func(pluginID string, action PluginDBAction) PluginDBResult, fakeMessageFunc func(pluginID string, action FakeMessageAction) error, sendMessageFunc func(pluginID string, action SendMessageAction) PluginUserResult, userFunc func() PluginUserResult, adminFunc func(platform string) PluginUserResult, configFunc func(pluginID string, action PluginConfigAction) PluginUserResult, scheduleFunc func(pluginID string, action ScheduledTaskAction) PluginUserResult, accountFunc func(pluginID string, action PluginAccountAction) PluginUserResult, authFunc func(pluginID string, action PluginAuthorizationAction) PluginUserResult, scriptFunc func(pluginID string, action ScriptRunAction) PluginUserResult, paymentFunc func(pluginID string, action PaymentWaitAction) PluginUserResult) error {
 	cmd, err := m.newDirectCommand(plugin, pluginPath)
 	if err != nil {
 		return err
@@ -327,20 +483,21 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	stderrDone := make(chan struct{})
 	go func() {
-		output, _ := io.ReadAll(stderr)
-		if len(output) > 0 {
-			log.Printf("[SYSTEM] Plugin %s stderr: %s", plugin.ID, string(output))
-		}
+		defer close(stderrDone)
+		scanPluginProcessStderr(stderr, "PLUGIN", plugin.ID)
 	}()
 
 	messageJSON = append(messageJSON, '\n')
 	if _, err := stdin.Write(messageJSON); err != nil {
 		_ = cmd.Process.Kill()
+		_ = waitPluginProcess(cmd, stderrDone)
 		return err
 	}
 
-	scanner := bufio.NewScanner(stdout)
+	stdoutBatch := newPluginProcessLogBatch("PLUGIN", plugin.ID, "STDOUT")
+	scanner := newPluginOutputScanner(stdout)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
@@ -348,61 +505,70 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 		}
 
 		var action struct {
-			Action        string                     `json:"action"`
-			RequestID     string                     `json:"request_id"`
-			Text          string                     `json:"text"`
-			URL           string                     `json:"url"`
-			Path          string                     `json:"path"`
-			Timeout       int                        `json:"timeout"`
-			Success       bool                       `json:"success"`
-			Error         string                     `json:"error"`
-			TableName     string                     `json:"table_name"`
-			ViewName      string                     `json:"view_name"`
-			GroupName     string                     `json:"group_name"`
-			Description   string                     `json:"description"`
-			Columns       []string                   `json:"columns"`
-			DBTable       string                     `json:"table"`
-			DBColumns     []config.PluginTableColumn `json:"db_columns"`
-			Values        map[string]interface{}     `json:"values"`
-			RowID         int64                      `json:"row_id"`
-			Query         config.PluginDBQuery       `json:"query"`
-			AccessControl types.AccessControlConfig  `json:"access_control"`
-			TaskKey       string                     `json:"task_key"`
-			Name          string                     `json:"name"`
-			Enabled       bool                       `json:"enabled"`
-			Pinned        bool                       `json:"pinned"`
-			MaxCount      int                        `json:"max_count"`
-			Platform      string                     `json:"platform"`
-			AdapterID     string                     `json:"adapter_id"`
-			UserID        string                     `json:"user_id"`
-			GroupID       string                     `json:"group_id"`
-			Content       string                     `json:"content"`
-			TextMessage   string                     `json:"text_message"`
-			Cron          string                     `json:"cron"`
-			Scope         string                     `json:"scope"`
-			ID            int64                      `json:"id"`
-			UnionID       string                     `json:"union_id"`
-			AccountName   string                     `json:"account_name"`
-			EnvName       string                     `json:"env_name"`
-			EnvValue      string                     `json:"env_value"`
-			Remark        string                     `json:"remark"`
-			Status        string                     `json:"status"`
-			Plan          string                     `json:"plan"`
-			Source        string                     `json:"source"`
-			Amount        int64                      `json:"amount"`
-			Metadata      map[string]interface{}     `json:"metadata"`
-			Runtime       string                     `json:"runtime"`
-			Script        string                     `json:"script"`
-			Cwd           string                     `json:"cwd"`
-			Env           map[string]string          `json:"env"`
-			Wait          bool                       `json:"wait"`
-			RunMode       string                     `json:"run_mode"`
-			ExpiresAt     string                     `json:"expires_at"`
+			Action         string                     `json:"action"`
+			RequestID      string                     `json:"request_id"`
+			Text           string                     `json:"text"`
+			URL            string                     `json:"url"`
+			Path           string                     `json:"path"`
+			Timeout        int                        `json:"timeout"`
+			Success        bool                       `json:"success"`
+			Error          string                     `json:"error"`
+			TableName      string                     `json:"table_name"`
+			ViewName       string                     `json:"view_name"`
+			GroupName      string                     `json:"group_name"`
+			Description    string                     `json:"description"`
+			Columns        []string                   `json:"columns"`
+			DBTable        string                     `json:"table"`
+			DBColumns      []config.PluginTableColumn `json:"db_columns"`
+			Values         map[string]interface{}     `json:"values"`
+			RowID          int64                      `json:"row_id"`
+			Query          config.PluginDBQuery       `json:"query"`
+			AccessControl  types.AccessControlConfig  `json:"access_control"`
+			TaskKey        string                     `json:"task_key"`
+			Name           string                     `json:"name"`
+			Subject        string                     `json:"subject"`
+			Enabled        bool                       `json:"enabled"`
+			Pinned         bool                       `json:"pinned"`
+			MaxCount       int                        `json:"max_count"`
+			Platform       string                     `json:"platform"`
+			AdapterID      string                     `json:"adapter_id"`
+			UserID         string                     `json:"user_id"`
+			GroupID        string                     `json:"group_id"`
+			Content        string                     `json:"content"`
+			TextMessage    string                     `json:"text_message"`
+			Cron           string                     `json:"cron"`
+			Scope          string                     `json:"scope"`
+			ID             int64                      `json:"id"`
+			UnionID        string                     `json:"union_id"`
+			AccountName    string                     `json:"account_name"`
+			EnvName        string                     `json:"env_name"`
+			EnvValue       string                     `json:"env_value"`
+			Remark         string                     `json:"remark"`
+			Status         string                     `json:"status"`
+			Plan           string                     `json:"plan"`
+			Source         string                     `json:"source"`
+			Amount         json.RawMessage            `json:"amount"`
+			AmountRMB      json.RawMessage            `json:"amount_rmb"`
+			Metadata       map[string]interface{}     `json:"metadata"`
+			Runtime        string                     `json:"runtime"`
+			RuntimeProfile string                     `json:"runtime_profile"`
+			Script         string                     `json:"script"`
+			Cwd            string                     `json:"cwd"`
+			Env            map[string]string          `json:"env"`
+			Methods        []string                   `json:"methods"`
+			Wait           bool                       `json:"wait"`
+			RunMode        string                     `json:"run_mode"`
+			ExpiresAt      string                     `json:"expires_at"`
 		}
 		if err := json.Unmarshal([]byte(line), &action); err != nil {
-			log.Printf("[SYSTEM] Plugin %s invalid output line: %s", plugin.ID, line)
+			stdoutBatch.Add(line)
 			continue
 		}
+		if action.Action == "" || !isPluginProtocolAction(action.Action) {
+			stdoutBatch.Add(line)
+			continue
+		}
+		stdoutBatch.Flush()
 
 		switch action.Action {
 		case "reply":
@@ -463,6 +629,9 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 				if text == "" {
 					text = action.TextMessage
 				}
+				if text == "" {
+					text = action.Content
+				}
 				result = sendMessageFunc(plugin.ID, SendMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, Text: text})
 			}
 			response, _ := json.Marshal(map[string]interface{}{"action": "send_message_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
@@ -510,16 +679,35 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			_, _ = stdin.Write(response)
 		case "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add":
 			result := PluginUserResult{Success: false, Error: "授权执行器不可用"}
-			if authFunc != nil {
-				result = authFunc(plugin.ID, PluginAuthorizationAction{Action: action.Action, RequestID: action.RequestID, TableName: action.TableName, UnionID: action.UnionID, Amount: action.Amount, Status: action.Status, Plan: action.Plan, Source: action.Source, Metadata: action.Metadata, ExpiresAt: action.ExpiresAt})
+			amount, amountErr := parseInt64Raw(action.Amount)
+			if amountErr != nil {
+				result = PluginUserResult{Success: false, Error: amountErr.Error()}
+			} else if authFunc != nil {
+				result = authFunc(plugin.ID, PluginAuthorizationAction{Action: action.Action, RequestID: action.RequestID, TableName: action.TableName, UnionID: action.UnionID, Amount: amount, Status: action.Status, Plan: action.Plan, Source: action.Source, Metadata: action.Metadata, ExpiresAt: action.ExpiresAt})
 			}
 			response, _ := json.Marshal(map[string]interface{}{"action": "auth_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
+			response = append(response, '\n')
+			_, _ = stdin.Write(response)
+		case "payment_wait":
+			result := PluginUserResult{Success: false, Error: "支付执行器不可用"}
+			if paymentFunc != nil {
+				subject := action.Subject
+				if subject == "" {
+					subject = action.Name
+				}
+				result = paymentFunc(plugin.ID, PaymentWaitAction{RequestID: action.RequestID, Subject: subject, AmountRaw: paymentAmountRaw(action.Amount, action.AmountRMB), Timeout: action.Timeout, UnionID: action.UnionID, Methods: action.Methods, Metadata: action.Metadata, Remark: action.Remark})
+			}
+			response, _ := json.Marshal(map[string]interface{}{"action": "payment_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
 			response = append(response, '\n')
 			_, _ = stdin.Write(response)
 		case "run_script":
 			result := PluginUserResult{Success: false, Error: "脚本执行器不可用"}
 			if scriptFunc != nil {
-				result = scriptFunc(plugin.ID, ScriptRunAction{RequestID: action.RequestID, Runtime: action.Runtime, Script: action.Script, Cwd: action.Cwd, Env: action.Env, Timeout: action.Timeout, Wait: action.Wait, RunMode: action.RunMode, UnionID: action.UnionID})
+				runtimeProfile := strings.TrimSpace(action.RuntimeProfile)
+				if runtimeProfile == "" {
+					runtimeProfile = strings.TrimSpace(plugin.RuntimeProfile)
+				}
+				result = scriptFunc(plugin.ID, ScriptRunAction{RequestID: action.RequestID, Runtime: action.Runtime, RuntimeProfile: runtimeProfile, Script: action.Script, Cwd: action.Cwd, Env: action.Env, Timeout: action.Timeout, Wait: action.Wait, RunMode: action.RunMode, UnionID: action.UnionID})
 			}
 			response, _ := json.Marshal(map[string]interface{}{"action": "script_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
 			response = append(response, '\n')
@@ -529,18 +717,50 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 				log.Printf("[SYSTEM] Plugin %s error: %s", plugin.ID, action.Error)
 			}
 			_ = stdin.Close()
-			_ = cmd.Wait()
+			_ = waitPluginProcess(cmd, stderrDone)
 			return nil
 		}
 	}
 
+	stdoutBatch.Flush()
 	_ = stdin.Close()
-	_ = cmd.Wait()
+	_ = waitPluginProcess(cmd, stderrDone)
 	return scanner.Err()
 }
 
+func parseInt64Raw(raw json.RawMessage) (int64, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, nil
+	}
+	var number int64
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return number, nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		text = strings.TrimSpace(text)
+		var parsed int64
+		if _, err := fmt.Sscanf(text, "%d", &parsed); err != nil || fmt.Sprintf("%d", parsed) != text {
+			return 0, fmt.Errorf("积分数量必须是整数")
+		}
+		return parsed, nil
+	}
+	return 0, fmt.Errorf("积分数量必须是整数")
+}
+
+func paymentAmountRaw(actionAmount, amountRMB json.RawMessage) json.RawMessage {
+	if len(actionAmount) > 0 && string(actionAmount) != "null" {
+		return actionAmount
+	}
+	return amountRMB
+}
+
 func (m *Manager) ExecutePluginOpenAPI(plugin *types.Plugin, pluginPath string, request types.OpenAPIRequest) (types.OpenAPIResponse, error) {
-	endpoint := types.OpenAPIEndpoint{ID: plugin.ID, Name: plugin.Name, Path: plugin.OpenAPI.Path, Method: plugin.OpenAPI.Method, Enabled: plugin.OpenAPI.Enabled, Token: plugin.OpenAPI.Token, Runtime: plugin.Runtime, Entry: plugin.Entry}
+	runtimeProfile := strings.TrimSpace(plugin.OpenAPI.RuntimeProfile)
+	if runtimeProfile == "" {
+		runtimeProfile = plugin.RuntimeProfile
+	}
+	endpoint := types.OpenAPIEndpoint{ID: plugin.ID, Name: plugin.Name, Path: plugin.OpenAPI.Path, Method: plugin.OpenAPI.Method, Enabled: plugin.OpenAPI.Enabled, Token: plugin.OpenAPI.Token, Runtime: plugin.Runtime, RuntimeProfile: runtimeProfile, Entry: plugin.Entry}
 	return m.ExecuteOpenAPI(endpoint, pluginPath, request, nil, nil)
 }
 
@@ -577,19 +797,20 @@ func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string,
 	if err := cmd.Start(); err != nil {
 		return types.OpenAPIResponse{}, err
 	}
+	stderrDone := make(chan struct{})
 	go func() {
-		output, _ := io.ReadAll(stderr)
-		if len(output) > 0 {
-			log.Printf("[SYSTEM] OpenAPI %s stderr: %s", endpoint.ID, string(output))
-		}
+		defer close(stderrDone)
+		scanPluginProcessStderr(stderr, "OPENAPI", endpoint.ID)
 	}()
 	if _, err := stdin.Write(append(payload, '\n')); err != nil {
 		_ = cmd.Process.Kill()
+		_ = waitPluginProcess(cmd, stderrDone)
 		return types.OpenAPIResponse{}, err
 	}
 
 	response := types.OpenAPIResponse{Status: 200, Headers: map[string]string{"Content-Type": "application/json; charset=utf-8"}}
-	scanner := bufio.NewScanner(stdout)
+	stdoutBatch := newPluginProcessLogBatch("OPENAPI", endpoint.ID, "STDOUT")
+	scanner := newPluginOutputScanner(stdout)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
@@ -612,6 +833,7 @@ func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string,
 			UnionID   string                     `json:"union_id"`
 			Text      string                     `json:"text"`
 			TextMsg   string                     `json:"text_message"`
+			Content   string                     `json:"content"`
 			DBTable   string                     `json:"table"`
 			DBColumns []config.PluginTableColumn `json:"db_columns"`
 			Values    map[string]interface{}     `json:"values"`
@@ -619,9 +841,14 @@ func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string,
 			Query     config.PluginDBQuery       `json:"query"`
 		}
 		if err := json.Unmarshal([]byte(line), &action); err != nil {
-			log.Printf("[SYSTEM] OpenAPI %s invalid output line: %s", endpoint.ID, line)
+			stdoutBatch.Add(line)
 			continue
 		}
+		if action.Action == "" || !isOpenAPIProtocolAction(action.Action) {
+			stdoutBatch.Add(line)
+			continue
+		}
+		stdoutBatch.Flush()
 		switch action.Action {
 		case "http_response":
 			if action.Status > 0 {
@@ -634,7 +861,7 @@ func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string,
 			response.JSON = action.JSON
 			response.Data = action.Data
 			_ = stdin.Close()
-			_ = cmd.Wait()
+			_ = waitPluginProcess(cmd, stderrDone)
 			return response, nil
 		case "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear":
 			result := PluginDBResult{Success: false, Error: "数据库执行器不可用"}
@@ -651,6 +878,9 @@ func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string,
 				if text == "" {
 					text = action.TextMsg
 				}
+				if text == "" {
+					text = action.Content
+				}
 				result = sendMessageFunc(endpoint.ID, SendMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, Text: text})
 			}
 			reply, _ := json.Marshal(map[string]interface{}{"action": "send_message_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
@@ -658,17 +888,19 @@ func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string,
 			_, _ = stdin.Write(reply)
 		case "done":
 			if !action.Success && action.Error != "" {
-				_ = cmd.Wait()
+				_ = waitPluginProcess(cmd, stderrDone)
 				return types.OpenAPIResponse{}, fmt.Errorf("%s", action.Error)
 			}
 		}
 	}
+	stdoutBatch.Flush()
 	if err := scanner.Err(); err != nil {
 		_ = cmd.Process.Kill()
+		_ = waitPluginProcess(cmd, stderrDone)
 		return types.OpenAPIResponse{}, err
 	}
 	_ = stdin.Close()
-	_ = cmd.Wait()
+	_ = waitPluginProcess(cmd, stderrDone)
 	return types.OpenAPIResponse{}, fmt.Errorf("Open API 未返回 http_response")
 }
 
@@ -677,20 +909,20 @@ func (m *Manager) newOpenAPICommand(endpoint types.OpenAPIEndpoint, workDir stri
 	if err != nil {
 		return nil, err
 	}
+	resolved, err := m.depsManager.ResolveRuntime(endpoint.Runtime, endpoint.RuntimeProfile)
+	if err != nil {
+		return nil, err
+	}
 	switch endpoint.Runtime {
 	case "python":
-		pythonPath := m.depsManager.GetPythonPath()
-		if _, err := os.Stat(pythonPath); err != nil {
-			return nil, fmt.Errorf("Python 解释器不可用: %s", pythonPath)
-		}
-		cmd := exec.Command(pythonPath, filepath.Join(sdkRoot, "python", "allbot_direct.py"), "openapi", endpoint.Entry)
+		cmd := exec.Command(resolved.Executable, "-u", filepath.Join(sdkRoot, "python", "allbot_direct.py"), "openapi", endpoint.Entry)
 		cmd.Dir = workDir
-		cmd.Env = append(os.Environ(), fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", endpoint.ID), "PYTHONUTF8=1")
+		cmd.Env = append(os.Environ(), fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", endpoint.ID), fmt.Sprintf("ALLBOT_RUNTIME_PROFILE=%s", resolved.Profile.ID), "PYTHONUTF8=1", "PYTHONUNBUFFERED=1")
 		return cmd, nil
 	case "nodejs":
-		cmd := exec.Command("node", filepath.Join(sdkRoot, "nodejs", "allbot_direct.js"), "openapi", endpoint.Entry)
+		cmd := exec.Command(resolved.Executable, filepath.Join(sdkRoot, "nodejs", "allbot_direct.js"), "openapi", endpoint.Entry)
 		cmd.Dir = workDir
-		cmd.Env = append(os.Environ(), fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", endpoint.ID), fmt.Sprintf("NODE_PATH=%s", m.depsManager.GetNodePath()))
+		cmd.Env = append(os.Environ(), fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", endpoint.ID), fmt.Sprintf("ALLBOT_RUNTIME_PROFILE=%s", resolved.Profile.ID), fmt.Sprintf("NODE_PATH=%s", resolved.NodePath))
 		return cmd, nil
 	default:
 		return nil, fmt.Errorf("不支持的运行时: %s", endpoint.Runtime)
@@ -702,20 +934,20 @@ func (m *Manager) newDirectCommand(plugin *types.Plugin, pluginPath string) (*ex
 	if err != nil {
 		return nil, err
 	}
+	resolved, err := m.depsManager.ResolveRuntime(plugin.Runtime, plugin.RuntimeProfile)
+	if err != nil {
+		return nil, err
+	}
 	switch plugin.Runtime {
 	case "python":
-		pythonPath := m.depsManager.GetPythonPath()
-		if _, err := os.Stat(pythonPath); err != nil {
-			return nil, fmt.Errorf("Python 解释器不可用: %s", pythonPath)
-		}
-		cmd := exec.Command(pythonPath, entryPath)
+		cmd := exec.Command(resolved.Executable, "-u", entryPath)
 		cmd.Dir = pluginPath
-		cmd.Env = append(os.Environ(), fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", plugin.ID), "PYTHONUTF8=1")
+		cmd.Env = append(os.Environ(), fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", plugin.ID), fmt.Sprintf("ALLBOT_RUNTIME_PROFILE=%s", resolved.Profile.ID), "PYTHONUTF8=1", "PYTHONUNBUFFERED=1")
 		return cmd, nil
 	case "nodejs":
-		cmd := exec.Command("node", entryPath)
+		cmd := exec.Command(resolved.Executable, entryPath)
 		cmd.Dir = pluginPath
-		cmd.Env = append(os.Environ(), fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", plugin.ID), fmt.Sprintf("NODE_PATH=%s", m.depsManager.GetNodePath()))
+		cmd.Env = append(os.Environ(), fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", plugin.ID), fmt.Sprintf("ALLBOT_RUNTIME_PROFILE=%s", resolved.Profile.ID), fmt.Sprintf("NODE_PATH=%s", resolved.NodePath))
 		return cmd, nil
 	default:
 		return nil, fmt.Errorf("不支持的运行时: %s", plugin.Runtime)
@@ -733,17 +965,23 @@ func (m *Manager) RunPluginScript(pluginPath string, action ScriptRunAction) Plu
 	if database == nil {
 		return PluginUserResult{Success: false, Error: "数据库未初始化，无法创建脚本任务"}
 	}
+	action.RuntimeProfile = strings.TrimSpace(action.RuntimeProfile)
+	resolved, err := m.depsManager.ResolveRuntime(runtimeName, action.RuntimeProfile)
+	if err != nil {
+		return PluginUserResult{Success: false, Error: err.Error()}
+	}
+	actualProfile := resolved.Profile.ID
 	scriptPath := filepath.ToSlash(action.Script)
 	runMode := strings.TrimSpace(action.RunMode)
 	if runMode == "" {
 		runMode = "manual"
 	}
 	m.mu.Lock()
-	if existing, err := database.FindRunningScriptRunLog(action.PluginID, scriptPath, runMode, action.UnionID); err != nil {
+	if existing, err := database.FindRunningScriptRunLog(action.PluginID, scriptPath, runMode, action.UnionID, actualProfile); err != nil {
 		m.mu.Unlock()
 		return PluginUserResult{Success: false, Error: err.Error()}
 	} else if existing != nil {
-		data := map[string]interface{}{"log_id": existing.ID, "task_id": existing.ID, "status": existing.Status, "runtime": existing.Runtime, "script": existing.ScriptPath, "already_running": true}
+		data := map[string]interface{}{"log_id": existing.ID, "task_id": existing.ID, "status": existing.Status, "runtime": existing.Runtime, "runtime_profile": existing.RuntimeProfile, "script": existing.ScriptPath, "already_running": true}
 		m.mu.Unlock()
 		if action.Wait {
 			return m.waitScriptRun(existing.ID, data, action.Timeout)
@@ -751,7 +989,7 @@ func (m *Manager) RunPluginScript(pluginPath string, action ScriptRunAction) Plu
 		return PluginUserResult{Success: true, Data: data}
 	}
 	startedAt := time.Now()
-	logID, reused, err := database.UpsertScriptRunLog(config.ScriptRunLog{PluginID: action.PluginID, UnionID: action.UnionID, ScriptPath: scriptPath, Runtime: runtimeName, RunMode: runMode, Status: "running", StartedAt: startedAt, FinishedAt: startedAt})
+	logID, reused, err := database.UpsertScriptRunLog(config.ScriptRunLog{PluginID: action.PluginID, UnionID: action.UnionID, ScriptPath: scriptPath, Runtime: runtimeName, RuntimeProfile: actualProfile, RunMode: runMode, Status: "running", StartedAt: startedAt, FinishedAt: startedAt})
 	if err != nil {
 		m.mu.Unlock()
 		return PluginUserResult{Success: false, Error: err.Error()}
@@ -760,8 +998,8 @@ func (m *Manager) RunPluginScript(pluginPath string, action ScriptRunAction) Plu
 	done := make(chan ScriptRunResult, 1)
 	m.runningScripts[logID] = cancel
 	m.scriptDone[logID] = done
-	go m.runPluginScriptTask(ctx, logID, runtimeName, fullScript, workDir, action)
-	data := map[string]interface{}{"log_id": logID, "task_id": logID, "status": "running", "runtime": runtimeName, "script": scriptPath, "already_running": false, "reused": reused}
+	go m.runPluginScriptTask(ctx, logID, runtimeName, fullScript, workDir, resolved, action)
+	data := map[string]interface{}{"log_id": logID, "task_id": logID, "status": "running", "runtime": runtimeName, "runtime_profile": actualProfile, "script": scriptPath, "already_running": false, "reused": reused}
 	m.mu.Unlock()
 	if action.Wait {
 		return m.waitScriptRun(logID, data, action.Timeout)
@@ -828,18 +1066,18 @@ func (m *Manager) preparePluginScript(pluginPath string, action ScriptRunAction)
 	return runtimeName, fullScript, workDir, nil
 }
 
-func (m *Manager) runPluginScriptTask(ctx context.Context, logID int64, runtimeName, fullScript, workDir string, action ScriptRunAction) {
-	cmdName := "node"
+func (m *Manager) runPluginScriptTask(ctx context.Context, logID int64, runtimeName, fullScript, workDir string, resolved deps.ResolvedRuntime, action ScriptRunAction) {
+	cmdArgs := []string{fullScript}
 	if runtimeName == "python" {
-		cmdName = m.depsManager.GetPythonPath()
+		cmdArgs = []string{"-u", fullScript}
 	}
-	cmd := exec.CommandContext(ctx, cmdName, fullScript)
+	cmd := exec.CommandContext(ctx, resolved.Executable, cmdArgs...)
 	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(), "ALLBOT_SCRIPT_RUN=1")
+	cmd.Env = append(os.Environ(), "ALLBOT_SCRIPT_RUN=1", fmt.Sprintf("ALLBOT_RUNTIME_PROFILE=%s", resolved.Profile.ID))
 	if runtimeName == "nodejs" {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("NODE_PATH=%s", m.depsManager.GetNodePath()))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("NODE_PATH=%s", resolved.NodePath))
 	} else {
-		cmd.Env = append(cmd.Env, "PYTHONUTF8=1")
+		cmd.Env = append(cmd.Env, "PYTHONUTF8=1", "PYTHONUNBUFFERED=1")
 	}
 	for key, value := range action.Env {
 		key = strings.TrimSpace(key)
@@ -1033,6 +1271,7 @@ func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
 		return nil, err
 	}
 	pluginID := filepath.Base(pluginPath)
+	config.Runtime = normalizePluginRuntime(config.Runtime)
 	entry, err := validatePluginEntry(pluginPath, config.Runtime, config.Entry)
 	if err != nil {
 		return nil, fmt.Errorf("插件入口文件无效: %w", err)
@@ -1042,6 +1281,7 @@ func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
 		Name:              config.Name,
 		Version:           config.Version,
 		Runtime:           config.Runtime,
+		RuntimeProfile:    strings.TrimSpace(config.RuntimeProfile),
 		Entry:             entry,
 		Platforms:         config.Platforms,
 		AllowedAdapterIDs: config.AllowedAdapterIDs,
@@ -1057,6 +1297,17 @@ func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
 	}, nil
 }
 
+func normalizePluginRuntime(runtime string) string {
+	runtime = strings.ToLower(strings.TrimSpace(runtime))
+	if runtime == "node" {
+		return "nodejs"
+	}
+	if runtime == "py" || runtime == "python3" {
+		return "python"
+	}
+	return runtime
+}
+
 func normalizeOpenAPIConfig(config types.OpenAPIConfig, runtime string) types.OpenAPIConfig {
 	config.Path = strings.Trim(strings.TrimSpace(config.Path), "/")
 	config.Method = strings.ToUpper(strings.TrimSpace(config.Method))
@@ -1068,6 +1319,7 @@ func normalizeOpenAPIConfig(config types.OpenAPIConfig, runtime string) types.Op
 	if config.Runtime == "" {
 		config.Runtime = runtime
 	}
+	config.RuntimeProfile = strings.TrimSpace(config.RuntimeProfile)
 	return config
 }
 
@@ -1088,14 +1340,14 @@ func (m *Manager) installDeps(plugin *types.Plugin) {
 	if err := json.Unmarshal(data, &config); err != nil || len(config.Dependencies) == 0 {
 		return
 	}
-	switch config.Runtime {
+	switch normalizePluginRuntime(config.Runtime) {
 	case "python":
-		if err := m.depsManager.InstallPythonDeps(config.Dependencies); err != nil {
-			log.Printf("[SYSTEM] 安装插件 %s Python 依赖失败: %v", config.Name, err)
+		if err := m.depsManager.EnsurePythonDepsForProfile(config.RuntimeProfile, config.Dependencies); err != nil {
+			log.Printf("[SYSTEM] 确保插件 %s Python 依赖失败: %v", config.Name, err)
 		}
 	case "nodejs":
-		if err := m.depsManager.InstallNodeDeps(config.Dependencies); err != nil {
-			log.Printf("[SYSTEM] 安装插件 %s Node.js 依赖失败: %v", config.Name, err)
+		if err := m.depsManager.EnsureNodeDepsForProfile(config.RuntimeProfile, config.Dependencies); err != nil {
+			log.Printf("[SYSTEM] 确保插件 %s Node.js 依赖失败: %v", config.Name, err)
 		}
 	}
 }

@@ -18,6 +18,7 @@ import (
 type PlatformAdmin struct {
 	Platform string `json:"platform"`
 	UserID   string `json:"user_id"`
+	UnionID  string `json:"union_id,omitempty"`
 }
 
 const (
@@ -48,6 +49,24 @@ type SystemSettings struct {
 	AutoLoadPlugins bool                      `json:"auto_load_plugins"`
 	PointsUnit      string                    `json:"points_unit"`
 	AccessControl   types.AccessControlConfig `json:"access_control"`
+}
+
+type BackupSettings struct {
+	Enabled        bool              `json:"enabled"`
+	Cron           string            `json:"cron"`
+	Retention      int               `json:"retention"`
+	BackupDir      string            `json:"backup_dir"`
+	IncludePlugins bool              `json:"include_plugins"`
+	IncludeData    bool              `json:"include_data"`
+	OSS            OSSBackupSettings `json:"oss"`
+}
+
+type OSSBackupSettings struct {
+	Enabled  bool   `json:"enabled"`
+	Provider string `json:"provider"`
+	Bucket   string `json:"bucket"`
+	Endpoint string `json:"endpoint"`
+	Prefix   string `json:"prefix"`
 }
 
 func (d *Database) GetSetting(key string) (string, error) {
@@ -118,6 +137,60 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 	return nil
 }
 
+func DefaultBackupSettings() BackupSettings {
+	return BackupSettings{Enabled: false, Cron: "0 3 * * *", Retention: 7, BackupDir: "./backups", IncludePlugins: true, IncludeData: true, OSS: OSSBackupSettings{Provider: "", Prefix: "allbot/"}}
+}
+
+func (d *Database) GetBackupSettings() (BackupSettings, error) {
+	settings := DefaultBackupSettings()
+	value, err := d.GetSetting("backup.config")
+	if err == sql.ErrNoRows {
+		return settings, nil
+	}
+	if err != nil {
+		return settings, err
+	}
+	if strings.TrimSpace(value) == "" {
+		return settings, nil
+	}
+	if err := json.Unmarshal([]byte(value), &settings); err != nil {
+		return DefaultBackupSettings(), nil
+	}
+	return NormalizeBackupSettings(settings), nil
+}
+
+func (d *Database) SaveBackupSettings(settings BackupSettings) error {
+	settings = NormalizeBackupSettings(settings)
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	return d.SetSetting("backup.config", string(data), "系统备份配置")
+}
+
+func NormalizeBackupSettings(settings BackupSettings) BackupSettings {
+	defaults := DefaultBackupSettings()
+	settings.Cron = strings.TrimSpace(settings.Cron)
+	if settings.Cron == "" {
+		settings.Cron = defaults.Cron
+	}
+	if settings.Retention <= 0 {
+		settings.Retention = defaults.Retention
+	}
+	settings.BackupDir = strings.TrimSpace(settings.BackupDir)
+	if settings.BackupDir == "" {
+		settings.BackupDir = defaults.BackupDir
+	}
+	settings.OSS.Provider = strings.TrimSpace(settings.OSS.Provider)
+	settings.OSS.Bucket = strings.TrimSpace(settings.OSS.Bucket)
+	settings.OSS.Endpoint = strings.TrimSpace(settings.OSS.Endpoint)
+	settings.OSS.Prefix = strings.TrimSpace(settings.OSS.Prefix)
+	if settings.OSS.Prefix == "" {
+		settings.OSS.Prefix = defaults.OSS.Prefix
+	}
+	return settings
+}
+
 func ParseAccessControlConfig(value string) types.AccessControlConfig {
 	if value == "" {
 		return types.AccessControlConfig{}
@@ -140,6 +213,8 @@ func NormalizeAccessControlConfig(config types.AccessControlConfig) types.Access
 	config.BlockedGroups = normalizeStringList(config.BlockedGroups)
 	config.WhitelistUserIDs = normalizeStringList(config.WhitelistUserIDs)
 	config.BlockedUserIDs = normalizeStringList(config.BlockedUserIDs)
+	config.WhitelistUnionIDs = normalizeStringList(config.WhitelistUnionIDs)
+	config.BlockedUnionIDs = normalizeStringList(config.BlockedUnionIDs)
 	return config
 }
 
@@ -164,8 +239,18 @@ func (d *Database) IsPlatformAdmin(platform, userID string) bool {
 	if err != nil {
 		return false
 	}
-	for _, item := range parsePlatformAdmins(value) {
+	admins := parsePlatformAdmins(value)
+	for _, item := range admins {
 		if item.Platform == platform && item.UserID == userID {
+			return true
+		}
+	}
+	account, err := d.GetUserAccount(platform, userID)
+	if err != nil || strings.TrimSpace(account.UnionID) == "" {
+		return false
+	}
+	for _, item := range admins {
+		if item.Platform == "" && item.UserID == "" && item.UnionID == account.UnionID {
 			return true
 		}
 	}
@@ -369,13 +454,40 @@ func parsePlatformAdmins(value string) []PlatformAdmin {
 	if err := json.Unmarshal([]byte(value), &admins); err != nil {
 		return []PlatformAdmin{}
 	}
-	return admins
+	return normalizePlatformAdmins(admins)
 }
 
 func marshalPlatformAdmins(admins []PlatformAdmin) string {
-	if admins == nil {
-		admins = []PlatformAdmin{}
-	}
+	admins = normalizePlatformAdmins(admins)
 	data, _ := json.Marshal(admins)
 	return string(data)
+}
+
+func normalizePlatformAdmins(admins []PlatformAdmin) []PlatformAdmin {
+	result := make([]PlatformAdmin, 0, len(admins))
+	seen := make(map[string]bool)
+	for _, admin := range admins {
+		platform := strings.TrimSpace(admin.Platform)
+		userID := strings.TrimSpace(admin.UserID)
+		unionID := strings.TrimSpace(admin.UnionID)
+		if unionID != "" {
+			key := "union\x00" + unionID
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			result = append(result, PlatformAdmin{UnionID: unionID})
+			continue
+		}
+		if platform == "" || userID == "" {
+			continue
+		}
+		key := "platform\x00" + platform + "\x00" + userID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, PlatformAdmin{Platform: platform, UserID: userID})
+	}
+	return result
 }

@@ -13,6 +13,7 @@
             <div class="subtitle">{{ pageDescription }}</div>
           </div>
           <div class="header-actions">
+            <el-input v-model="searchKeyword" class="header-search" clearable placeholder="搜索接口名称、路径、描述或运行时" />
             <el-button :loading="loading" @click="loadItems">刷新</el-button>
             <el-button type="primary" @click="createItem">
               <el-icon><Plus /></el-icon>
@@ -48,6 +49,9 @@
                 <el-tag type="warning" effect="plain">{{ runtimeLabel(row.runtime) }}</el-tag>
               </template>
             </el-table-column>
+            <el-table-column label="运行环境" min-width="130" show-overflow-tooltip>
+              <template #default="{ row }">{{ displayRuntimeProfile(row.runtime_profile) }}</template>
+            </el-table-column>
             <el-table-column label="描述" min-width="180" show-overflow-tooltip>
               <template #default="{ row }">{{ row.description || '-' }}</template>
             </el-table-column>
@@ -59,7 +63,7 @@
             <el-table-column label="操作" width="340" fixed="right">
               <template #default="{ row }">
                 <el-button size="small" type="primary" @click="editItem(row)">编辑</el-button>
-                <el-button size="small" type="warning" @click="openFile(row)">文件</el-button>
+                <el-button v-if="!isBuiltin(row)" size="small" type="warning" @click="openFile(row)">文件</el-button>
                 <el-button size="small" type="success" @click="copyAddress(row)">复制地址</el-button>
                 <el-button size="small" type="danger" :loading="deletingId === itemId(row)" @click="deleteItem(row)">删除</el-button>
               </template>
@@ -87,6 +91,10 @@
                 <el-tag type="warning" effect="plain" size="small">{{ runtimeLabel(row.runtime) }}</el-tag>
               </div>
               <div class="api-info-row">
+                <span class="label">运行环境：</span>
+                <span class="value-text">{{ displayRuntimeProfile(row.runtime_profile) }}</span>
+              </div>
+              <div class="api-info-row">
                 <span class="label">描述：</span>
                 <span class="value-text">{{ row.description || '-' }}</span>
               </div>
@@ -97,7 +105,7 @@
             </div>
             <div class="api-card-footer">
               <el-button size="small" type="primary" @click="editItem(row)">编辑</el-button>
-              <el-button size="small" type="warning" @click="openFile(row)">文件</el-button>
+              <el-button v-if="!isBuiltin(row)" size="small" type="warning" @click="openFile(row)">文件</el-button>
               <el-button size="small" type="success" @click="copyAddress(row)">复制地址</el-button>
               <el-button size="small" type="danger" :loading="deletingId === itemId(row)" @click="deleteItem(row)">删除</el-button>
             </div>
@@ -105,13 +113,14 @@
         </div>
 
         <el-empty v-if="!loading && items.length === 0" description="暂无开放接口" />
+        <el-empty v-else-if="!loading && filteredItems.length === 0" description="没有匹配的开放接口" />
       </div>
 
       <div v-if="items.length > 0" class="pagination-wrapper">
         <el-pagination
           v-model:current-page="currentPage"
           :page-size="pageSize"
-          :total="items.length"
+          :total="filteredItems.length"
           layout="total, prev, pager, next"
           background
         />
@@ -144,10 +153,21 @@
           <el-switch v-model="form.enabled" active-text="开启" inactive-text="停用" />
         </el-form-item>
         <el-form-item label="运行语言" required>
-          <el-radio-group v-model="form.runtime">
+          <el-radio-group v-model="form.runtime" :disabled="form.runtime === 'builtin'">
             <el-radio-button label="nodejs">Node.js</el-radio-button>
             <el-radio-button label="python">Python</el-radio-button>
+            <el-radio-button v-if="form.runtime === 'builtin'" label="builtin">内置</el-radio-button>
           </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="form.runtime !== 'builtin'" label="运行环境">
+          <el-select v-model="form.runtime_profile" clearable placeholder="使用默认运行环境" style="width: 100%">
+            <el-option
+              v-for="profile in runtimeProfilesBy(form.runtime)"
+              :key="profile.id"
+              :label="runtimeProfileLabel(profile)"
+              :value="profile.id"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="Token" required>
           <el-input
@@ -181,13 +201,15 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled, Plus } from '@element-plus/icons-vue'
-import { createOpenApi, deleteOpenApi, getOpenApis, updateOpenApi } from '@/api'
+import { createOpenApi, deleteOpenApi, getOpenApis, updateOpenApi, getRuntimeProfiles } from '@/api'
 
 const router = useRouter()
 const loading = ref(false)
 const saving = ref(false)
 const deletingId = ref('')
 const items = ref([])
+const searchKeyword = ref('')
+const runtimeProfiles = ref([])
 const currentPage = ref(1)
 const pageSize = 10
 const dialogVisible = ref(false)
@@ -198,14 +220,30 @@ const singlePathPattern = /^[A-Za-z0-9_-]+$/
 const httpMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
 const pageDescription = '独立管理对外 HTTP 接口、运行时和调用代码。'
 
-const paginatedItems = computed(() => {
-  const start = (currentPage.value - 1) * pageSize
-  return items.value.slice(start, start + pageSize)
+const filteredItems = computed(() => {
+  const keyword = searchKeyword.value.trim().toLowerCase()
+  if (!keyword) return items.value
+  return items.value.filter(row => getOpenApiSearchText(row).includes(keyword))
 })
 
-watch(items, () => {
-  const maxPage = Math.max(1, Math.ceil(items.value.length / pageSize))
+const paginatedItems = computed(() => {
+  const start = (currentPage.value - 1) * pageSize
+  return filteredItems.value.slice(start, start + pageSize)
+})
+
+watch(searchKeyword, () => {
+  currentPage.value = 1
+})
+
+watch(filteredItems, () => {
+  const maxPage = Math.max(1, Math.ceil(filteredItems.value.length / pageSize))
   if (currentPage.value > maxPage) currentPage.value = maxPage
+})
+
+watch(() => form.runtime, (runtime) => {
+  if (!form.runtime_profile) return
+  const matched = runtimeProfiles.value.some(profile => profile.id === form.runtime_profile && profile.runtime === runtime)
+  if (!matched) form.runtime_profile = ''
 })
 
 const loadItems = async () => {
@@ -216,6 +254,26 @@ const loadItems = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const loadRuntimeProfiles = async () => {
+  try {
+    const data = await getRuntimeProfiles()
+    runtimeProfiles.value = Array.isArray(data) ? data : []
+  } catch {
+    runtimeProfiles.value = []
+  }
+}
+
+const runtimeProfilesBy = (runtime) => runtimeProfiles.value.filter(profile => profile.runtime === runtime && profile.enabled)
+
+const runtimeProfileLabel = (profile) => `${profile.name || profile.id}${profile.default ? '（默认）' : ''}`
+
+const displayRuntimeProfile = (profileID) => {
+  const id = String(profileID || '').trim()
+  if (!id) return '默认'
+  const profile = runtimeProfiles.value.find(item => item.id === id)
+  return profile ? runtimeProfileLabel(profile) : id
 }
 
 const normalizeListResult = (result) => {
@@ -231,9 +289,14 @@ const normalizeMethod = (method) => String(method || 'POST').toUpperCase()
 
 const normalizePath = (path) => String(path || '').replace(/\\/g, '/').replace(/^\/api\/open\//, '').replace(/^\/+|\/+$/g, '').trim()
 
-const normalizeRuntime = (runtime) => runtime === 'python' ? 'python' : 'nodejs'
+const normalizeRuntime = (runtime) => runtime === 'python' ? 'python' : runtime === 'builtin' ? 'builtin' : 'nodejs'
 
-const runtimeLabel = (runtime) => normalizeRuntime(runtime) === 'python' ? 'Python' : 'Node.js'
+const runtimeLabel = (runtime) => {
+  const normalized = normalizeRuntime(runtime)
+  if (normalized === 'python') return 'Python'
+  if (normalized === 'builtin') return '内置'
+  return 'Node.js'
+}
 
 const resolvePath = (row) => row.path || row.url_path || row.urlPath || row.route || ''
 
@@ -250,7 +313,24 @@ const hasToken = (row) => {
   return Boolean(String(row.token || '').trim())
 }
 
+const isBuiltin = (row) => Boolean(String(row.builtin || '').trim())
+
 const itemId = (row) => String(row.id || row.api_id || row.apiId || normalizePath(resolvePath(row)) || '')
+
+const getOpenApiSearchText = (row) => [
+  itemId(row),
+  row.name,
+  displayPath(row),
+  normalizeMethod(row.method),
+  runtimeLabel(row.runtime),
+  row.runtime,
+  row.runtime_profile,
+  displayRuntimeProfile(row.runtime_profile),
+  row.description,
+  hasToken(row) ? '已设置 token' : '未设置 token',
+  row.enabled ? '启用 开启' : '停用 关闭',
+  row.builtin
+].filter(value => value !== undefined && value !== null).join(' ').toLowerCase()
 
 const showPageDescription = () => {
   ElMessageBox.alert(pageDescription, '开放接口说明', {
@@ -279,6 +359,7 @@ const editItem = (row) => {
     path: normalizePath(resolvePath(row)) || id,
     enabled: Boolean(row.enabled),
     runtime: normalizeRuntime(row.runtime),
+    runtime_profile: row.runtime_profile || '',
     token: '',
     description: row.description || '',
     method: normalizeMethod(row.method)
@@ -345,6 +426,7 @@ const buildPayload = () => {
     method: normalizeMethod(form.method),
     enabled: Boolean(form.enabled),
     runtime,
+    runtime_profile: runtime === 'builtin' ? '' : String(form.runtime_profile || '').trim(),
     description: String(form.description || '').trim(),
     entry: codeFileName(validation.path, runtime)
   }
@@ -381,6 +463,7 @@ function createEmptyForm() {
     path: '',
     enabled: true,
     runtime: 'nodejs',
+    runtime_profile: '',
     token: '',
     description: '',
     method: 'POST'
@@ -431,7 +514,10 @@ const copyByFallback = (text) => {
   document.body.removeChild(textarea)
 }
 
-onMounted(loadItems)
+onMounted(() => {
+  loadRuntimeProfiles()
+  loadItems()
+})
 </script>
 
 <style scoped>
@@ -491,6 +577,10 @@ onMounted(loadItems)
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.header-search {
+  width: 280px;
 }
 
 .api-content {
@@ -672,6 +762,7 @@ onMounted(loadItems)
     gap: 10px;
   }
 
+  .header-search,
   .header-actions .el-button {
     width: 100%;
     margin-left: 0;

@@ -13,11 +13,13 @@ type Message struct {
 }
 
 type AccessControlConfig struct {
-	InheritSystem    bool     `json:"inherit_system"`
-	WhitelistGroups  []string `json:"whitelist_groups"`
-	BlockedGroups    []string `json:"blocked_groups"`
-	WhitelistUserIDs []string `json:"whitelist_user_ids"`
-	BlockedUserIDs   []string `json:"blocked_user_ids"`
+	InheritSystem     bool     `json:"inherit_system"`
+	WhitelistGroups   []string `json:"whitelist_groups"`
+	BlockedGroups     []string `json:"blocked_groups"`
+	WhitelistUserIDs  []string `json:"whitelist_user_ids"`
+	BlockedUserIDs    []string `json:"blocked_user_ids"`
+	WhitelistUnionIDs []string `json:"whitelist_union_ids"`
+	BlockedUnionIDs   []string `json:"blocked_union_ids"`
 }
 
 type Plugin struct {
@@ -25,6 +27,7 @@ type Plugin struct {
 	Name              string
 	Version           string
 	Runtime           string
+	RuntimeProfile    string
 	Entry             string
 	Platforms         []string
 	AllowedAdapterIDs []string
@@ -42,23 +45,26 @@ type Plugin struct {
 }
 
 type OpenAPIConfig struct {
-	Enabled bool   `json:"enabled"`
-	Path    string `json:"path"`
-	Method  string `json:"method"`
-	Token   string `json:"token"`
-	Runtime string `json:"runtime,omitempty"`
+	Enabled        bool   `json:"enabled"`
+	Path           string `json:"path"`
+	Method         string `json:"method"`
+	Token          string `json:"token"`
+	Runtime        string `json:"runtime,omitempty"`
+	RuntimeProfile string `json:"runtime_profile,omitempty"`
 }
 
 type OpenAPIEndpoint struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Path        string `json:"path"`
-	Method      string `json:"method"`
-	Enabled     bool   `json:"enabled"`
-	Token       string `json:"token"`
-	Runtime     string `json:"runtime"`
-	Entry       string `json:"entry"`
-	Description string `json:"description"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Path           string `json:"path"`
+	Method         string `json:"method"`
+	Enabled        bool   `json:"enabled"`
+	Token          string `json:"token"`
+	Runtime        string `json:"runtime"`
+	RuntimeProfile string `json:"runtime_profile,omitempty"`
+	Entry          string `json:"entry"`
+	Description    string `json:"description"`
+	Builtin        string `json:"builtin,omitempty"`
 }
 
 type OpenAPIRequest struct {
@@ -96,6 +102,7 @@ type PluginConfig struct {
 	Name              string                  `json:"name"`
 	Version           string                  `json:"version"`
 	Runtime           string                  `json:"runtime"`
+	RuntimeProfile    string                  `json:"runtime_profile,omitempty"`
 	Entry             string                  `json:"entry"`
 	Platforms         []string                `json:"platforms"`
 	AllowedAdapterIDs []string                `json:"allowed_adapter_ids,omitempty"`

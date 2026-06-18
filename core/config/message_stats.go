@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,25 @@ type MessageStatsSummary struct {
 	Hours      []int              `json:"hours"`
 	ByPlatform []MessageStatPoint `json:"by_platform"`
 	ByAdapter  []MessageStatPoint `json:"by_adapter"`
+}
+
+type MessageCountSummary struct {
+	Total int64 `json:"total"`
+	Today int64 `json:"today"`
+}
+
+type MessageTotalTrendPoint struct {
+	Label string `json:"label"`
+	Total int64  `json:"total"`
+}
+
+type MessageTotalTrendSummary struct {
+	Granularity string                   `json:"granularity"`
+	Start       string                   `json:"start"`
+	End         string                   `json:"end"`
+	Labels      []string                 `json:"labels"`
+	Totals      []int64                  `json:"totals"`
+	Points      []MessageTotalTrendPoint `json:"points"`
 }
 
 func (d *Database) RecordMessageStat(msg *types.Message) error {
@@ -57,6 +77,21 @@ func (d *Database) RecordMessageStat(msg *types.Message) error {
 	return err
 }
 
+func (d *Database) GetMessageCountSummary() (MessageCountSummary, error) {
+	if err := d.normalizeLegacyMessageStats(); err != nil {
+		return MessageCountSummary{}, err
+	}
+	today := time.Now().Format("2006-01-02")
+	var summary MessageCountSummary
+	if err := d.db.QueryRow(`SELECT COALESCE(SUM(count), 0) FROM message_stats`).Scan(&summary.Total); err != nil {
+		return MessageCountSummary{}, err
+	}
+	if err := d.db.QueryRow(`SELECT COALESCE(SUM(count), 0) FROM message_stats WHERE stat_date = ?`, today).Scan(&summary.Today); err != nil {
+		return MessageCountSummary{}, err
+	}
+	return summary, nil
+}
+
 func (d *Database) GetMessageStats(date, mode string) (*MessageStatsSummary, error) {
 	if err := d.normalizeLegacyMessageStats(); err != nil {
 		return nil, err
@@ -81,6 +116,124 @@ func (d *Database) GetMessageStats(date, mode string) (*MessageStatsSummary, err
 	summary.ByPlatform = byPlatform
 	summary.ByAdapter = byAdapter
 	return summary, nil
+}
+
+func (d *Database) GetMessageTotalTrend(granularity, start, end string) (*MessageTotalTrendSummary, error) {
+	if err := d.normalizeLegacyMessageStats(); err != nil {
+		return nil, err
+	}
+	granularity = strings.TrimSpace(granularity)
+	if granularity == "month" {
+		return d.queryMonthlyMessageTotalTrend(start, end)
+	}
+	return d.queryDailyMessageTotalTrend(start, end)
+}
+
+func (d *Database) queryDailyMessageTotalTrend(start, end string) (*MessageTotalTrendSummary, error) {
+	endDate, err := parseDateOrDefault(end, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	startDate, err := parseDateOrDefault(start, endDate.AddDate(0, 0, -6))
+	if err != nil {
+		return nil, err
+	}
+	if startDate.After(endDate) {
+		return nil, fmt.Errorf("开始日期不能晚于结束日期")
+	}
+	if endDate.Sub(startDate).Hours()/24 > 14 {
+		return nil, fmt.Errorf("按日统计最多只能选择 15 天")
+	}
+	labels := make([]string, 0)
+	for day := startDate; !day.After(endDate); day = day.AddDate(0, 0, 1) {
+		labels = append(labels, day.Format("2006-01-02"))
+	}
+	return d.queryMessageTotalTrend("day", labels, "stat_date")
+}
+
+func (d *Database) queryMonthlyMessageTotalTrend(start, end string) (*MessageTotalTrendSummary, error) {
+	endMonth, err := parseMonthOrDefault(end, firstDayOfMonth(time.Now()))
+	if err != nil {
+		return nil, err
+	}
+	startMonth, err := parseMonthOrDefault(start, endMonth.AddDate(0, -5, 0))
+	if err != nil {
+		return nil, err
+	}
+	if startMonth.After(endMonth) {
+		return nil, fmt.Errorf("开始月份不能晚于结束月份")
+	}
+	labels := make([]string, 0)
+	for month := startMonth; !month.After(endMonth); month = month.AddDate(0, 1, 0) {
+		labels = append(labels, month.Format("2006-01"))
+	}
+	if len(labels) > 12 {
+		return nil, fmt.Errorf("按月统计最多只能选择 12 个月")
+	}
+	return d.queryMessageTotalTrend("month", labels, "substr(stat_date, 1, 7)")
+}
+
+func (d *Database) queryMessageTotalTrend(granularity string, labels []string, dateExpr string) (*MessageTotalTrendSummary, error) {
+	result := &MessageTotalTrendSummary{Granularity: granularity, Labels: labels, Totals: make([]int64, len(labels)), Points: make([]MessageTotalTrendPoint, 0, len(labels))}
+	if len(labels) == 0 {
+		return result, nil
+	}
+	result.Start = labels[0]
+	result.End = labels[len(labels)-1]
+	rows, err := d.db.Query(`SELECT `+dateExpr+`, COALESCE(SUM(count), 0) FROM message_stats WHERE `+dateExpr+` BETWEEN ? AND ? GROUP BY `+dateExpr+` ORDER BY `+dateExpr, result.Start, result.End)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int64{}
+	for rows.Next() {
+		var label string
+		var total int64
+		if err := rows.Scan(&label, &total); err != nil {
+			return nil, err
+		}
+		counts[label] = total
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for index, label := range labels {
+		result.Totals[index] = counts[label]
+		result.Points = append(result.Points, MessageTotalTrendPoint{Label: label, Total: counts[label]})
+	}
+	return result, nil
+}
+
+func parseDateOrDefault(value string, fallback time.Time) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return truncateDate(fallback), nil
+	}
+	date, err := time.ParseInLocation("2006-01-02", value, time.Local)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("日期格式必须为 YYYY-MM-DD")
+	}
+	return truncateDate(date), nil
+}
+
+func parseMonthOrDefault(value string, fallback time.Time) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return firstDayOfMonth(fallback), nil
+	}
+	month, err := time.ParseInLocation("2006-01", value, time.Local)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("月份格式必须为 YYYY-MM")
+	}
+	return firstDayOfMonth(month), nil
+}
+
+func truncateDate(date time.Time) time.Time {
+	return time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.Local)
+}
+
+func firstDayOfMonth(date time.Time) time.Time {
+	return time.Date(date.Year(), date.Month(), 1, 0, 0, 0, 0, time.Local)
 }
 
 func (d *Database) normalizeLegacyMessageStats() error {

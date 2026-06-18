@@ -7,11 +7,11 @@ import (
 
 // WaitingSession 等待会话
 type WaitingSession struct {
-	PluginID  string
-	UserID    string
-	GroupID   string
-	Timeout   time.Time
-	Channel   chan string
+	PluginID string
+	UserID   string
+	GroupID  string
+	Timeout  time.Time
+	Channel  chan string
 }
 
 // Manager 会话管理器
@@ -29,6 +29,12 @@ func NewManager() *Manager {
 
 // CreateSession 创建等待会话
 func (m *Manager) CreateSession(pluginID, userID, groupID string, timeout int) <-chan string {
+	ch, _ := m.CreateCancellableSession(pluginID, userID, groupID, timeout)
+	return ch
+}
+
+// CreateCancellableSession 创建可主动取消的等待会话
+func (m *Manager) CreateCancellableSession(pluginID, userID, groupID string, timeout int) (<-chan string, func()) {
 	key := m.makeKey(userID, groupID)
 
 	ch := make(chan string, 1)
@@ -48,18 +54,22 @@ func (m *Manager) CreateSession(pluginID, userID, groupID string, timeout int) <
 	m.sessions[key] = session
 	m.mu.Unlock()
 
-	// 超时自动清理
-	go func() {
-		time.Sleep(time.Duration(timeout) * time.Second)
+	cancel := func() {
 		m.mu.Lock()
 		if s, exists := m.sessions[key]; exists && s == session {
 			close(ch)
 			delete(m.sessions, key)
 		}
 		m.mu.Unlock()
+	}
+
+	// 超时自动清理
+	go func() {
+		time.Sleep(time.Duration(timeout) * time.Second)
+		cancel()
 	}()
 
-	return ch
+	return ch, cancel
 }
 
 // HandleMessage 处理消息，如果有等待会话则拦截
@@ -67,17 +77,14 @@ func (m *Manager) HandleMessage(userID, groupID, content string) bool {
 	key := m.makeKey(userID, groupID)
 
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	session, exists := m.sessions[key]
-	if exists {
-		delete(m.sessions, key) // 立即删除，防止重复触发
-	}
-	m.mu.Unlock()
-
 	if !exists {
 		return false // 没有等待会话
 	}
+	delete(m.sessions, key) // 立即删除，防止重复触发
 
-	// 发送消息到等待的插件
+	// 在锁内发送，避免取消协程同时关闭通道导致 panic。
 	select {
 	case session.Channel <- content:
 		return true // 消息已被拦截

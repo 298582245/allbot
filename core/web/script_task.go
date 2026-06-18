@@ -150,14 +150,15 @@ func scriptRunLogFilterFromRequest(r *http.Request) config.ScriptRunLogFilter {
 		page = 1
 	}
 	return config.ScriptRunLogFilter{
-		Keyword:    query.Get("keyword"),
-		UnionID:    query.Get("union_id"),
-		PluginID:   query.Get("plugin_id"),
-		ScriptPath: query.Get("script_path"),
-		RunMode:    query.Get("run_mode"),
-		Status:     query.Get("status"),
-		Limit:      limit,
-		Offset:     (page - 1) * limit,
+		Keyword:        query.Get("keyword"),
+		UnionID:        query.Get("union_id"),
+		PluginID:       query.Get("plugin_id"),
+		ScriptPath:     query.Get("script_path"),
+		RuntimeProfile: query.Get("runtime_profile"),
+		RunMode:        query.Get("run_mode"),
+		Status:         query.Get("status"),
+		Limit:          limit,
+		Offset:         (page - 1) * limit,
 	}
 }
 

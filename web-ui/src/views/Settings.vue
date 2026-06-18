@@ -106,7 +106,7 @@
 
         <div class="form-actions">
           <el-button type="primary" :loading="saving" @click="handleSave">保存设置</el-button>
-          <el-button @click="loadSettings">重置</el-button>
+          <el-button @click="loadPageData">重置</el-button>
         </div>
       </el-form>
     </el-card>
@@ -262,7 +262,10 @@ const loadUpdateInfo = async () => {
 }
 
 const loadPageData = () => {
-  Promise.allSettled([loadSettings(), loadUpdateInfo()])
+  loading.value = true
+  Promise.allSettled([loadSettings(), loadUpdateInfo()]).finally(() => {
+    loading.value = false
+  })
 }
 
 const showPasswordDialog = () => {

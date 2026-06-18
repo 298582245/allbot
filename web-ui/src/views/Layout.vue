@@ -17,10 +17,10 @@
           <span>仪表盘</span>
         </el-menu-item>
 
-        <el-sub-menu index="features">
+        <el-sub-menu index="pluginApis">
           <template #title>
             <el-icon><Grid /></el-icon>
-            <span>功能管理</span>
+            <span>插件中心</span>
           </template>
           <el-menu-item index="/plugins">
             <el-icon><Cpu /></el-icon>
@@ -34,20 +34,12 @@
             <el-icon><Document /></el-icon>
             <span>SDK管理</span>
           </el-menu-item>
-          <el-menu-item index="/data">
-            <el-icon><Coin /></el-icon>
-            <span>数据管理</span>
-          </el-menu-item>
-          <el-menu-item index="/dependencies">
-            <el-icon><Box /></el-icon>
-            <span>依赖管理</span>
-          </el-menu-item>
         </el-sub-menu>
 
-        <el-sub-menu index="replies">
+        <el-sub-menu index="messageTasks">
           <template #title>
             <el-icon><ChatDotRound /></el-icon>
-            <span>回复设置</span>
+            <span>回复配置</span>
           </template>
           <el-menu-item index="/replies/keywords">
             <el-icon><ChatLineRound /></el-icon>
@@ -63,24 +55,81 @@
           </el-menu-item>
         </el-sub-menu>
 
-        <el-menu-item index="/adapters">
-          <el-icon><Connection /></el-icon>
-          <span>平台配置</span>
-        </el-menu-item>
+        <el-sub-menu index="dataBackups">
+          <template #title>
+            <el-icon><Coin /></el-icon>
+            <span>数据中心</span>
+          </template>
+          <el-menu-item index="/data">
+            <el-icon><Coin /></el-icon>
+            <span>数据管理</span>
+          </el-menu-item>
+          <el-menu-item index="/statistics">
+            <el-icon><DataAnalysis /></el-icon>
+            <span>数据统计</span>
+          </el-menu-item>
+          <el-menu-item index="/images">
+            <el-icon><Picture /></el-icon>
+            <span>图床管理</span>
+          </el-menu-item>
+          <el-menu-item index="/backups">
+            <el-icon><FolderChecked /></el-icon>
+            <span>备份中心</span>
+          </el-menu-item>
+        </el-sub-menu>
 
-        <el-menu-item index="/logs">
-          <el-icon><Document /></el-icon>
-          <span>日志查看</span>
-        </el-menu-item>
+        <el-sub-menu index="platformAuth">
+          <template #title>
+            <el-icon><Connection /></el-icon>
+            <span>平台配置</span>
+          </template>
+          <el-menu-item index="/adapters">
+            <el-icon><Connection /></el-icon>
+            <span>对接管理</span>
+          </el-menu-item>
+          <el-menu-item index="/permissions">
+            <el-icon><Lock /></el-icon>
+            <span>权限控制</span>
+          </el-menu-item>
+        </el-sub-menu>
 
-        <el-menu-item index="/permissions">
-          <el-icon><Lock /></el-icon>
-          <span>权限控制</span>
-        </el-menu-item>
-        <el-menu-item index="/settings">
-          <el-icon><Setting /></el-icon>
-          <span>系统设置</span>
-        </el-menu-item>
+        <el-sub-menu index="payments">
+          <template #title>
+            <el-icon><Money /></el-icon>
+            <span>支付管理</span>
+          </template>
+          <el-menu-item index="/payments/config">
+            <el-icon><Setting /></el-icon>
+            <span>支付配置</span>
+          </el-menu-item>
+          <el-menu-item index="/payments/orders">
+            <el-icon><Tickets /></el-icon>
+            <span>订单管理</span>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="operations">
+          <template #title>
+            <el-icon><Setting /></el-icon>
+            <span>系统配置</span>
+          </template>
+          <el-menu-item index="/runtime-profiles">
+            <el-icon><Setting /></el-icon>
+            <span>运行环境</span>
+          </el-menu-item>
+          <el-menu-item index="/dependencies">
+            <el-icon><Box /></el-icon>
+            <span>依赖管理</span>
+          </el-menu-item>
+          <el-menu-item index="/logs">
+            <el-icon><Document /></el-icon>
+            <span>日志查看</span>
+          </el-menu-item>
+          <el-menu-item index="/settings">
+            <el-icon><Setting /></el-icon>
+            <span>系统设置</span>
+          </el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-aside>
 
@@ -160,17 +209,21 @@
 import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
-import { DataAnalysis, Grid, Connection, Document, Setting, User, SwitchButton, Cpu, Coin, Box, ChatDotRound, ChatLineRound, Lock, Timer, Link } from '@element-plus/icons-vue'
+import { DataAnalysis, Grid, Connection, Document, Setting, User, SwitchButton, Cpu, Coin, Box, ChatDotRound, ChatLineRound, Lock, Timer, Link, Money, Tickets, FolderChecked, Picture } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const authStore = useAuthStore()
 const moreDrawerVisible = ref(false)
 const menuRef = ref(null)
-const openedSubmenu = ref('')
-const submenuKeys = ['features', 'replies']
-const activeMenu = computed(() => route.path.startsWith('/open-apis') ? '/open-apis' : route.path)
-const sidebarActiveMenu = computed(() => openedSubmenu.value || activeMenu.value)
+const submenuKeys = ['pluginApis', 'messageTasks', 'dataBackups', 'platformAuth', 'payments', 'operations']
+const topLevelMenuIndexes = ['/dashboard']
+const activeMenu = computed(() => {
+  if (route.path.startsWith('/open-apis')) return '/open-apis'
+  if (route.path === '/payments') return '/payments/config'
+  return route.path
+})
+const sidebarActiveMenu = computed(() => activeMenu.value)
 const currentTitle = computed(() => route.meta.title || 'AllBot')
 const primaryMobileNavItems = [
   { path: '/dashboard', title: '仪表盘', icon: DataAnalysis },
@@ -181,24 +234,28 @@ const primaryMobileNavItems = [
 const moreMobileNavItems = [
   { path: '/open-apis', title: '开放接口', icon: Link },
   { path: '/sdk', title: 'SDK管理', icon: Document },
-  { path: '/data', title: '数据管理', icon: Coin },
-  { path: '/dependencies', title: '依赖管理', icon: Box },
   { path: '/replies/keywords', title: '关键字回复', icon: ChatDotRound },
   { path: '/scheduled-tasks', title: '定时任务', icon: Timer },
   { path: '/script-tasks', title: '脚本任务', icon: Document },
-  { path: '/logs', title: '日志查看', icon: Document },
-  { path: '/permissions', title: '权限控制', icon: Lock }
+  { path: '/data', title: '数据管理', icon: Coin },
+  { path: '/statistics', title: '数据统计', icon: DataAnalysis },
+  { path: '/images', title: '图床管理', icon: Picture },
+  { path: '/backups', title: '备份中心', icon: FolderChecked },
+  { path: '/permissions', title: '权限控制', icon: Lock },
+  { path: '/payments/config', title: '支付配置', icon: Money },
+  { path: '/payments/orders', title: '订单管理', icon: Tickets },
+  { path: '/dependencies', title: '依赖管理', icon: Box },
+  { path: '/runtime-profiles', title: '运行环境', icon: Setting },
+  { path: '/logs', title: '日志查看', icon: Document }
 ]
 const isMoreActive = computed(() => moreMobileNavItems.some((item) => activeMenu.value === item.path))
 
 const handleMenuOpen = (index) => {
-  openedSubmenu.value = index
   submenuKeys.filter((key) => key !== index).forEach((key) => menuRef.value?.close(key))
 }
 
 const handleMenuSelect = (index) => {
-  openedSubmenu.value = ''
-  if (!submenuKeys.includes(index)) {
+  if (topLevelMenuIndexes.includes(index)) {
     submenuKeys.forEach((key) => menuRef.value?.close(key))
   }
 }
@@ -216,7 +273,7 @@ const handleCommand = async (command) => {
 </script>
 
 <style scoped>
-.layout-container { height: 100vh; overflow: hidden; }
+.layout-container { height: 100vh; overflow: hidden; min-height: 0; }
 .sidebar { background: #001529; color: white; }
 .logo { height: 60px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(255,255,255,0.1); }
 .logo h2 { font-size: 20px; color: white; margin: 0; }
@@ -232,7 +289,7 @@ const handleCommand = async (command) => {
 .header-right { display: flex; align-items: center; }
 .user-info { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 8px 12px; border-radius: 4px; transition: background 0.3s; }
 .user-info:hover { background: #f5f5f5; }
-.main-content { background: #f0f2f5; padding: 20px 20px 36px; overflow: hidden; }
+.main-content { background: #f0f2f5; padding: 20px 20px 36px; overflow-x: hidden; overflow-y: auto; min-height: 0; }
 .mobile-tabbar { display: none; }
 
 @media (max-width: 768px) {

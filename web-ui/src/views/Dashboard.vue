@@ -7,9 +7,13 @@
             <component :is="stat.icon" />
           </div>
           <div class="stat-content">
-            <div class="stat-value">{{ stat.value }}</div>
+            <el-tooltip :disabled="!stat.tooltip" :content="stat.tooltip" placement="top">
+              <div class="stat-value">{{ stat.value }}</div>
+            </el-tooltip>
             <div class="stat-title">{{ stat.title }}</div>
-            <div v-if="stat.subtext" class="stat-subtext">{{ stat.subtext }}</div>
+            <el-tooltip :disabled="!stat.subtextTooltip" :content="stat.subtextTooltip" placement="top">
+              <div v-if="stat.subtext" class="stat-subtext">{{ stat.subtext }}</div>
+            </el-tooltip>
           </div>
         </el-card>
       </el-col>
@@ -79,7 +83,7 @@ echarts.use([LineChart, GridComponent, LegendComponent, TitleComponent, TooltipC
 const stats = ref([
   { title: '运行时间', value: '--', icon: TrendCharts, color: 'linear-gradient(135deg, #6d7dfc 0%, #8b5cf6 100%)' },
   { title: '插件总数', value: 0, subtext: '运行中: 0', icon: GridIcon, color: 'linear-gradient(135deg, #ff8fc7 0%, #ff6b88 100%)' },
-  { title: '平台机器人', value: 0, icon: ConnectionIcon, color: 'linear-gradient(135deg, #38bdf8 0%, #22d3ee 100%)' },
+  { title: '平台机器人', value: 0, subtext: '运行中: 0', icon: ConnectionIcon, color: 'linear-gradient(135deg, #38bdf8 0%, #22d3ee 100%)' },
   { title: '消息数', value: 0, icon: ChatLineRound, color: 'linear-gradient(135deg, #34d399 0%, #2dd4bf 100%)' }
 ])
 
@@ -108,8 +112,8 @@ const loadData = async () => {
     syncUptime(status.uptime)
     stats.value[1].value = status.pluginCount || 0
     stats.value[1].subtext = `运行中: ${status.enabledPluginCount || 0}`
-    stats.value[2].value = status.adapterCount || 0
-    stats.value[3].value = status.messageCount || 0
+    setAdapterCountStat(status.adapterCount || 0, status.runningAdapterCount || 0)
+    setMessageCountStat(status.messageCount || 0, status.todayMessageCount || 0)
     await loadMessageStats()
   } catch (error) {
     console.error('加载数据失败:', error)
@@ -231,6 +235,35 @@ function formatUptimeSeconds(totalSeconds) {
   if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`
   if (minutes > 0) return `${minutes}m ${seconds}s`
   return `${seconds}s`
+}
+
+function setAdapterCountStat(total, running) {
+  const totalCount = Number(total || 0)
+  const runningCount = Number(running || 0)
+  stats.value[2].value = formatCompactCount(totalCount)
+  stats.value[2].tooltip = `机器人总数: ${formatExactCount(totalCount)}`
+  stats.value[2].subtext = `运行中: ${formatCompactCount(runningCount)}`
+  stats.value[2].subtextTooltip = `运行中机器人: ${formatExactCount(runningCount)}`
+}
+
+function setMessageCountStat(total, today) {
+  const totalCount = Number(total || 0)
+  const todayCount = Number(today || 0)
+  stats.value[3].value = formatCompactCount(totalCount)
+  stats.value[3].tooltip = `总消息数: ${formatExactCount(totalCount)}`
+  stats.value[3].subtext = `今日: ${formatCompactCount(todayCount)}`
+  stats.value[3].subtextTooltip = `今日消息数: ${formatExactCount(todayCount)}`
+}
+
+function formatCompactCount(value) {
+  const count = Number(value || 0)
+  if (count < 1000) return String(count)
+  if (count < 10000) return `${(count / 1000).toFixed(2)}k`
+  return `${(count / 10000).toFixed(2)}w`
+}
+
+function formatExactCount(value) {
+  return Number(value || 0).toLocaleString('zh-CN')
 }
 
 function formatDate(date) {

@@ -5,6 +5,26 @@
  * Context 提供回复、监听、配置、账号、授权、脚本运行、定时任务等能力。
  */
 const readline = require('readline');
+const util = require('util');
+
+function writeProtocolAction(action) {
+    process.stdout.write(JSON.stringify(action) + '\n');
+}
+
+function redirectConsoleToStderr() {
+    if (!process.env.ALLBOT_PLUGIN_ID || console.__allbotConsoleRedirected) return;
+    const levels = { log: 'INFO', info: 'INFO', debug: 'DEBUG', warn: 'WARN', error: 'ERROR' };
+    for (const [method, level] of Object.entries(levels)) {
+        console[method] = (...args) => {
+            process.stderr.write(`[PLUGIN_LOG][${level}] ${util.format(...args)}\n`);
+        };
+    }
+    Object.defineProperty(console, '__allbotConsoleRedirected', { value: true });
+}
+
+redirectConsoleToStderr();
+
+let currentContext = null;
 
 class Context {
     constructor(data, rl) {
@@ -35,7 +55,9 @@ class Context {
         this.access_control = this.accessControl;
         this._rl = rl;
         this._requestSeq = 0;
+        currentContext = this;
         this.db = new Database(this);
+        this.pay = new PAY(this);
     }
 
     
@@ -90,7 +112,23 @@ class Context {
         return this.sendMessage(options);
     }
 
-    
+    async push(userId = '', groupId = '', content = '', platform = '', adapterId = '') {
+        const options = typeof userId === 'object' && userId !== null
+            ? userId
+            : { userId, groupId, content, platform, adapterId };
+        const target = splitPushUserAndUnionId(options.userId ?? options.user_id ?? '', options.unionId ?? options.union_id ?? '');
+        return this._request({
+            action: 'send_message',
+            platform: String(options.platform || this.platform || ''),
+            adapter_id: String(options.adapterId || options.adapter_id || ''),
+            user_id: target.userId,
+            group_id: String(options.groupId || options.group_id || ''),
+            union_id: target.unionId,
+            text: String(options.content ?? options.text ?? '')
+        }, 'send_message_response');
+    }
+
+
     async sendImage(imageUrl) {
         return this._send({ action: 'send_image', url: String(imageUrl ?? '') });
     }
@@ -275,6 +313,7 @@ class Context {
         return this._request({
             action: 'run_script',
             runtime: String(options.runtime || 'nodejs'),
+            runtime_profile: String(options.runtimeProfile || options.runtime_profile || ''),
             script: String(options.script || options.path || ''),
             cwd: String(options.cwd || ''),
             env: normalizeEnv(options.env || {}),
@@ -341,8 +380,37 @@ class Context {
     }
 
     _send(action) {
-        process.stdout.write(JSON.stringify(action) + '\n');
+        writeProtocolAction(action);
         return true;
+    }
+}
+
+class PAY {
+    constructor(ctx) {
+        this.ctx = ctx || currentContext;
+    }
+
+    async waitPay(subject, amountRmb, timeoutOrOptions = 300, options = {}) {
+        const ctx = this.ctx || currentContext;
+        if (!ctx) throw new Error('PAY 需要可用的 Context');
+        if (timeoutOrOptions && typeof timeoutOrOptions === 'object') {
+            options = timeoutOrOptions;
+            timeoutOrOptions = options.timeout ?? options.timeoutSeconds ?? options.timeout_seconds ?? 300;
+        }
+        const timeout = Number(timeoutOrOptions || 300);
+        return ctx._request({
+            action: 'payment_wait',
+            subject: String(subject || ''),
+            amount: String(amountRmb ?? ''),
+            timeout,
+            methods: Array.isArray(options.methods) ? options.methods.map(String).filter(Boolean) : [],
+            metadata: options.metadata && typeof options.metadata === 'object' ? options.metadata : {},
+            remark: String(options.remark || '')
+        }, 'payment_response', timeout + 10);
+    }
+
+    async wait_pay(subject, amountRmb, timeoutOrOptions = 300, options = {}) {
+        return this.waitPay(subject, amountRmb, timeoutOrOptions, options);
     }
 }
 
@@ -436,6 +504,15 @@ function normalizeEnv(env = {}) {
         result[String(key)] = String(value ?? '');
     }
     return result;
+}
+
+function splitPushUserAndUnionId(userId, unionId) {
+    const userText = String(userId || '').trim();
+    const unionText = String(unionId || '').trim();
+    if (!unionText && userText.startsWith('union:')) return { userId: '', unionId: userText.slice('union:'.length).trim() };
+    if (!unionText && userText.startsWith('union_id:')) return { userId: '', unionId: userText.slice('union_id:'.length).trim() };
+    if (!unionText && userText.startsWith('U_')) return { userId: '', unionId: userText };
+    return { userId: userText, unionId: unionText };
 }
 
 function normalizeColumns(columns) {
@@ -550,10 +627,10 @@ function runOpenAPI(handler) {
         try {
             const data = JSON.parse(line);
             const res = await runOpenAPIAction(handler, data, rl);
-            process.stdout.write(JSON.stringify(res.toAction()) + '\n');
+            writeProtocolAction(res.toAction());
             process.exit(0);
         } catch (error) {
-            process.stdout.write(JSON.stringify({ action: 'http_response', status: 500, headers: { 'Content-Type': 'application/json; charset=utf-8' }, json: { error: error.message } }) + '\n');
+            writeProtocolAction({ action: 'http_response', status: 500, headers: { 'Content-Type': 'application/json; charset=utf-8' }, json: { error: error.message } });
             process.exit(1);
         }
     });
@@ -571,10 +648,10 @@ function runDirect(handler) {
             const messageData = JSON.parse(line);
             const ctx = new Context(messageData, rl);
             await handler(ctx);
-            process.stdout.write(JSON.stringify({ action: 'done', success: true }) + '\n');
+            writeProtocolAction({ action: 'done', success: true });
             process.exit(0);
         } catch (error) {
-            process.stdout.write(JSON.stringify({ action: 'done', success: false, error: error.message }) + '\n');
+            writeProtocolAction({ action: 'done', success: false, error: error.message });
             process.exit(1);
         }
     });
@@ -591,9 +668,9 @@ async function runAutoOpenAPI(entryPath) {
 
 if (require.main === module && process.argv[2] === 'openapi') {
     runAutoOpenAPI(process.argv[3]).catch((error) => {
-        process.stdout.write(JSON.stringify({ action: 'http_response', status: 500, headers: { 'Content-Type': 'application/json; charset=utf-8' }, json: { error: error.message } }) + '\n');
+        writeProtocolAction({ action: 'http_response', status: 500, headers: { 'Content-Type': 'application/json; charset=utf-8' }, json: { error: error.message } });
         process.exit(1);
     });
 }
 
-module.exports = { Context, Database, HTTPResponse, runDirect, runOpenAPI };
+module.exports = { Context, Database, PAY, HTTPResponse, runDirect, runOpenAPI };

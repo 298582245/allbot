@@ -12,10 +12,13 @@
             </div>
             <p>{{ pageDescription }}</p>
           </div>
-          <el-button type="primary" @click="showAddDialog">
-            <el-icon><Plus /></el-icon>
-            添加机器人
-          </el-button>
+          <div class="header-actions">
+            <el-input v-model="searchKeyword" class="header-search" clearable placeholder="搜索机器人备注、平台、ID 或描述" />
+            <el-button type="primary" @click="showAddDialog">
+              <el-icon><Plus /></el-icon>
+              添加机器人
+            </el-button>
+          </div>
         </div>
       </template>
 
@@ -54,13 +57,14 @@
       </div>
 
       <el-empty v-if="!loading && adapters.length === 0" description="暂无机器人配置" />
+      <el-empty v-else-if="!loading && filteredAdapters.length === 0" description="没有匹配的机器人" />
     </div>
 
       <div class="adapters-pagination">
         <el-pagination
           v-model:current-page="currentPage"
           :page-size="pageSize"
-          :total="adapters.length"
+          :total="filteredAdapters.length"
           layout="total, prev, pager, next"
           background
         />
@@ -118,7 +122,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled, Plus } from '@element-plus/icons-vue'
 import { deleteAdapter, getAdapterPlatforms, getAdapters, saveAdapter } from '@/api'
@@ -126,6 +130,7 @@ import { deleteAdapter, getAdapterPlatforms, getAdapters, saveAdapter } from '@/
 const loading = ref(false)
 const saving = ref(false)
 const adapters = ref([])
+const searchKeyword = ref('')
 const currentPage = ref(1)
 const pageSize = 8
 const dialogVisible = ref(false)
@@ -205,9 +210,24 @@ const showPageDescription = () => {
   })
 }
 
+const filteredAdapters = computed(() => {
+  const keyword = searchKeyword.value.trim().toLowerCase()
+  if (!keyword) return adapters.value
+  return adapters.value.filter(adapter => getAdapterSearchText(adapter).includes(keyword))
+})
+
 const paginatedAdapters = computed(() => {
   const start = (currentPage.value - 1) * pageSize
-  return adapters.value.slice(start, start + pageSize)
+  return filteredAdapters.value.slice(start, start + pageSize)
+})
+
+watch(searchKeyword, () => {
+  currentPage.value = 1
+})
+
+watch(filteredAdapters, () => {
+  const maxPage = Math.max(1, Math.ceil(filteredAdapters.value.length / pageSize))
+  if (currentPage.value > maxPage) currentPage.value = maxPage
 })
 
 function defaultConfig() {
@@ -276,7 +296,7 @@ async function loadAdapters() {
   loading.value = true
   try {
     adapters.value = await getAdapters()
-    if (currentPage.value > Math.max(1, Math.ceil(adapters.value.length / pageSize))) {
+    if (currentPage.value > Math.max(1, Math.ceil(filteredAdapters.value.length / pageSize))) {
       currentPage.value = 1
     }
   } finally {
@@ -304,6 +324,19 @@ function getConfigText(row) {
   } catch (error) {
     return '配置解析失败'
   }
+}
+
+function getAdapterSearchText(row) {
+  return [
+    row.id,
+    row.platform,
+    getPlatformName(row.platform),
+    row.remark,
+    row.description,
+    row.enabled ? '启用' : '禁用',
+    row.running ? '运行中' : '已停止',
+    getConfigText(row)
+  ].filter(value => value !== undefined && value !== null).join(' ').toLowerCase()
 }
 
 function showAddDialog() {
@@ -460,6 +493,16 @@ onMounted(async () => {
   color: #909399;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.header-search {
+  width: 280px;
+}
+
 .adapter-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -573,7 +616,14 @@ onMounted(async () => {
     font-size: 13px;
   }
 
-  .page-header > .el-button {
+  .header-actions {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .header-search,
+  .header-actions .el-button {
     width: 100%;
     margin-left: 0;
   }

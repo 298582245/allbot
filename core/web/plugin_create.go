@@ -23,6 +23,7 @@ type createPluginRequest struct {
 	Name             string                        `json:"name"`
 	Version          string                        `json:"version"`
 	Runtime          string                        `json:"runtime"`
+	RuntimeProfile   string                        `json:"runtime_profile"`
 	Trigger          string                        `json:"trigger"`
 	Priority         int                           `json:"priority"`
 	Platforms        []string                      `json:"platforms"`
@@ -357,6 +358,7 @@ func buildCreatePluginPlan(req createPluginRequest) (*createPluginPlan, error) {
 		Name:              req.Name,
 		Version:           req.Version,
 		Runtime:           req.Runtime,
+		RuntimeProfile:    strings.TrimSpace(req.RuntimeProfile),
 		Entry:             entry,
 		Platforms:         req.Platforms,
 		AllowedAdapterIDs: []string{},
@@ -461,6 +463,7 @@ func createPluginPlanResponse(plan *createPluginPlan, files []createGeneratedFil
 		"template":           plan.Template,
 		"template_version":   plan.TemplateVersion,
 		"runtime":            plan.Runtime,
+		"runtime_profile":    plan.Config.RuntimeProfile,
 		"entry":              plan.Entry,
 		"trigger":            plan.Trigger,
 		"commands":           plan.Commands,
@@ -480,6 +483,7 @@ func createPlanNormalized(plan *createPluginPlan) map[string]interface{} {
 		"template":         plan.Template,
 		"template_version": plan.TemplateVersion,
 		"runtime":          plan.Runtime,
+		"runtime_profile":  plan.Config.RuntimeProfile,
 		"entry":            plan.Entry,
 		"trigger":          plan.Trigger,
 		"commands":         plan.Commands,
@@ -492,7 +496,7 @@ func createPlanNormalized(plan *createPluginPlan) map[string]interface{} {
 }
 
 func createRequestNormalized(req createPluginRequest) map[string]interface{} {
-	normalized := map[string]interface{}{"plugin_id": sanitizePluginID(firstNonEmpty(req.ID, req.Name)), "template": firstNonEmpty(req.Template, "basic"), "runtime": req.Runtime}
+	normalized := map[string]interface{}{"plugin_id": sanitizePluginID(firstNonEmpty(req.ID, req.Name)), "template": firstNonEmpty(req.Template, "basic"), "runtime": req.Runtime, "runtime_profile": strings.TrimSpace(req.RuntimeProfile)}
 	if req.AccountQL != nil {
 		normalized["script_runtime"] = normalizeAccountQLScriptRuntime(req.AccountQL.ScriptRuntime, req.AccountQL.TaskScript, req.Runtime)
 		normalized["task_script"] = strings.TrimSpace(strings.ReplaceAll(req.AccountQL.TaskScript, "\\", "/"))

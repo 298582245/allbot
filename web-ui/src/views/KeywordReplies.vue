@@ -12,7 +12,10 @@
             </div>
             <p>{{ pageDescription }}</p>
           </div>
-          <el-button type="primary" @click="openDialog()">新增回复</el-button>
+          <div class="header-actions">
+            <el-input v-model="searchKeyword" class="header-search" clearable placeholder="搜索关键字、回复内容、备注或类型" />
+            <el-button type="primary" @click="openDialog()">新增回复</el-button>
+          </div>
         </div>
       </template>
 
@@ -81,14 +84,15 @@
             </template>
           </el-table-column>
         </el-table>
-        <el-empty v-if="pagedItems.length === 0" description="暂无关键字回复" />
+        <el-empty v-if="items.length === 0" description="暂无关键字回复" />
+        <el-empty v-else-if="filteredItems.length === 0" description="没有匹配的关键字回复" />
       </div>
 
       <div class="pagination-bar">
         <el-pagination
           v-model:current-page="page"
           v-model:page-size="pageSize"
-          :total="items.length"
+          :total="filteredItems.length"
           :page-sizes="[10, 20, 50, 100]"
           layout="total, sizes, prev, pager, next, jumper"
         />
@@ -145,6 +149,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/utils/request'
 
 const items = ref([])
+const searchKeyword = ref('')
 const dialogVisible = ref(false)
 const page = ref(1)
 const pageSize = ref(20)
@@ -158,13 +163,23 @@ const showPageDescription = () => {
   })
 }
 
-const pagedItems = computed(() => {
-  const start = (page.value - 1) * pageSize.value
-  return items.value.slice(start, start + pageSize.value)
+const filteredItems = computed(() => {
+  const keyword = searchKeyword.value.trim().toLowerCase()
+  if (!keyword) return items.value
+  return items.value.filter(item => getKeywordReplySearchText(item).includes(keyword))
 })
 
-watch([items, pageSize], () => {
-  const maxPage = Math.max(1, Math.ceil(items.value.length / pageSize.value))
+const pagedItems = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return filteredItems.value.slice(start, start + pageSize.value)
+})
+
+watch(searchKeyword, () => {
+  page.value = 1
+})
+
+watch([filteredItems, pageSize], () => {
+  const maxPage = Math.max(1, Math.ceil(filteredItems.value.length / pageSize.value))
   if (page.value > maxPage) page.value = maxPage
 })
 
@@ -215,6 +230,23 @@ function typeName(type) {
   return '文本'
 }
 
+function getKeywordReplySearchText(item) {
+  return [
+    item.id,
+    item.keyword,
+    item.description,
+    item.content,
+    item.match_type,
+    item.match_type === 'exact' ? '精确' : '正则',
+    item.reply_type,
+    typeName(item.reply_type),
+    item.admin_only ? '仅管理员 管理员' : '所有人',
+    item.enabled ? '启用' : '禁用',
+    item.builtin ? '内置' : '',
+    item.pinned ? '置顶' : ''
+  ].filter(value => value !== undefined && value !== null).join(' ').toLowerCase()
+}
+
 onMounted(loadItems)
 </script>
 
@@ -228,6 +260,8 @@ onMounted(loadItems)
 .title-row h2 { margin: 0 0 6px; }
 .mobile-info-button { display: none; padding: 0; font-size: 16px; }
 .page-header p { margin: 0; color: #909399; }
+.header-actions { display: flex; align-items: center; gap: 10px; }
+.header-search { width: 280px; }
 .table-area { flex: 1; min-height: 0; overflow: hidden; }
 .mobile-keyword-table { display: none; }
 .pagination-bar { display: flex; justify-content: flex-end; flex-shrink: 0; }
@@ -244,7 +278,9 @@ onMounted(loadItems)
   .page-header { align-items: flex-start; flex-direction: column; }
   .mobile-info-button { display: inline-flex; }
   .page-header p { display: none; }
-  .page-header > .el-button { width: 100%; margin-left: 0; }
+  .header-actions { width: 100%; align-items: stretch; flex-direction: column; }
+  .header-search,
+  .header-actions .el-button { width: 100%; margin-left: 0; }
   .desktop-keyword-table { display: none; }
   .mobile-keyword-table {
     flex: 1;

@@ -11,6 +11,10 @@ def builtin_points_auth(price_config: str = "auth_price_per_month") -> Dict[str,
     return {"type": "builtin_points", "price_config": price_config}
 
 
+def builtin_payment_auth(price_config: str = "auth_price_per_month") -> Dict[str, Any]:
+    return {"type": "builtin_payment", "price_config": price_config}
+
+
 def create_account_ql_plugin(options: Dict[str, Any]) -> None:
     AccountQLPlugin(options).run()
 
@@ -227,11 +231,26 @@ class AccountQLPlugin:
             return
         cost = price * months
         if cost > 0:
-            await ctx.reply(f"本次授权需要扣除 {cost}{unit}，当前 {ctx.points}{unit}，回复 y 确认：")
-            if (await ctx.listen(30)).strip().lower() != "y":
-                await ctx.reply("已取消授权")
-                return
-            await ctx.consume_points(cost)
+            provider_type = str(provider.get("type") or "builtin_points")
+            if provider_type == "builtin_payment":
+                points_per_rmb = max(1, parse_int(ctx.config("auth_payment_points_per_rmb", 100), 100))
+                amount_rmb = cost / points_per_rmb
+                timeout = max(1, parse_int(ctx.config("auth_payment_timeout", 300), 300))
+                methods = [item.strip() for item in str(ctx.config("auth_payment_methods", "")).split(",") if item.strip()]
+                await ctx.reply(f"本次授权需要支付 {amount_rmb:.2f} 元（{cost}{unit}），请输入 y 发起支付：")
+                if (await ctx.listen(30)).strip().lower() != "y":
+                    await ctx.reply("已取消授权")
+                    return
+                order = await ctx.pay.wait_pay(f"{self.prefix}账号授权", f"{amount_rmb:.2f}", timeout=timeout, methods=methods, metadata={"plugin": self.prefix, "account_id": account.get("id"), "months": months})
+                if str(order.get("status") or "") != "paid":
+                    await ctx.reply("❌支付未完成，授权已取消。")
+                    return
+            else:
+                await ctx.reply(f"本次授权需要扣除 {cost}{unit}，当前 {ctx.points}{unit}，回复 y 确认：")
+                if (await ctx.listen(30)).strip().lower() != "y":
+                    await ctx.reply("已取消授权")
+                    return
+                await ctx.consume_points(cost)
         base = max(datetime.datetime.now(datetime.timezone.utc).timestamp(), safe_timestamp(parse_time(account_expires_at(account))))
         expires_at = datetime.datetime.fromtimestamp(base + months * 30 * 86400, tz=datetime.timezone.utc)
         expires_text = expires_at.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -663,4 +682,4 @@ def format_auth_status(value: str) -> str:
     return f"授权至 {format_time(value)}" if is_authorized(value) else f"已过期 {format_time(value)}"
 
 
-__all__ = ["create_account_ql_plugin", "builtin_points_auth", "AccountQLPlugin", "AccountStore"]
+__all__ = ["create_account_ql_plugin", "builtin_points_auth", "builtin_payment_auth", "AccountQLPlugin", "AccountStore"]

@@ -6,10 +6,22 @@
           <div>
             <span class="title">插件列表</span>
           </div>
-          <el-button type="primary" size="small" @click="openCreateDialog">
-            <el-icon><Plus /></el-icon>
-            新建插件
-          </el-button>
+          <div class="plugins-header-actions">
+            <el-input
+              v-model="pluginSearch"
+              class="plugin-search"
+              size="small"
+              clearable
+              placeholder="搜索插件名称、ID、指令或平台"
+            />
+            <el-button size="small" @click="openRecycleBinDialog">
+              回收站
+            </el-button>
+            <el-button type="primary" size="small" @click="openCreateDialog">
+              <el-icon><Plus /></el-icon>
+              新建插件
+            </el-button>
+          </div>
         </div>
       </template>
 
@@ -38,6 +50,7 @@
             <div class="plugin-info-row">
               <span class="label">运行时：</span>
               <el-tag size="small">{{ plugin.runtime }}</el-tag>
+              <span v-if="plugin.runtime_profile" class="runtime-profile-text">{{ plugin.runtime_profile }}</span>
             </div>
             <div class="plugin-info-row">
               <span class="label">指令：</span>
@@ -101,13 +114,14 @@
       </div>
 
       <el-empty v-if="!loading && plugins.length === 0" description="暂无插件" />
+      <el-empty v-else-if="!loading && filteredPlugins.length === 0" description="没有匹配的插件" />
     </div>
 
       <div class="plugins-pagination">
         <el-pagination
           v-model:current-page="currentPage"
           :page-size="pageSize"
-          :total="plugins.length"
+          :total="filteredPlugins.length"
           layout="total, prev, pager, next"
           background
         />
@@ -136,8 +150,57 @@
                 <el-option label="Node.js" value="nodejs" />
               </el-select>
             </el-form-item>
+            <el-form-item label="运行环境">
+              <el-select v-model="currentConfig.runtime_profile" clearable placeholder="使用默认运行环境" style="width: 100%">
+                <el-option
+                  v-for="profile in runtimeProfilesBy(currentConfig.runtime)"
+                  :key="profile.id"
+                  :label="runtimeProfileLabel(profile)"
+                  :value="profile.id"
+                />
+              </el-select>
+              <div class="field-tip">不选择时使用该运行时的默认 Profile。</div>
+            </el-form-item>
             <el-form-item label="入口文件">
               <el-input v-model="currentConfig.entry" />
+            </el-form-item>
+            <el-divider content-position="left">OpenAPI 配置</el-divider>
+            <el-form-item label="启用 OpenAPI">
+              <el-switch v-model="currentConfig.open_api.enabled" />
+            </el-form-item>
+            <el-form-item label="接口路径">
+              <el-input v-model="currentConfig.open_api.path" placeholder="默认使用插件 ID">
+                <template #prepend>/api/open/</template>
+              </el-input>
+            </el-form-item>
+            <el-form-item label="请求方法">
+              <el-select v-model="currentConfig.open_api.method" style="width: 220px">
+                <el-option label="GET" value="GET" />
+                <el-option label="POST" value="POST" />
+                <el-option label="PUT" value="PUT" />
+                <el-option label="PATCH" value="PATCH" />
+                <el-option label="DELETE" value="DELETE" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="接口 Token">
+              <el-input v-model="currentConfig.open_api.token" type="password" show-password placeholder="调用插件 OpenAPI 时使用" />
+            </el-form-item>
+            <el-form-item label="OpenAPI 运行时">
+              <el-select v-model="currentConfig.open_api.runtime" style="width: 220px">
+                <el-option label="Node.js" value="nodejs" />
+                <el-option label="Python" value="python" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="OpenAPI 运行环境">
+              <el-select v-model="currentConfig.open_api.runtime_profile" clearable placeholder="继承插件运行环境" style="width: 100%">
+                <el-option
+                  v-for="profile in runtimeProfilesBy(currentConfig.open_api.runtime)"
+                  :key="profile.id"
+                  :label="runtimeProfileLabel(profile)"
+                  :value="profile.id"
+                />
+              </el-select>
+              <div class="field-tip">不选择时继承插件运行环境；选择后仅影响插件 OpenAPI 调用。</div>
             </el-form-item>
             <el-form-item label="触发规则">
               <el-input v-model="currentConfig.trigger" placeholder="正则表达式" />
@@ -195,10 +258,16 @@
                 <el-select v-model="currentConfig.access_control.blocked_groups" multiple filterable allow-create default-first-option placeholder="群 ID，可输入多个" style="width: 100%" />
               </el-form-item>
               <el-form-item label="白名单 ID">
-                <el-select v-model="currentConfig.access_control.whitelist_user_ids" multiple filterable allow-create default-first-option placeholder="用户 ID，可输入多个" style="width: 100%" />
+                <el-select v-model="currentConfig.access_control.whitelist_user_ids" multiple filterable allow-create default-first-option placeholder="平台用户 ID，可输入多个" style="width: 100%" />
               </el-form-item>
               <el-form-item label="黑名单 ID">
-                <el-select v-model="currentConfig.access_control.blocked_user_ids" multiple filterable allow-create default-first-option placeholder="用户 ID，可输入多个" style="width: 100%" />
+                <el-select v-model="currentConfig.access_control.blocked_user_ids" multiple filterable allow-create default-first-option placeholder="平台用户 ID，可输入多个" style="width: 100%" />
+              </el-form-item>
+              <el-form-item label="白名单 union_id">
+                <el-select v-model="currentConfig.access_control.whitelist_union_ids" multiple filterable allow-create default-first-option placeholder="union_id，可输入多个" style="width: 100%" />
+              </el-form-item>
+              <el-form-item label="黑名单 union_id">
+                <el-select v-model="currentConfig.access_control.blocked_union_ids" multiple filterable allow-create default-first-option placeholder="union_id，可输入多个" style="width: 100%" />
               </el-form-item>
             </template>
           </el-form>
@@ -294,6 +363,16 @@
                     <el-option label="Python" value="python" />
                   </el-select>
                   <div v-if="isAccountQLTemplate" class="field-tip">账号青龙模板会按模板自动选择运行时。</div>
+                </el-form-item>
+                <el-form-item label="运行环境">
+                  <el-select v-model="createForm.runtime_profile" clearable placeholder="使用默认运行环境" style="width: 260px">
+                    <el-option
+                      v-for="profile in runtimeProfilesBy(createForm.runtime)"
+                      :key="profile.id"
+                      :label="runtimeProfileLabel(profile)"
+                      :value="profile.id"
+                    />
+                  </el-select>
                 </el-form-item>
                 <el-form-item label="触发规则" :required="!isAccountQLTemplate">
                   <el-input v-if="!isAccountQLTemplate" v-model="createForm.trigger" placeholder="正则表达式，例如：^测试$" />
@@ -440,6 +519,7 @@
           <div class="create-preview-title">生成预览</div>
           <div class="create-preview-summary" v-if="createPreviewData || createForm.name || createForm.trigger">
             <div>插件运行时：{{ createPreviewData?.runtime || createPreviewData?.normalized?.runtime || createForm.runtime || '-' }}</div>
+            <div>运行环境：{{ createForm.runtime_profile || '默认' }}</div>
             <div v-if="isAccountQLTemplate">脚本运行时：{{ createPreviewData?.normalized?.script_runtime || createPreviewData?.metadata?.script_runtime || createForm.account_ql.script_runtime || '-' }}</div>
             <div>入口：{{ createPreviewData?.entry || createPreviewData?.normalized?.entry || '-' }}</div>
             <div v-if="isAccountQLTemplate">脚本：{{ createPreviewData?.normalized?.task_script || createPreviewData?.metadata?.task_script || createForm.account_ql.task_script || '-' }}</div>
@@ -460,6 +540,31 @@
       <template #footer>
         <el-button @click="createDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="createSaving" @click="saveCreatedPlugin">创建</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="recycleBinVisible" title="插件回收站" width="760px" @open="loadRecycleBin">
+      <div class="recycle-bin-toolbar">
+        <span class="recycle-bin-tip">这里展示删除插件时自动生成的备份压缩包，可直接清理 Linux 服务器上的历史备份。</span>
+        <el-button size="small" :loading="recycleBinLoading" @click="loadRecycleBin">刷新</el-button>
+      </div>
+      <el-table class="recycle-bin-table" :data="pluginBackups" size="small" border v-loading="recycleBinLoading" empty-text="暂无备份压缩包">
+        <el-table-column prop="plugin_id" label="插件 ID" width="150" />
+        <el-table-column prop="name" label="备份文件" min-width="240" show-overflow-tooltip />
+        <el-table-column label="大小" width="110">
+          <template #default="{ row }">{{ formatFileSize(row.size) }}</template>
+        </el-table-column>
+        <el-table-column label="修改时间" width="180">
+          <template #default="{ row }">{{ formatDateTime(row.mod_time) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="110" fixed="right">
+          <template #default="{ row }">
+            <el-button type="danger" size="small" link @click="handleDeleteBackup(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="recycleBinVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -520,7 +625,7 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, shallowRef 
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
-import { getAdapterPlatforms, getAdapters, getPlugins, controlPlugin, deletePlugin, getPluginTemplates, previewCreatePlugin, validateCreatePlugin, createPlugin } from '@/api'
+import { getAdapterPlatforms, getAdapters, getPlugins, controlPlugin, deletePlugin, getPluginRecycleBin, deletePluginBackup, getPluginTemplates, previewCreatePlugin, validateCreatePlugin, createPlugin, getRuntimeProfiles } from '@/api'
 import request from '@/utils/request'
 import { EditorView, basicSetup } from 'codemirror'
 import { javascript } from '@codemirror/lang-javascript'
@@ -531,7 +636,12 @@ const router = useRouter()
 
 const loading = ref(false)
 const plugins = ref([])
+const pluginSearch = ref('')
+const pluginBackups = ref([])
+const recycleBinVisible = ref(false)
+const recycleBinLoading = ref(false)
 const adapters = ref([])
+const runtimeProfiles = ref([])
 const currentPage = ref(1)
 const pageSize = 9
 const pluginDefaultPlatforms = ['qq', 'qq_office', 'telegram']
@@ -578,6 +688,7 @@ const currentConfig = ref({
   name: '',
   version: '',
   runtime: 'python',
+  runtime_profile: '',
   entry: '',
   trigger: '',
   priority: 0,
@@ -586,7 +697,27 @@ const currentConfig = ref({
   access_control: createAccessControl(true),
   user_config_schema: [],
   user_config: {},
+  open_api: createOpenApiConfig(),
   enabled: true
+})
+
+watch(() => currentConfig.value.runtime, (runtime) => {
+  if (!currentConfig.value.runtime_profile) return
+  const matched = runtimeProfiles.value.some(profile => profile.id === currentConfig.value.runtime_profile && profile.runtime === runtime)
+  if (!matched) currentConfig.value.runtime_profile = ''
+})
+
+watch(() => currentConfig.value.open_api?.runtime, (runtime) => {
+  const openAPI = currentConfig.value.open_api
+  if (!openAPI?.runtime_profile) return
+  const matched = runtimeProfiles.value.some(profile => profile.id === openAPI.runtime_profile && profile.runtime === normalizeRuntimeName(runtime))
+  if (!matched) openAPI.runtime_profile = ''
+})
+
+watch(() => createForm.value.runtime, (runtime) => {
+  if (!createForm.value.runtime_profile) return
+  const matched = runtimeProfiles.value.some(profile => profile.id === createForm.value.runtime_profile && profile.runtime === runtime)
+  if (!matched) createForm.value.runtime_profile = ''
 })
 
 const userConfigFields = computed(() => {
@@ -642,10 +773,44 @@ const accountQLTriggerPreview = computed(() => {
 })
 
 
+const filteredPlugins = computed(() => {
+  const keyword = pluginSearch.value.trim().toLowerCase()
+  if (!keyword) return plugins.value
+  return plugins.value.filter(plugin => getPluginSearchText(plugin).includes(keyword))
+})
+
 const paginatedPlugins = computed(() => {
   const start = (currentPage.value - 1) * pageSize
-  return plugins.value.slice(start, start + pageSize)
+  return filteredPlugins.value.slice(start, start + pageSize)
 })
+
+watch(pluginSearch, () => {
+  currentPage.value = 1
+})
+
+watch(filteredPlugins, () => {
+  const maxPage = Math.max(1, Math.ceil(filteredPlugins.value.length / pageSize))
+  if (currentPage.value > maxPage) currentPage.value = maxPage
+})
+
+function getPluginSearchText(plugin) {
+  const platformNames = Array.isArray(plugin.platforms)
+    ? plugin.platforms.map(platform => getPlatformName(platform))
+    : []
+  return [
+    plugin.id,
+    plugin.name,
+    plugin.version,
+    plugin.runtime,
+    plugin.runtime_profile,
+    plugin.entry,
+    plugin.trigger,
+    plugin.priority,
+    plugin.error,
+    ...(Array.isArray(plugin.platforms) ? plugin.platforms : []),
+    ...platformNames
+  ].filter(value => value !== undefined && value !== null).join(' ').toLowerCase()
+}
 
 const loadPlugins = async () => {
   loading.value = true
@@ -665,6 +830,19 @@ const loadAdapters = async () => {
     console.error('加载机器人失败:', error)
   }
 }
+
+const loadRuntimeProfiles = async () => {
+  try {
+    const data = await getRuntimeProfiles()
+    runtimeProfiles.value = Array.isArray(data) ? data : []
+  } catch (error) {
+    runtimeProfiles.value = []
+  }
+}
+
+const runtimeProfilesBy = (runtime) => runtimeProfiles.value.filter(profile => profile.runtime === runtime && profile.enabled)
+
+const runtimeProfileLabel = (profile) => `${profile.name || profile.id}${profile.default ? '（默认）' : ''}`
 
 const loadAdapterPlatforms = async () => {
   try {
@@ -740,16 +918,55 @@ const handleReload = async (plugin) => {
   }
 }
 
+const openRecycleBinDialog = () => {
+  recycleBinVisible.value = true
+}
+
+const loadRecycleBin = async () => {
+  recycleBinLoading.value = true
+  try {
+    const data = await getPluginRecycleBin()
+    pluginBackups.value = Array.isArray(data?.items) ? data.items : []
+  } catch (error) {
+    console.error('加载插件回收站失败:', error)
+    ElMessage.error('加载插件回收站失败')
+  } finally {
+    recycleBinLoading.value = false
+  }
+}
+
+const handleDeleteBackup = async (backup) => {
+  await ElMessageBox.confirm(
+    `确定要永久删除备份压缩包 "${backup.name}" 吗？`,
+    '删除备份',
+    {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }
+  )
+  try {
+    await deletePluginBackup(backup.name)
+    ElMessage.success('备份压缩包已删除')
+    await loadRecycleBin()
+  } catch (error) {
+    console.error('删除备份压缩包失败:', error)
+    ElMessage.error(error?.response?.data?.error || '删除备份压缩包失败')
+  }
+}
+
 const handleConfig = async (plugin) => {
   try {
     currentPluginId.value = plugin.id
     const config = await request.get(`/plugins/config/${plugin.id}`)
     config.platforms = Array.isArray(config.platforms) ? config.platforms : []
     config.allowed_adapter_ids = config.allowed_adapter_ids || []
+    config.runtime_profile = config.runtime_profile || ''
     config.priority = Number(config.priority || 0)
     config.access_control = normalizeAccessControl(config.access_control, true)
     config.user_config_schema = Array.isArray(config.user_config_schema) ? config.user_config_schema : []
     config.user_config = normalizeUserConfig(config.user_config_schema, config.user_config)
+    config.open_api = createOpenApiConfig(plugin.id, config.runtime, config.open_api || {})
     currentConfig.value = config
     configActiveTab.value = 'base'
     configDialogVisible.value = true
@@ -858,6 +1075,7 @@ const saveConfig = async () => {
   try {
     currentConfig.value.priority = Number(currentConfig.value.priority || 0)
     currentConfig.value.access_control = normalizeAccessControl(currentConfig.value.access_control, true)
+    currentConfig.value.open_api = createOpenApiConfig(currentPluginId.value, currentConfig.value.runtime, currentConfig.value.open_api || {})
     await request.put(`/plugins/config/${currentPluginId.value}`, currentConfig.value)
     ElMessage.success('配置已保存并生效')
     configDialogVisible.value = false
@@ -874,6 +1092,7 @@ const handleConfigDialogClose = () => {
     name: '',
     version: '',
     runtime: 'python',
+    runtime_profile: '',
     entry: '',
     trigger: '',
     priority: 0,
@@ -882,6 +1101,7 @@ const handleConfigDialogClose = () => {
     access_control: createAccessControl(true),
     user_config_schema: [],
     user_config: {},
+    open_api: createOpenApiConfig(),
     enabled: true
   }
 }
@@ -892,7 +1112,25 @@ function createAccessControl(inheritSystem = false) {
     whitelist_groups: [],
     blocked_groups: [],
     whitelist_user_ids: [],
-    blocked_user_ids: []
+    blocked_user_ids: [],
+    whitelist_union_ids: [],
+    blocked_union_ids: []
+  }
+}
+
+function normalizeRuntimeName(runtime) {
+  return runtime === 'python' ? 'python' : 'nodejs'
+}
+
+function createOpenApiConfig(pluginID = '', runtime = 'nodejs', config = {}) {
+  const normalizedRuntime = normalizeRuntimeName(config.runtime || runtime)
+  return {
+    enabled: Boolean(config.enabled),
+    path: String(config.path || pluginID || '').trim(),
+    method: String(config.method || 'POST').trim().toUpperCase(),
+    token: String(config.token || ''),
+    runtime: normalizedRuntime,
+    runtime_profile: String(config.runtime_profile || '').trim()
   }
 }
 
@@ -910,6 +1148,7 @@ function createEmptyPluginForm() {
     name: '',
     version: '1.0.0',
     runtime: 'nodejs',
+    runtime_profile: '',
     trigger: '',
     priority: 0,
     platforms: [...pluginDefaultPlatforms],
@@ -948,6 +1187,7 @@ function normalizeCreatePayload(form) {
       name: String(form.name || '').trim(),
       version: String(form.version || '1.0.0').trim(),
       runtime,
+      runtime_profile: String(form.runtime_profile || '').trim(),
       template: form.template,
       priority: Number(form.priority || 0),
       platforms: Array.isArray(form.platforms) ? form.platforms : [],
@@ -1001,6 +1241,7 @@ function normalizeCreatePayload(form) {
     name: String(form.name || '').trim(),
     version: String(form.version || '1.0.0').trim(),
     runtime: form.runtime,
+    runtime_profile: String(form.runtime_profile || '').trim(),
     template: 'basic',
     trigger: String(form.trigger || '').trim(),
     priority: Number(form.priority || 0),
@@ -1251,7 +1492,9 @@ function normalizeAccessControl(value, defaultInherit = false) {
     whitelist_groups: list(source.whitelist_groups),
     blocked_groups: list(source.blocked_groups),
     whitelist_user_ids: list(source.whitelist_user_ids),
-    blocked_user_ids: list(source.blocked_user_ids)
+    blocked_user_ids: list(source.blocked_user_ids),
+    whitelist_union_ids: list(source.whitelist_union_ids),
+    blocked_union_ids: list(source.blocked_union_ids)
   }
 }
 
@@ -1485,6 +1728,22 @@ function escapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+function formatFileSize(size) {
+  const value = Number(size || 0)
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(2)} MB`
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+function formatDateTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const pad = number => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 watch(() => createForm.value.template, async (template, previousTemplate) => {
   if (template === 'nodejs_account_ql' || template === 'python_account_ql') {
     const previousDefault = templateDefaultScriptRuntime(previousTemplate)
@@ -1560,6 +1819,7 @@ onMounted(() => {
   createPresets.value = loadCreatePresets()
   loadAdapterPlatforms()
   loadPluginTemplates()
+  loadRuntimeProfiles()
   loadPlugins()
   loadAdapters()
 })
@@ -1609,6 +1869,18 @@ onBeforeUnmount(() => {
 .plugins-header .title {
   font-size: 18px;
   font-weight: bold;
+}
+
+.plugins-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.plugin-search {
+  width: 260px;
 }
 
 .plugins-content {
@@ -1680,6 +1952,12 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: #606266;
   word-break: break-all;
+}
+
+.runtime-profile-text {
+  margin-left: 6px;
+  color: #909399;
+  font-size: 12px;
 }
 
 .platforms .el-tag {
@@ -1784,6 +2062,30 @@ onBeforeUnmount(() => {
   margin-bottom: 6px;
 }
 
+.recycle-bin-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid #f3d19e;
+  border-radius: 8px;
+  background: #fdf6ec;
+}
+
+.recycle-bin-tip {
+  flex: 1;
+  min-width: 0;
+  color: #9a6b1f;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.recycle-bin-table {
+  width: 100%;
+}
+
 .preset-row {
   display: flex;
   flex-wrap: wrap;
@@ -1886,6 +2188,18 @@ onBeforeUnmount(() => {
     font-size: 16px;
   }
 
+  .plugins-header-actions {
+    justify-content: stretch;
+  }
+
+  .plugin-search {
+    width: 100%;
+  }
+
+  .plugins-header-actions .el-button {
+    flex-shrink: 0;
+  }
+
   .plugin-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: 12px;
@@ -1917,6 +2231,10 @@ onBeforeUnmount(() => {
 
   .create-preview-panel {
     max-height: 360px;
+  }
+
+  .recycle-bin-toolbar {
+    flex-direction: column;
   }
 
   .create-config-row,

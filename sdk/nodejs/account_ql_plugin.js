@@ -1,4 +1,4 @@
-const { runDirect } = require('./allbot_direct');
+const { runDirect, PAY } = require('./allbot_direct');
 
 function createAccountQLPlugin(options = {}) {
   const plugin = new AccountQLPlugin(options);
@@ -9,6 +9,19 @@ function builtinPointsAuth(options = {}) {
   return {
     type: 'builtin_points',
     priceConfig: options.priceConfig || options.price_config || 'auth_price_per_month'
+  };
+}
+
+function builtinPaymentAuth(options = {}) {
+  return {
+    type: 'builtin_payment',
+    priceConfig: options.priceConfig || options.price_config || 'auth_price_per_month',
+    pointsPerRMBConfig: options.pointsPerRMBConfig || options.points_per_rmb_config || 'auth_payment_points_per_rmb',
+    defaultPointsPerRMB: Number(options.defaultPointsPerRMB || options.default_points_per_rmb || 100),
+    timeoutConfig: options.timeoutConfig || options.timeout_config || 'auth_payment_timeout',
+    timeout: Number(options.timeout || 300),
+    methodsConfig: options.methodsConfig || options.methods_config || 'auth_payment_methods',
+    methods: Array.isArray(options.methods) ? options.methods : []
   };
 }
 
@@ -193,7 +206,9 @@ class AccountQLPlugin {
     try {
       expiresAt = typeof provider.authorize === 'function'
         ? await provider.authorize(ctx, account, months)
-        : await authorizeByBuiltinPoints(ctx, account, months, provider);
+        : provider.type === 'builtin_payment'
+          ? await authorizeByBuiltinPayment(ctx, account, months, provider, this)
+          : await authorizeByBuiltinPoints(ctx, account, months, provider);
     } catch (error) {
       return ctx.reply(error.message || '授权失败');
     }
@@ -546,6 +561,48 @@ async function authorizeByBuiltinPoints(ctx, account, months, provider) {
   return new Date(baseTime + months * 30 * 86400000);
 }
 
+async function authorizeByBuiltinPayment(ctx, account, months, provider, plugin) {
+  const quote = builtinQuote(ctx, provider);
+  const totalPoints = quote.price * months;
+  if (totalPoints > 0) {
+    const pointsPerRMB = paymentPointsPerRMB(ctx, provider);
+    const amountRMB = formatRMB(totalPoints / pointsPerRMB);
+    const timeout = Number(ctx.config(provider.timeoutConfig, provider.timeout) || provider.timeout || 300);
+    const result = await new PAY(ctx).waitPay(`${plugin.prefix}账号授权：${plugin.accountName(account)} × ${months}个月`, amountRMB, timeout, {
+      methods: paymentMethods(ctx, provider),
+      metadata: {
+        plugin: plugin.prefix,
+        account_id: account.id,
+        account_name: plugin.accountName(account),
+        months,
+        auth_points: totalPoints,
+        points_per_rmb: pointsPerRMB
+      },
+      remark: `${plugin.prefix}账号授权 ${months} 个月`
+    });
+    if (!result || result.status !== 'paid') {
+      throw new Error(result?.message || '支付未完成，授权失败');
+    }
+  }
+  const baseTime = Math.max(Date.now(), new Date(accountExpiresAt(account)).getTime() || 0);
+  return new Date(baseTime + months * 30 * 86400000);
+}
+
+function paymentPointsPerRMB(ctx, provider) {
+  const value = Number(ctx.config(provider.pointsPerRMBConfig, provider.defaultPointsPerRMB) || provider.defaultPointsPerRMB || 100);
+  return Number.isFinite(value) && value > 0 ? value : 100;
+}
+
+function paymentMethods(ctx, provider) {
+  const configured = String(ctx.config(provider.methodsConfig, '') || '').split(',').map((item) => item.trim()).filter(Boolean);
+  if (configured.length > 0) return configured;
+  return provider.methods || [];
+}
+
+function formatRMB(value) {
+  return Math.ceil(Number(value || 0) * 100) / 100;
+}
+
 function normalizeSchedules(prefix, schedules) {
   const list = [];
   const normalizeItem = (item, defaults) => ({
@@ -584,4 +641,4 @@ function validateEnvValue(value, allowMultiline) { if (value.includes('\0')) thr
 function expirationMessage(prefix, name, state) { if (state.daysLeft > 0) return `【${prefix}账号授权提醒】${name} 将在 ${state.daysLeft} 天后过期，请发送【${prefix}账号】续费。`; if (state.daysLeft === 0) return `【${prefix}账号授权提醒】${name} 今天到期，请发送【${prefix}账号】续费。`; return `【${prefix}账号授权提醒】${name} 已过期，请发送【${prefix}账号】续费后继续使用。`; }
 function scriptTaskMessage(result, fallback) { const id = result?.task_id || result?.log_id || result?.id || ''; const status = result?.already_running ? '任务已在运行' : '任务已创建'; return `✅${fallback || status}${id ? `\n任务ID：${id}` : ''}\n请到后台【脚本任务】查看运行状态和日志。`; }
 
-module.exports = { createAccountQLPlugin, builtinPointsAuth, AccountStore };
+module.exports = { createAccountQLPlugin, builtinPointsAuth, builtinPaymentAuth, AccountStore };

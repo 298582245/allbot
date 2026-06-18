@@ -18,6 +18,18 @@
       <el-form class="permission-form" :model="form" label-width="120px" v-loading="loading">
         <section class="form-section">
           <div class="section-title">平台管理员</div>
+          <el-form-item label="管理员 union_id">
+            <el-select
+              v-model="platformAdminUnionIDs"
+              multiple
+              filterable
+              allow-create
+              default-first-option
+              placeholder="union_id，可输入多个"
+              style="width: 100%"
+            />
+            <div class="field-tip">按统一用户 union_id 授予管理员权限，用户绑定的不同平台账号都会生效。</div>
+          </el-form-item>
           <el-empty v-if="adapterOptions.length === 0" description="暂无适配器，请先在适配器页面添加平台" />
           <el-form-item v-for="adapter in adapterOptions" :key="adapter.platform" :label="adapter.label">
             <el-select
@@ -46,13 +58,23 @@
           </el-form-item>
 
           <el-form-item label="白名单 ID">
-            <el-select v-model="form.access_control.whitelist_user_ids" multiple filterable allow-create default-first-option placeholder="用户 ID，可输入多个" style="width: 100%" />
-            <div class="field-tip">设置后只有这些用户能触发插件。</div>
+            <el-select v-model="form.access_control.whitelist_user_ids" multiple filterable allow-create default-first-option placeholder="平台用户 ID，可输入多个" style="width: 100%" />
+            <div class="field-tip">按当前平台的用户 ID 放行，适合只限制某个平台账号。</div>
           </el-form-item>
 
           <el-form-item label="黑名单 ID">
-            <el-select v-model="form.access_control.blocked_user_ids" multiple filterable allow-create default-first-option placeholder="用户 ID，可输入多个" style="width: 100%" />
-            <div class="field-tip">这些用户不会触发任何系统功能或插件。</div>
+            <el-select v-model="form.access_control.blocked_user_ids" multiple filterable allow-create default-first-option placeholder="平台用户 ID，可输入多个" style="width: 100%" />
+            <div class="field-tip">按当前平台的用户 ID 屏蔽，优先级高于白名单。</div>
+          </el-form-item>
+
+          <el-form-item label="白名单 union_id">
+            <el-select v-model="form.access_control.whitelist_union_ids" multiple filterable allow-create default-first-option placeholder="union_id，可输入多个" style="width: 100%" />
+            <div class="field-tip">按统一用户 union_id 放行，同一个用户绑定的不同平台账号都会生效。</div>
+          </el-form-item>
+
+          <el-form-item label="黑名单 union_id">
+            <el-select v-model="form.access_control.blocked_union_ids" multiple filterable allow-create default-first-option placeholder="union_id，可输入多个" style="width: 100%" />
+            <div class="field-tip">按统一用户 union_id 屏蔽，同一个用户绑定的不同平台账号都会被拦截。</div>
           </el-form-item>
         </section>
 
@@ -75,6 +97,7 @@ const loading = ref(false)
 const saving = ref(false)
 const adapters = ref([])
 const platformAdminMap = reactive({})
+const platformAdminUnionIDs = ref([])
 const pageDescription = '统一管理平台管理员、群聊和用户访问规则。'
 
 const showPageDescription = () => {
@@ -154,7 +177,9 @@ function createAccessControl() {
     whitelist_groups: [],
     blocked_groups: [],
     whitelist_user_ids: [],
-    blocked_user_ids: []
+    blocked_user_ids: [],
+    whitelist_union_ids: [],
+    blocked_union_ids: []
   }
 }
 
@@ -166,7 +191,9 @@ function normalizeAccessControl(value) {
     whitelist_groups: list(source.whitelist_groups),
     blocked_groups: list(source.blocked_groups),
     whitelist_user_ids: list(source.whitelist_user_ids),
-    blocked_user_ids: list(source.blocked_user_ids)
+    blocked_user_ids: list(source.blocked_user_ids),
+    whitelist_union_ids: list(source.whitelist_union_ids),
+    blocked_union_ids: list(source.blocked_union_ids)
   }
 }
 
@@ -182,7 +209,13 @@ function syncPlatformAdminMap(admins) {
   adapterOptions.value.forEach((adapter) => {
     platformAdminMap[adapter.platform] = []
   })
+  platformAdminUnionIDs.value = []
   ;(Array.isArray(admins) ? admins : []).forEach((admin) => {
+    const unionID = String(admin.union_id || '').trim()
+    if (unionID) {
+      if (!platformAdminUnionIDs.value.includes(unionID)) platformAdminUnionIDs.value.push(unionID)
+      return
+    }
     const platform = String(admin.platform || '').trim()
     const userID = String(admin.user_id || '').trim()
     if (!platform || !userID || !Array.isArray(platformAdminMap[platform])) return
@@ -191,7 +224,11 @@ function syncPlatformAdminMap(admins) {
 }
 
 function collectPlatformAdmins() {
-  return Object.entries(platformAdminMap)
+  const unionAdmins = platformAdminUnionIDs.value
+    .map(unionID => String(unionID).trim())
+    .filter(Boolean)
+    .map(unionID => ({ union_id: unionID }))
+  const platformAdmins = Object.entries(platformAdminMap)
     .flatMap(([platform, userIDs]) => {
       if (!Array.isArray(userIDs)) return []
       return userIDs
@@ -199,6 +236,7 @@ function collectPlatformAdmins() {
         .filter(Boolean)
         .map(userID => ({ platform, user_id: userID }))
     })
+  return [...unionAdmins, ...platformAdmins]
 }
 </script>
 

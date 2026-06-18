@@ -42,6 +42,9 @@ func createTables(db *sql.DB) error {
 	if err := migrateScheduledTasksTable(db); err != nil {
 		return err
 	}
+	if err := migrateScriptRunLogsTable(db); err != nil {
+		return err
+	}
 
 	schema := `
 	CREATE TABLE IF NOT EXISTS adapters (
@@ -166,6 +169,7 @@ func createTables(db *sql.DB) error {
 		union_id TEXT NOT NULL DEFAULT '',
 		script_path TEXT NOT NULL DEFAULT '',
 		runtime TEXT NOT NULL DEFAULT '',
+		runtime_profile TEXT NOT NULL DEFAULT '',
 		run_mode TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL DEFAULT '',
 		output TEXT NOT NULL DEFAULT '',
@@ -184,6 +188,64 @@ func createTables(db *sql.DB) error {
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE TABLE IF NOT EXISTS payment_orders (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		order_no TEXT NOT NULL UNIQUE,
+		plugin_id TEXT NOT NULL DEFAULT '',
+		union_id TEXT NOT NULL,
+		platform TEXT NOT NULL DEFAULT '',
+		adapter_id TEXT NOT NULL DEFAULT '',
+		user_id TEXT NOT NULL DEFAULT '',
+		group_id TEXT NOT NULL DEFAULT '',
+		subject TEXT NOT NULL,
+		amount_cents INTEGER NOT NULL,
+		points_amount INTEGER NOT NULL,
+		provider TEXT NOT NULL,
+		method TEXT NOT NULL,
+		status TEXT NOT NULL,
+		provider_order_no TEXT NOT NULL DEFAULT '',
+		pay_url TEXT NOT NULL DEFAULT '',
+		qrcode TEXT NOT NULL DEFAULT '',
+		notify_raw TEXT NOT NULL DEFAULT '',
+		metadata TEXT NOT NULL DEFAULT '{}',
+		expired_at DATETIME NOT NULL,
+		paid_at DATETIME,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_payment_orders_union_id ON payment_orders(union_id);
+	CREATE INDEX IF NOT EXISTS idx_payment_orders_status ON payment_orders(status);
+	CREATE INDEX IF NOT EXISTS idx_payment_orders_provider_order_no ON payment_orders(provider, provider_order_no);
+	CREATE INDEX IF NOT EXISTS idx_payment_orders_created_at ON payment_orders(created_at);
+
+	CREATE TABLE IF NOT EXISTS payment_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		order_no TEXT NOT NULL,
+		event_type TEXT NOT NULL,
+		message TEXT NOT NULL DEFAULT '',
+		payload TEXT NOT NULL DEFAULT '{}',
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_payment_events_order_no ON payment_events(order_no);
+	CREATE INDEX IF NOT EXISTS idx_payment_events_created_at ON payment_events(created_at);
+
+	CREATE TABLE IF NOT EXISTS point_transactions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		union_id TEXT NOT NULL,
+		delta INTEGER NOT NULL,
+		balance_after INTEGER NOT NULL,
+		source TEXT NOT NULL,
+		source_id TEXT NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_point_transactions_union_id ON point_transactions(union_id);
+	CREATE INDEX IF NOT EXISTS idx_point_transactions_source ON point_transactions(source, source_id);
+	CREATE INDEX IF NOT EXISTS idx_point_transactions_created_at ON point_transactions(created_at);
 
 	CREATE TABLE IF NOT EXISTS user_bind_codes (
 		code TEXT PRIMARY KEY,
@@ -233,6 +295,44 @@ func createTables(db *sql.DB) error {
 
 	CREATE INDEX IF NOT EXISTS idx_message_stats_date_platform ON message_stats(stat_date, platform);
 	CREATE INDEX IF NOT EXISTS idx_message_stats_date_adapter ON message_stats(stat_date, adapter_id);
+
+	CREATE TABLE IF NOT EXISTS plugin_trigger_stats (
+		stat_date TEXT NOT NULL,
+		stat_hour INTEGER NOT NULL,
+		plugin_id TEXT NOT NULL,
+		plugin_name TEXT NOT NULL DEFAULT '',
+		trigger_pattern TEXT NOT NULL DEFAULT '',
+		platform TEXT NOT NULL DEFAULT '',
+		adapter_id TEXT NOT NULL DEFAULT '',
+		adapter_name TEXT NOT NULL DEFAULT '',
+		count INTEGER NOT NULL DEFAULT 0,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (stat_date, stat_hour, plugin_id, platform, adapter_id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_plugin_trigger_stats_date_plugin ON plugin_trigger_stats(stat_date, plugin_id);
+	CREATE INDEX IF NOT EXISTS idx_plugin_trigger_stats_plugin_date ON plugin_trigger_stats(plugin_id, stat_date);
+	CREATE INDEX IF NOT EXISTS idx_plugin_trigger_stats_date_platform ON plugin_trigger_stats(stat_date, platform);
+
+	CREATE TABLE IF NOT EXISTS image_assets (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		public_id TEXT NOT NULL UNIQUE,
+		original_name TEXT NOT NULL DEFAULT '',
+		storage_key TEXT NOT NULL,
+		ext TEXT NOT NULL,
+		content_type TEXT NOT NULL,
+		size_bytes INTEGER NOT NULL,
+		width INTEGER NOT NULL DEFAULT 0,
+		height INTEGER NOT NULL DEFAULT 0,
+		sha256 TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_image_assets_created_at ON image_assets(created_at);
+	CREATE INDEX IF NOT EXISTS idx_image_assets_content_type ON image_assets(content_type);
+	CREATE INDEX IF NOT EXISTS idx_image_assets_sha256 ON image_assets(sha256);
 	`
 	if _, err := db.Exec(settingsSchema); err != nil {
 		return err
@@ -278,10 +378,11 @@ func ensureBuiltinKeywordReplies(db *sql.DB) error {
 	}{
 		{"myid", "返回当前用户身份信息", false},
 		{"注册", "注册当前平台用户身份", false},
-		{"积分充值", "平台管理员给指定用户充值积分，格式：积分充值 <unionId或平台:userId> <数量>", true},
+		{"积分充值", "用户自助充值积分；平台管理员可给指定用户加积分，格式：积分充值 <unionId或平台:userId> <数量>", false},
 		{"绑定码", "私聊获取跨平台绑定码", false},
 		{"绑定", "私聊使用绑定码绑定其他平台身份", false},
 		{"groupId", "返回当前群组 ID，私聊不响应", false},
+		{"插件列表", "平台管理员交互式管理插件启停和访问控制", true},
 		{"system", "返回系统运行信息", true},
 		{"version", "返回框架版本信息", false},
 		{"重启", "平台管理员触发 AllBot 进程重启", true},
@@ -311,24 +412,30 @@ func ensureDefaultSystemSettings(db *sql.DB) error {
 	}
 
 	defaults := map[string]string{
-		"admin.username":       "admin",
-		"admin.platform_users": "[]",
-		"web.auto_refresh":     "true",
-		"web.refresh_interval": "5",
-		"plugin.dir":           "./plugins",
-		"plugin.auto_load":     "true",
-		"user.points_unit":     "积分",
-		"access_control":       "{}",
+		"admin.username":         "admin",
+		"admin.platform_users":   "[]",
+		"web.auto_refresh":       "true",
+		"web.refresh_interval":   "5",
+		"plugin.dir":             "./plugins",
+		"plugin.auto_load":       "true",
+		"user.points_unit":       "积分",
+		"access_control":         "{}",
+		"payment.points_per_rmb": "100",
+		"payment.config":         defaultPaymentConfigJSON(),
+		"imagehost.config":       defaultImageHostConfigJSON(),
 	}
 	descriptions := map[string]string{
-		"admin.username":       "管理员用户名",
-		"admin.platform_users": "平台管理员用户列表",
-		"web.auto_refresh":     "是否自动刷新",
-		"web.refresh_interval": "刷新间隔秒数",
-		"plugin.dir":           "插件目录",
-		"plugin.auto_load":     "启动时自动加载插件",
-		"user.points_unit":     "用户积分单位",
-		"access_control":       "系统访问控制配置",
+		"admin.username":         "管理员用户名",
+		"admin.platform_users":   "平台管理员用户列表",
+		"web.auto_refresh":       "是否自动刷新",
+		"web.refresh_interval":   "刷新间隔秒数",
+		"plugin.dir":             "插件目录",
+		"plugin.auto_load":       "启动时自动加载插件",
+		"user.points_unit":       "用户积分单位",
+		"access_control":         "系统访问控制配置",
+		"payment.points_per_rmb": "积分兑换比例",
+		"payment.config":         "支付配置",
+		"imagehost.config":       "图床配置",
 	}
 
 	for key, value := range defaults {
@@ -430,6 +537,27 @@ func migrateScheduledTasksTable(db *sql.DB) error {
 	}
 	if !columns["pinned"] {
 		if _, err := db.Exec(`ALTER TABLE scheduled_tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateScriptRunLogsTable(db *sql.DB) error {
+	var tableName string
+	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='script_run_logs'`).Scan(&tableName)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	columns, err := tableColumns(db, "script_run_logs")
+	if err != nil {
+		return err
+	}
+	if !columns["runtime_profile"] {
+		if _, err := db.Exec(`ALTER TABLE script_run_logs ADD COLUMN runtime_profile TEXT NOT NULL DEFAULT ''`); err != nil {
 			return err
 		}
 	}

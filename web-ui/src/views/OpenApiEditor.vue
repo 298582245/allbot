@@ -27,6 +27,20 @@
             <div class="file-panel-title">接口文件</div>
             <el-tag size="small" type="info">{{ runtimeLabel }}</el-tag>
           </div>
+          <div class="runtime-controls">
+            <el-radio-group v-model="form.runtime" size="small">
+              <el-radio-button label="nodejs">Node.js</el-radio-button>
+              <el-radio-button label="python">Python</el-radio-button>
+            </el-radio-group>
+            <el-select v-model="form.runtime_profile" clearable size="small" placeholder="使用默认运行环境" class="profile-select">
+              <el-option
+                v-for="profile in runtimeProfilesBy(form.runtime)"
+                :key="profile.id"
+                :label="runtimeProfileLabel(profile)"
+                :value="profile.id"
+              />
+            </el-select>
+          </div>
           <el-tree
             :data="fileTree"
             node-key="path"
@@ -64,11 +78,11 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Document, Folder } from '@element-plus/icons-vue'
-import { getOpenApi, getOpenApiCode, updateOpenApiCode } from '@/api'
+import { getOpenApi, getOpenApiCode, getRuntimeProfiles, updateOpenApiCode } from '@/api'
 import { EditorView, basicSetup } from 'codemirror'
 import { python } from '@codemirror/lang-python'
 import { javascript } from '@codemirror/lang-javascript'
@@ -81,6 +95,7 @@ const loading = ref(false)
 const saving = ref(false)
 const editorContainer = ref(null)
 const form = ref(defaultForm())
+const runtimeProfiles = ref([])
 const treeProps = { children: 'children', label: 'name' }
 let editorView = null
 
@@ -102,6 +117,29 @@ const fileTree = computed(() => [
     ]
   }
 ])
+
+watch(() => form.value.runtime, (runtime) => {
+  if (!form.value.runtime_profile) return
+  const matched = runtimeProfiles.value.some(profile => profile.id === form.value.runtime_profile && profile.runtime === runtime)
+  if (!matched) form.value.runtime_profile = ''
+})
+
+async function loadRuntimeProfiles() {
+  try {
+    const data = await getRuntimeProfiles()
+    runtimeProfiles.value = Array.isArray(data) ? data : []
+  } catch {
+    runtimeProfiles.value = []
+  }
+}
+
+function runtimeProfilesBy(runtime) {
+  return runtimeProfiles.value.filter(profile => profile.runtime === runtime && profile.enabled)
+}
+
+function runtimeProfileLabel(profile) {
+  return `${profile.name || profile.id}${profile.default ? '（默认）' : ''}`
+}
 
 async function loadDetail() {
   if (apiId.value === 'new') {
@@ -140,6 +178,7 @@ function normalizeDetail(detail = {}) {
     method: String(detail.method || 'POST').toUpperCase(),
     enabled: Boolean(detail.enabled),
     runtime: normalizeRuntime(detail.runtime),
+    runtime_profile: detail.runtime_profile || '',
     entry: detail.entry || '',
     description: detail.description || ''
   }
@@ -158,6 +197,7 @@ function defaultForm() {
     method: 'POST',
     enabled: true,
     runtime: 'nodejs',
+    runtime_profile: '',
     entry: '',
     description: ''
   }
@@ -196,6 +236,7 @@ async function saveCode() {
     await updateOpenApiCode(apiId.value, {
       code: getEditorCode(),
       runtime: form.value.runtime,
+      runtime_profile: String(form.value.runtime_profile || '').trim(),
       file: selectedFile.value,
       entry: selectedFile.value
     })
@@ -248,7 +289,10 @@ function destroyEditor() {
   }
 }
 
-onMounted(loadDetail)
+onMounted(async () => {
+  await loadRuntimeProfiles()
+  await loadDetail()
+})
 onBeforeUnmount(destroyEditor)
 </script>
 
@@ -331,6 +375,16 @@ onBeforeUnmount(destroyEditor)
 
 .file-panel-title {
   font-weight: 600;
+}
+
+.runtime-controls {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.profile-select {
+  width: 100%;
 }
 
 .tree-node {

@@ -9,9 +9,9 @@ config.db
 
 .claude/
 
-# 插件备份包
+# 插件与备份运行文件
 plugins/
-
+backups/
 
 # 缓存与依赖目录
 .gocache/
@@ -24,6 +24,10 @@ web-ui/node_modules/
 runtime/python/
 runtime/node/
 runtime/.venv/
+runtime/envs/
+runtime/image_assets/
+runtime/interpreters/
+runtime/runtime_profiles.json
 
 # 本地编译产物（保留 allbot-linux-amd64）
 allbot
@@ -57,3 +61,7 @@ htmlcov/
 # IDE
 .vscode/
 .idea/
+
+
+#彩虹支付phphsdk
+pay/

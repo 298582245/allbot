@@ -3,7 +3,7 @@
     <el-card>
       <template #header>
         <div class="card-header">
-          <span>全局依赖管理</span>
+          <span>运行环境依赖管理</span>
         </div>
       </template>
 
@@ -12,15 +12,25 @@
           <el-tab-pane label="Python 依赖" name="python" />
           <el-tab-pane label="Node.js 依赖" name="nodejs" />
         </el-tabs>
-        <el-button type="primary" @click="showAddDialog(activeTab)">
-          <el-icon><Plus /></el-icon>
-          安装新依赖
-        </el-button>
+        <div class="toolbar-actions">
+          <el-select v-model="activeProfileId" class="profile-select" placeholder="选择运行环境" :loading="profilesLoading">
+            <el-option
+              v-for="profile in activeRuntimeProfiles"
+              :key="profile.id"
+              :label="runtimeProfileLabel(profile)"
+              :value="profile.id"
+            />
+          </el-select>
+          <el-button type="primary" @click="showAddDialog(activeTab)">
+            <el-icon><Plus /></el-icon>
+            安装新依赖
+          </el-button>
+        </div>
       </div>
 
       <el-alert
         class="version-tip"
-        title="版本留空会安装并升级到当前最新版，安装完成后列表会显示实际版本号，不再显示 latest。"
+        :title="activeProfileTip"
         type="info"
         show-icon
         :closable="false"
@@ -114,6 +124,16 @@
       width="500px"
     >
       <el-form :model="newDep" label-width="80px">
+        <el-form-item label="运行环境">
+          <el-select v-model="installProfileId" style="width: 100%" placeholder="选择运行环境">
+            <el-option
+              v-for="profile in currentRuntimeProfiles"
+              :key="profile.id"
+              :label="runtimeProfileLabel(profile)"
+              :value="profile.id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="包名">
           <el-input v-model.trim="newDep.name" placeholder="例如: requests" />
         </el-form-item>
@@ -132,18 +152,23 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
+import { getRuntimeProfiles } from '@/api'
 import request from '@/utils/request'
 
 const activeTab = ref('python')
 const loading = ref(false)
+const profilesLoading = ref(false)
 const pythonDeps = ref([])
 const nodejsDeps = ref([])
+const runtimeProfiles = ref([])
+const selectedProfileIds = ref({ python: '', nodejs: '' })
 const addDialogVisible = ref(false)
 const installing = ref(false)
 const currentRuntime = ref('python')
+const installProfileId = ref('')
 const newDep = ref({
   name: '',
   version: ''
@@ -152,6 +177,23 @@ const newDep = ref({
 const pageSize = 10
 const pythonCurrentPage = ref(1)
 const nodejsCurrentPage = ref(1)
+let loadToken = 0
+
+const activeProfileId = computed({
+  get: () => selectedProfileIds.value[activeTab.value] || '',
+  set: (value) => {
+    selectedProfileIds.value = { ...selectedProfileIds.value, [activeTab.value]: value || '' }
+  }
+})
+
+const activeRuntimeProfiles = computed(() => runtimeProfilesBy(activeTab.value))
+const currentRuntimeProfiles = computed(() => runtimeProfilesBy(currentRuntime.value))
+const activeProfile = computed(() => activeRuntimeProfiles.value.find(profile => profile.id === activeProfileId.value) || null)
+const activeProfileTip = computed(() => {
+  const profile = activeProfile.value
+  if (!profile) return '当前运行时没有可用运行环境；请先到“运行环境”页面启用或新增 Profile。'
+  return `当前依赖只安装到「${runtimeProfileLabel(profile)}」。版本留空会安装并升级到当前最新版，安装完成后列表会显示实际版本号。`
+})
 
 const paginatedPythonDeps = computed(() => {
   const start = (pythonCurrentPage.value - 1) * pageSize
@@ -169,22 +211,72 @@ const toDepRows = (deps) => Object.entries(deps || {})
   .map(([name, version]) => ({ name, version }))
   .sort((a, b) => a.name.localeCompare(b.name))
 
-const loadDependencies = async () => {
-  loading.value = true
+const runtimeProfilesBy = (runtime) => runtimeProfiles.value.filter(profile => profile.runtime === runtime && profile.enabled)
+const runtimeProfileLabel = (profile) => `${profile.name || profile.id}${profile.default ? '（默认）' : ''}`
+
+const ensureSelectedProfile = (runtime) => {
+  const profiles = runtimeProfilesBy(runtime)
+  const current = selectedProfileIds.value[runtime]
+  if (profiles.some(profile => profile.id === current)) return
+  const next = profiles.find(profile => profile.default) || profiles[0]
+  selectedProfileIds.value = { ...selectedProfileIds.value, [runtime]: next?.id || '' }
+}
+
+const selectedProfileName = (runtime) => {
+  const profile = runtimeProfilesBy(runtime).find(item => item.id === selectedProfileIds.value[runtime])
+  return profile ? runtimeProfileLabel(profile) : '默认运行环境'
+}
+
+const resetPage = (runtime) => {
+  if (runtime === 'python') pythonCurrentPage.value = 1
+  if (runtime === 'nodejs') nodejsCurrentPage.value = 1
+}
+
+const setRuntimeDeps = (runtime, rows) => {
+  if (runtime === 'python') pythonDeps.value = rows
+  if (runtime === 'nodejs') nodejsDeps.value = rows
+}
+
+const loadRuntimeProfiles = async () => {
+  profilesLoading.value = true
   try {
-    const data = await request.get('/dependencies')
-    pythonDeps.value = toDepRows(data.python)
-    nodejsDeps.value = toDepRows(data.nodejs)
+    const data = await getRuntimeProfiles()
+    runtimeProfiles.value = Array.isArray(data) ? data : []
   } catch (error) {
+    console.error('加载运行环境失败:', error)
+    runtimeProfiles.value = []
+  } finally {
+    ensureSelectedProfile('python')
+    ensureSelectedProfile('nodejs')
+    profilesLoading.value = false
+  }
+}
+
+const loadDependencies = async () => {
+  const runtime = activeTab.value
+  const profileId = activeProfileId.value
+  const token = ++loadToken
+  loading.value = true
+  setRuntimeDeps(runtime, [])
+  try {
+    const data = await request.get('/dependencies', {
+      params: { runtime, profile_id: profileId }
+    })
+    if (token !== loadToken) return
+    setRuntimeDeps(runtime, toDepRows(data.dependencies))
+  } catch (error) {
+    if (token !== loadToken) return
     console.error('加载依赖失败:', error)
     ElMessage.error('加载依赖失败')
   } finally {
-    loading.value = false
+    if (token === loadToken) loading.value = false
   }
 }
 
 const showAddDialog = (runtime) => {
   currentRuntime.value = runtime
+  ensureSelectedProfile(runtime)
+  installProfileId.value = selectedProfileIds.value[runtime] || ''
   newDep.value = { name: '', version: '' }
   addDialogVisible.value = true
 }
@@ -205,13 +297,20 @@ const handleInstall = async () => {
     return
   }
 
+  if (!installProfileId.value) {
+    ElMessage.warning('请选择运行环境')
+    return
+  }
+
   installing.value = true
   try {
     await request.post('/dependencies', {
       runtime: currentRuntime.value,
+      profile_id: installProfileId.value,
       name: newDep.value.name,
       version: newDep.value.version
     })
+    selectedProfileIds.value = { ...selectedProfileIds.value, [currentRuntime.value]: installProfileId.value }
     ElMessage.success('依赖安装成功')
     addDialogVisible.value = false
     await loadDependencies()
@@ -224,8 +323,9 @@ const handleInstall = async () => {
 }
 
 const handleUninstall = async (runtime, name) => {
+  const profileId = selectedProfileIds.value[runtime] || ''
   await ElMessageBox.confirm(
-    `确定要卸载 "${name}" 吗？`,
+    `确定要从「${selectedProfileName(runtime)}」卸载 "${name}" 吗？`,
     '警告',
     {
       confirmButtonText: '确定',
@@ -235,7 +335,9 @@ const handleUninstall = async (runtime, name) => {
   )
 
   try {
-    await request.delete(`/dependencies/${runtime}/${name}`)
+    await request.delete(`/dependencies/${runtime}/${encodeURIComponent(name)}`, {
+      params: { profile_id: profileId }
+    })
     ElMessage.success('依赖卸载成功')
     await loadDependencies()
   } catch (error) {
@@ -244,8 +346,20 @@ const handleUninstall = async (runtime, name) => {
   }
 }
 
-onMounted(() => {
+watch(activeTab, (runtime) => {
+  ensureSelectedProfile(runtime)
+  resetPage(runtime)
   loadDependencies()
+})
+
+watch(activeProfileId, () => {
+  resetPage(activeTab.value)
+  loadDependencies()
+})
+
+onMounted(async () => {
+  await loadRuntimeProfiles()
+  await loadDependencies()
 })
 </script>
 
@@ -286,6 +400,16 @@ onMounted(() => {
 
 .tabs {
   flex: 1;
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.profile-select {
+  width: 240px;
 }
 
 .version-tip {
@@ -423,11 +547,18 @@ onMounted(() => {
     gap: 10px;
   }
 
-  .tabs {
+  .tabs,
+  .profile-select {
     width: 100%;
   }
 
-  .toolbar > .el-button {
+  .toolbar-actions {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .toolbar-actions > .el-button {
     width: 100%;
     margin-left: 0;
   }

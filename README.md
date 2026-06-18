@@ -1,293 +1,566 @@
-# AllBot - 去中心化多平台机器人框架
+# AllBot
 
-极简、开放、商业友好的机器人框架
+AllBot 是一个基于 Go 的多平台机器人框架，内置 Web 管理后台、插件运行时、平台适配器、定时任务、Open API、数据管理和 Node.js/Python Direct SDK。项目目标是让机器人能力通过插件快速扩展，并在管理后台完成平台账号、插件配置、权限、依赖和运行任务的维护。
 
-## 特性
+## 功能概览
 
-- **极简插件开发**：单正则 + 单函数，零学习成本
-- **多语言支持**：Python 和 Node.js 插件
-- **连续对话**：内置 `listen()` 支持多轮对话
-- **多平台适配**：统一 API 适配 QQ/Telegram/微信
-- **动态配置系统**：Web UI 修改配置立即生效，无需重启 ✨
-- **现代化管理后台**：Vue 3 + Element Plus 美观界面 ✨
-- **全局依赖管理**：所有插件共享依赖，节省空间和时间 ✨
-- **一键安装**：自动安装所有依赖 ✨
-- **去中心化市场**：开发者自建市场，无平台抽成 ✅
-- **源码保护**：AES-256 加密 + RSA 签名 ✅
+- 多平台机器人接入：支持 QQ、Telegram、QQ 官方机器人等适配器，同一平台可配置多个机器人实例。
+- 插件系统：支持 Node.js 与 Python 插件，按正则触发、平台限制、机器人实例限制、优先级和访问控制执行。
+- Web 管理后台：提供插件、适配器、定时任务、脚本任务、数据、依赖、日志、权限、设置等页面。
+- Direct SDK：为插件提供消息回复、监听、主动发送、数据库、定时任务、脚本运行、积分、管理员身份列表等能力。
+- 定时任务：可伪造用户消息触发插件指令，支持手动任务、插件声明任务、多行 cron 表达式。
+- Open API：可在后台创建 HTTP 接口，用 Node.js/Python 脚本处理外部请求。
+- 数据管理：插件可创建私有数据表，并在后台配置可视化展示。
+- 账号青龙封装：SDK 内置账号登录、授权、查询、运行、CK 检测、过期提醒等通用封装。
 
-## 快速开始
+## 技术栈
 
-### 1. 一键安装
+- 后端：Go，SQLite（`modernc.org/sqlite`）
+- 前端：Vue 3、Vite、Element Plus、Pinia
+- 插件运行时：Node.js、Python
+- 数据库：`config.db`，首次启动自动创建
+- 管理后台静态文件：`web/`，由 `web-ui/` 构建生成并被 Go 程序嵌入
 
-#### Windows
+## 快速启动
+
+### 1. 准备环境
+
+- Go：版本以 `go.mod` 为准
+- Node.js：用于运行 Node.js 插件和构建前端
+- Python：用于运行 Python 插件
+
+### 2. 构建管理后台
+
+如果改动了 `web-ui/`，需要先构建前端：
+
+```powershell
+npm --prefix web-ui install
+npm --prefix web-ui run build
+```
+
+构建产物会输出到 `web/`。
+
+### 3. 构建后端
+
+Windows：
+
+```powershell
+go test ./...
+go build -o allbot.exe .
+```
+
+Linux：
+
 ```bash
-# 以管理员身份运行
-install.bat
+go test ./...
+go build -o allbot .
 ```
 
-#### Linux/Mac
-```bash
-chmod +x install.sh
-./install.sh
+### 4. 启动
+
+Windows：
+
+```powershell
+.\allbot.exe --plugins=.\plugins
 ```
 
-安装脚本会自动：
-- 检查并安装 Python 3.11
-- 检查并安装 Node.js 20
-- 创建 Python 虚拟环境
-- 安装基础依赖
-- 创建配置文件
-
-### 2. 启动框架
+Linux：
 
 ```bash
-# 启动 AllBot
-go run main.go
-
-# 或编译后运行
-go build -o allbot
-./allbot
+./allbot --plugins=./plugins
 ```
 
-启动后访问：
-- **Web UI**：http://localhost:3000
-- **管理员账号**：默认用户名为 `admin`，首次启动会在控制台输出随机密码
+默认 Web 端口是 `3000`。启动后访问：
 
-**Web UI 功能**：
-- 📊 仪表盘 - 系统状态、统计图表、快速操作
-- 🔌 插件管理 - 查看、启动、停止、删除插件
-- 🌐 平台配置 - 动态配置 QQ/Telegram/微信适配器（无需重启）
-- 📝 日志查看 - 实时日志流
-- ⚙️ 系统设置 - 管理员配置、Web UI 设置
-
-### 3. 创建插件
-
-#### Python 插件示例
-
-```
-my-plugin/
-  ├─ plugin.json
-  └─ main.py
+```text
+http://localhost:3000
 ```
 
-**plugin.json**
-```json
-{
-  "name": "我的插件",
-  "version": "1.0.0",
-  "runtime": "python",
-  "entry": "main.py",
-  "platforms": ["qq", "wechat", "telegram"],
-  "trigger": "你好.*",
-  "dependencies": {
-    "requests": "2.31.0"
-  }
-}
+首次启动会自动生成后台管理员密码，并输出到控制台。默认管理员账号为 `admin`。
+
+如需修改端口，可设置环境变量 `ALLBOT_WEB_PORT`：
+
+```powershell
+$env:ALLBOT_WEB_PORT = "3001"
+.\allbot.exe
 ```
 
-**main.py**
-```python
-async def handle(ctx):
-    if ctx.content == "你好":
-        await ctx.reply("你好！我是机器人")
-    elif ctx.content.startswith("你好 "):
-        name = ctx.content[3:]
-        await ctx.reply(f"你好，{name}！")
+## 命令参数与运行文件
+
+### 命令参数
+
+```text
+--plugins=./plugins    插件目录，默认 ./plugins
 ```
 
-**依赖自动安装**：
-- 插件加载时，框架自动安装 `dependencies` 中声明的包
-- 所有插件共享全局依赖，无需重复安装
-- Python 依赖安装到 `runtime/.venv`
-- Node.js 依赖安装到 `runtime/node_modules`
+### 运行期文件
 
-## 项目结构
-
-```
-allbot/
-├─ core/                    # Go 核心框架
-│   ├─ router/              # 消息路由器 ✅
-│   ├─ plugin/              # 插件管理器 ✅
-│   ├─ adapter/             # 平台适配器 ✅
-│   ├─ session/             # 会话管理器 ✅
-│   ├─ deps/                # 依赖管理器 ✅
-│   ├─ web/                 # Web UI 服务 ✅
-│   ├─ grpc/                # HTTP 通信客户端 ✅
-│   ├─ crypto/              # 加密和授权 ✅
-│   ├─ vfs/                 # 虚拟文件系统 ✅
-│   └─ types/               # 数据类型 ✅
-├─ sdk/
-│   ├─ python/              # Python SDK ✅
-│   └─ nodejs/              # Node.js SDK ✅
-├─ proto/                   # gRPC 协议定义 ✅
-├─ web/                     # Web UI 前端 ✅
-│   └─ index.html           # 管理界面
-├─ examples/weather/        # 示例插件 ✅
-├─ runtime/                 # 运行时环境
-│   ├─ .venv/               # Python 虚拟环境
-│   ├─ node_modules/        # Node.js 全局依赖
-│   ├─ python_deps.json     # Python 依赖清单
-│   └─ package.json         # Node.js 依赖清单
-├─ plugins/                 # 插件目录
-├─ install.bat              # Windows 安装脚本 ✅
-├─ install.sh               # Linux/Mac 安装脚本 ✅
-├─ main.go                  # 主程序 ✅
-├─ config.yml               # 配置文件
-├─ project.md               # 设计文档 ✅
-└─ README.md                # 使用文档 ✅
+```text
+config.db      SQLite 配置数据库
+runtime/       插件运行时依赖目录
+plugins/       插件目录
+openapis/      Open API 脚本与配置目录
+logs/          日志目录
+web/           管理后台构建产物
 ```
 
-## Phase 1 + Phase 2 + Phase 3 完成状态
+## 管理后台
 
-✅ **已完成**：
-- Go 核心框架（消息路由、会话管理、插件管理）
-- HTTP 通信协议（核心框架 ↔ 插件）
-- Python SDK（Context API + HTTP 服务器）
-- Node.js SDK（Context API）
-- QQ 平台适配器（基于 NapCat OneBot 正向 WebSocket）
-- **Telegram 平台适配器**（Bot API 长轮询）✨
-- 示例插件（天气插件、翻译插件）
-- **全局依赖管理系统**（Python + Node.js）
-- **自动化安装脚本**（Windows + Linux/Mac）
-- **动态配置系统**（数据库存储 + 热重载）✨
-- **Vue 3 + Element Plus 管理后台**（现代化 UI）✨
-- **插件加密系统**（AES-256 + RSA 签名）
-- **虚拟文件系统**（内存文件系统）
-- **授权验证系统**（设备绑定 + License 管理）
-- **市场服务器模板**（FastAPI + PostgreSQL）
-- **CLI 工具**（插件创建、发布、安装）
-- **Docker 一键部署**
+管理后台登录后可使用以下页面：
 
-🎉 **项目已基本完成！**
+- 仪表盘：系统状态、消息统计、运行信息。
+- 插件管理：查看、启用、禁用、重载、删除插件，编辑插件配置与代码。
+- 平台配置：添加和维护机器人实例，按平台 schema 动态展示配置项。
+- 开放接口：创建 HTTP API，使用 Node.js/Python 脚本处理外部请求。
+- SDK 管理：查看 SDK 文件和开发参考。
+- 数据管理：查看插件数据表、编辑数据视图、导入导出数据。
+- 依赖管理：维护 Node.js/Python 运行时依赖。
+- 定时任务：创建或编辑伪造消息任务，插件声明的任务也会显示在这里。
+- 脚本任务：查看插件提交的脚本运行记录和输出。
+- 关键字回复：维护内置或自定义关键字回复。
+- 日志查看：查看系统运行日志。
+- 权限控制：维护系统级或插件级访问控制。
+- 系统设置：后台账号、平台管理员、插件目录、积分单位等设置。
+
+## 平台机器人
+
+AllBot 使用适配器注册表提供平台能力和配置 schema。当前内置平台包括：
+
+| 平台标识 | 名称 | 主要配置 | 说明 |
+| --- | --- | --- | --- |
+| `qq` | QQ | `server_url`、`access_token` | 基于 NapCat/OneBot HTTP API |
+| `telegram` | Telegram | `bot_token`、`proxy_url` | 基于 Telegram Bot API |
+| `qq_office` | QQ 官方机器人 | `app_id`、`client_secret`、`api_base_url`、`token_url` | 腾讯 QQ 官方机器人接口 |
+
+配置入口：后台 `平台配置` 页面。
+
+同一平台可以添加多个机器人实例。插件可以通过 `allowed_adapter_ids` 限定允许触发的机器人实例；定时任务也可以指定某个机器人实例执行。
 
 ## 插件开发
 
-### Context API
+### 插件目录结构
 
-```python
-# 消息信息
-ctx.platform        # 'qq' | 'wechat' | 'telegram'
-ctx.user_id         # 发送者 ID
-ctx.group_id        # 群组 ID（私聊为空）
-ctx.content         # 消息内容
+一个 Direct 插件通常包含：
 
-# 发送消息
-await ctx.reply("文本")
-await ctx.send_image("https://example.com/image.png")
-
-# 连续对话
-city = await ctx.listen(60)  # 等待 60 秒
-
-# 数据存储
-await ctx.storage.set("key", "value")
-value = await ctx.storage.get("key")
-
-# HTTP 请求
-response = await ctx.http.get("https://api.example.com")
+```text
+plugins/demo/
+  plugin.json
+  main.js 或 main.py
 ```
 
-### 多轮对话示例
-
-```python
-async def handle(ctx):
-    if ctx.content == "注册":
-        await ctx.reply("请输入用户名：")
-        username = await ctx.listen(60)
-
-        if not username:
-            await ctx.reply("超时")
-            return
-
-        await ctx.reply("请输入密码：")
-        password = await ctx.listen(60)
-
-        if not password:
-            await ctx.reply("超时")
-            return
-
-        await ctx.reply("注册成功！")
-```
-
-### 依赖管理
-
-插件在 `plugin.json` 中声明依赖，框架自动安装：
+### plugin.json 示例
 
 ```json
 {
-  "dependencies": {
-    "requests": "2.31.0",
-    "beautifulsoup4": "4.12.0"
+  "name": "示例插件",
+  "version": "1.0.0",
+  "runtime": "nodejs",
+  "entry": "main.js",
+  "platforms": ["qq", "telegram", "qq_office"],
+  "allowed_adapter_ids": [],
+  "priority": 0,
+  "trigger": "^你好$",
+  "enabled": true,
+  "dependencies": {},
+  "user_config_schema": [],
+  "user_config": {},
+  "access_control": {
+    "inherit_system": true,
+    "whitelist_groups": [],
+    "blocked_groups": [],
+    "whitelist_user_ids": [],
+    "blocked_user_ids": []
   }
 }
 ```
 
-**优势**：
-- 所有插件共享依赖，节省磁盘空间
-- 自动安装，无需手动操作
-- 版本统一管理，避免冲突
+常用字段说明：
 
-## Web UI 管理界面
+| 字段 | 说明 |
+| --- | --- |
+| `name` | 插件名称 |
+| `version` | 插件版本 |
+| `runtime` | `nodejs` 或 `python` |
+| `entry` | 插件入口文件 |
+| `platforms` | 允许触发的平台列表 |
+| `allowed_adapter_ids` | 允许触发的机器人实例 ID 列表，空数组表示不限制 |
+| `priority` | 优先级，匹配多个插件时数字越大越优先 |
+| `trigger` | 正则触发表达式 |
+| `enabled` | 是否启用 |
+| `dependencies` | 插件依赖，由依赖管理器安装到运行时目录 |
+| `user_config_schema` | 后台配置表单 schema |
+| `user_config` | 用户配置值 |
+| `access_control` | 插件访问控制 |
 
-访问 http://localhost:3000 进入管理界面：
+### Node.js 插件示例
 
-- **登录**：使用管理员账号登录
-- **插件管理**：查看、启用、禁用插件
-- **系统状态**：查看运行状态和统计信息
-- **日志查看**：实时查看系统日志（开发中）
+```js
+const { runDirect } = require('./allbot_direct')
 
-**API 端点**：
-- `POST /api/login` - 登录
-- `GET /api/plugins` - 插件列表
-- `GET /api/system/status` - 系统状态
-
-## 配置平台适配器
-
-### 通过 Web UI 配置（推荐）✨
-
-AllBot 支持动态配置，无需重启即可修改平台设置！
-
-1. 访问 http://localhost:3000 并登录
-2. 切换到"平台配置"标签
-3. 点击"添加平台"或编辑现有配置
-4. 填写配置信息并启用
-5. 点击"保存" - **配置立即生效！**
-
-**支持的平台**：
-- **QQ**：基于 NapCat OneBot 正向 WebSocket
-- **微信**：企业微信/公众号（开发中）
-- **Telegram**：Bot API（开发中）
-
-详细配置说明请查看 [快速使用指南](QUICKSTART.md)
-
-### 命令行参数
-
-```bash
---plugins=./plugins          # 插件目录（默认：./plugins）
+runDirect(async (ctx) => {
+  await ctx.reply(`你好，${ctx.userId}`)
+})
 ```
 
-### 配置数据库
+如果 SDK 文件不在插件目录中，可从 `sdk/nodejs/allbot_direct.js` 复制或按项目插件模板引用。
 
-平台配置存储在 `config.db` SQLite 数据库中，支持：
-- 多平台配置管理
-- 启用/禁用控制
-- 热重载（无需重启）
-- 配置历史记录
+### Python 插件示例
 
-## 架构设计
+```python
+from allbot_direct import run_direct
 
-详见 [project.md](project.md)
+async def handle(ctx):
+    await ctx.reply(f"你好，{ctx.user_id}")
 
-## 开发路线图
+run_direct(handle)
+```
 
-- [x] Phase 1（3个月）- 核心框架
-- [x] Phase 2（2个月）- 依赖管理 + 自动化安装 + Web UI + 加密系统
-- [ ] Phase 3（2个月）- 市场系统
-- [ ] Phase 4（持续）- 生态建设
+如果 SDK 文件不在插件目录中，可从 `sdk/python/allbot_direct.py` 复制或按项目插件模板引用。
 
-## 贡献
+## Direct SDK 常用能力
 
-欢迎提交 Issue 和 Pull Request！
+### 消息上下文
 
-## 许可证
+Node.js：
 
-MIT License
+```js
+ctx.pluginId
+ctx.platform
+ctx.adapterId
+ctx.userId
+ctx.groupId
+ctx.content
+ctx.metadata
+ctx.userConfig
+ctx.isAdmin()
+```
+
+Python：
+
+```python
+ctx.plugin_id
+ctx.platform
+ctx.adapter_id
+ctx.user_id
+ctx.group_id
+ctx.content
+ctx.metadata
+ctx.user_config
+ctx.is_admin()
+```
+
+### 回复与发送消息
+
+Node.js：
+
+```js
+await ctx.reply('文本')
+await ctx.sendMessage({ platform: 'qq', userId: '10001', text: '主动消息' })
+await ctx.sendImage('https://example.com/a.png')
+await ctx.sendFile('/path/to/file')
+```
+
+Python：
+
+```python
+await ctx.reply('文本')
+await ctx.send_message(platform='qq', user_id='10001', text='主动消息')
+await ctx.send_image('https://example.com/a.png')
+await ctx.send_file('/path/to/file')
+```
+
+### 连续对话
+
+```js
+await ctx.reply('请输入内容：')
+const text = await ctx.listen(60)
+```
+
+```python
+await ctx.reply('请输入内容：')
+text = await ctx.listen(60)
+```
+
+### 插件数据库
+
+Node.js：
+
+```js
+await ctx.db.createTable('items', [{ name: 'name', type: 'TEXT' }])
+const id = await ctx.db.insert('items', { name: 'demo' })
+const rows = await ctx.db.query('items', { page: 1, size: 20 })
+```
+
+Python：
+
+```python
+await ctx.db.create_table('items', [{'name': 'name', 'type': 'TEXT'}])
+id = await ctx.db.insert('items', {'name': 'demo'})
+rows = await ctx.db.query('items', page=1, size=20)
+```
+
+### 定时任务
+
+Node.js：
+
+```js
+await ctx.setScheduledTask({
+  taskKey: 'daily-run',
+  name: '每日运行',
+  cron: '0 8 * * *',
+  platform: ctx.platform,
+  adapterId: ctx.adapterId,
+  userId: ctx.userId,
+  content: '你好'
+})
+```
+
+Python：
+
+```python
+await ctx.set_scheduled_task(
+    task_key='daily-run',
+    name='每日运行',
+    cron='0 8 * * *',
+    platform=ctx.platform,
+    adapter_id=ctx.adapter_id,
+    user_id=ctx.user_id,
+    content='你好',
+)
+```
+
+说明：
+
+- `task_key` / `taskKey` 用于区分同一插件声明的任务。
+- 插件声明任务时，如果同一 `plugin_id + task_key` 已存在，后端会返回已有任务，不覆盖后台手动修改过的配置。
+- `@once` 表示只允许手动执行，不参与自动 cron 调度。
+- 支持 5 位或 6 位 cron，支持多行表达式。
+
+### 获取平台管理员身份
+
+基础 SDK 不会自动把任务身份改成管理员。插件如需管理员身份，应显式调用：
+
+Node.js：
+
+```js
+const admins = await ctx.listPlatformAdmins()
+```
+
+Python：
+
+```python
+admins = await ctx.list_platform_admins()
+```
+
+返回项包含：
+
+```json
+{
+  "platform": "qq",
+  "adapter_id": "1",
+  "user_id": "10001"
+}
+```
+
+只会返回当前已启动平台上的管理员身份。
+
+### 脚本运行
+
+Node.js：
+
+```js
+await ctx.runScript({ runtime: 'nodejs', script: 'scripts/job.js', timeout: 300, wait: true })
+await ctx.runQLScript({ runtime: 'nodejs', script: 'scripts/ql.js', envName: 'JD_COOKIE', accounts: [] })
+```
+
+Python：
+
+```python
+await ctx.run_script(runtime='python', script='scripts/job.py', timeout=300, wait=True)
+await ctx.run_ql_script(runtime='python', script='scripts/ql.py', env_name='JD_COOKIE', accounts=[])
+```
+
+## 账号青龙插件封装
+
+`sdk/nodejs/account_ql_plugin.js` 与 `sdk/python/account_ql_plugin.py` 提供了面向账号类青龙插件的封装，适合需要登录账号、授权、运行脚本、查询状态、CK 检测、过期提醒的插件。
+
+内置命令包括：
+
+```text
+前缀登录
+前缀账号 / 前缀管理
+前缀查询
+前缀运行
+前缀一键运行 / 前缀签到
+前缀授权
+前缀删除
+前缀CK检测
+前缀过期检测
+```
+
+封装会使用插件私有表保存账号，并支持积分授权。声明定时任务时会显式获取已启动平台上的管理员身份，不会依赖最后一个插件使用者。
+
+## 定时任务
+
+后台 `定时任务` 页面可维护以下字段：
+
+- 任务名称、任务 Key、备注
+- 是否启用、是否置顶
+- cron 表达式
+- 平台与机器人实例
+- 伪造用户 ID、群 ID
+- 消息内容
+
+执行时，系统会构造一条 fake message 投递给正常路由流程，因此会继续走插件匹配、权限控制和指令逻辑。
+
+插件声明任务的来源为 `plugin`；后台手动创建的任务来源为 `user`。插件任务可以在后台编辑，之后不会被同一 `task_key` 的再次声明覆盖。
+
+## Open API
+
+Open API 用于把插件能力暴露为 HTTP 接口。后台可创建接口并配置：
+
+- 接口 ID、名称、路径、方法
+- 是否启用
+- Token
+- 运行时：`nodejs` 或 `python`
+- 入口脚本和代码
+
+Token 可从以下位置传入：
+
+- Query 参数：`token`
+- Header：`X-Open-Token`
+- Header：`Authorization: Bearer <token>`
+- JSON body：`token`
+- Form body：`token`
+
+接口脚本可使用 Open API 形式的 SDK 上下文处理请求并返回响应。
+
+## 数据管理
+
+插件可以通过 SDK 创建私有表，实际表名会自动加上插件前缀。后台 `数据管理` 页面可查看数据表、搜索、分页、导入导出，并可通过 `setDataView` / `set_data_view` 为表配置展示名称、分组、说明和列信息。
+
+## 关键字回复与内置指令
+
+系统内置部分关键字回复，包括：
+
+```text
+myid
+注册
+积分充值
+绑定码
+绑定
+groupId
+system
+version
+重启
+```
+
+其中部分指令需要平台管理员身份。平台管理员可在后台 `系统设置` 中维护。
+
+## 依赖管理
+
+插件可在 `plugin.json` 的 `dependencies` 中声明运行依赖。框架会使用运行时目录统一管理依赖，避免每个插件重复维护环境。
+
+- Node.js 依赖：运行在 `runtime/` 下的 Node 环境
+- Python 依赖：运行在 `runtime/` 下的 Python 环境
+
+后台 `依赖管理` 页面可查看和操作依赖安装状态。
+
+## 前端开发
+
+开发管理后台：
+
+```powershell
+npm --prefix web-ui install
+npm --prefix web-ui run dev
+```
+
+Vite 开发服务默认端口为 `5173`，`/api` 会代理到后端，默认目标为 `http://localhost:3000`。
+
+构建管理后台：
+
+```powershell
+npm --prefix web-ui run build
+```
+
+## 后端开发
+
+运行测试：
+
+```powershell
+go test ./...
+```
+
+构建 Windows 可执行文件：
+
+```powershell
+go build -o allbot.exe .
+```
+
+发布流程会在打 tag 后通过 GitHub Actions 构建：
+
+- Windows amd64
+- Linux amd64
+- Linux arm64
+
+## 项目结构
+
+```text
+allbot/
+  main.go                  程序入口
+  go.mod                   Go 模块定义
+  core/                    后端核心模块
+    adapter/               平台适配器与注册表
+    config/                SQLite 数据库、系统设置、插件数据、定时任务
+    deps/                  运行时依赖管理
+    plugin/                插件加载、执行、脚本任务
+    router/                消息路由、关键词回复、定时任务调度
+    session/               listen 会话管理
+    types/                 核心数据结构
+    web/                   Web API 与静态资源服务
+  sdk/
+    nodejs/                Node.js Direct SDK 与账号青龙封装
+    python/                Python Direct SDK 与账号青龙封装
+  web-ui/                  Vue 管理后台源码
+  web/                     管理后台构建产物
+  plugins/                 插件目录
+  openapis/                Open API 配置与脚本
+  runtime/                 运行时依赖目录
+  logs/                    日志目录
+  sqls/                    数据库变更 SQL
+```
+
+## 常见问题
+
+### 登录密码在哪里？
+
+首次启动时会在控制台输出自动生成的管理员密码。登录后可在后台修改密码。
+
+### 为什么修改了前端但页面没有变化？
+
+需要重新构建 `web-ui`：
+
+```powershell
+npm --prefix web-ui run build
+```
+
+然后重启后端，或确认当前运行的二进制包含最新 `web/` 静态资源。
+
+### 插件声明的定时任务为什么没有覆盖后台修改？
+
+这是预期行为。同一插件的同一 `task_key` 已存在时，后端会直接返回已有任务，避免插件重载或再次触发时覆盖用户在后台手动调整过的配置。
+
+### 定时任务为什么执行失败？
+
+检查以下内容：
+
+- cron 表达式是否合法。
+- 平台是否有已启用并正在运行的机器人实例。
+- `adapter_id` 是否属于所选平台。
+- `user_id` 是否填写。
+- 消息内容是否能匹配目标插件触发规则。
+- 目标插件的访问控制是否允许该 fake message。
+
+### 如何让账号类插件自动声明管理员定时任务？
+
+使用 `account_ql_plugin` 封装。该封装会显式调用 `listPlatformAdmins` / `list_platform_admins` 获取已启动平台上的管理员身份，再声明定时任务。基础 `setScheduledTask` 不会自动改写身份。

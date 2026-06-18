@@ -26,17 +26,19 @@ const openAPIStorageDir = "openapis"
 const openAPIConfigFile = "config.json"
 
 type openAPIAdminRequest struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	Path        string  `json:"path"`
-	Method      string  `json:"method"`
-	Enabled     bool    `json:"enabled"`
-	Token       string  `json:"token"`
-	Runtime     string  `json:"runtime"`
-	Entry       string  `json:"entry"`
-	Description string  `json:"description"`
-	Script      *string `json:"script"`
-	Code        *string `json:"code"`
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	Path           string  `json:"path"`
+	Method         string  `json:"method"`
+	Enabled        bool    `json:"enabled"`
+	Token          string  `json:"token"`
+	Runtime        string  `json:"runtime"`
+	RuntimeProfile string  `json:"runtime_profile"`
+	Entry          string  `json:"entry"`
+	Description    string  `json:"description"`
+	Builtin        string  `json:"builtin"`
+	Script         *string `json:"script"`
+	Code           *string `json:"code"`
 }
 
 func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
@@ -73,6 +75,10 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requestData = sanitizeOpenAPIRequest(requestData, tokenSources)
+	if endpoint.Builtin != "" {
+		s.handleBuiltinOpenAPI(w, r, endpoint, requestData, startedAt)
+		return
+	}
 	log.Printf("[INFO] OpenAPI 调用开始 endpoint=%s method=%s path=%s client=%s body=%dB", endpoint.ID, requestData.Method, requestData.RawPath, requestData.ClientIP, len(body))
 	response, err := s.pluginManager.ExecuteOpenAPI(*endpoint, openAPIEndpointDir(endpoint.ID), requestData, s.openAPIDBExecutor(), s.openAPISendMessageExecutor())
 	if err != nil {
@@ -194,6 +200,10 @@ func (s *Server) handleOpenAPICode(w http.ResponseWriter, r *http.Request, id st
 		s.jsonError(w, "读取 Open API 失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if endpoint.Builtin != "" {
+		s.jsonError(w, "内置 Open API 没有可编辑脚本", http.StatusBadRequest)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		code, err := readOpenAPIScript(endpoint)
@@ -201,26 +211,46 @@ func (s *Server) handleOpenAPICode(w http.ResponseWriter, r *http.Request, id st
 			s.jsonError(w, "读取 Open API 代码失败: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		s.jsonResponse(w, map[string]interface{}{"id": endpoint.ID, "runtime": endpoint.Runtime, "entry": endpoint.Entry, "file": endpoint.Entry, "code": code, "content": code})
+		s.jsonResponse(w, map[string]interface{}{"id": endpoint.ID, "runtime": endpoint.Runtime, "runtime_profile": endpoint.RuntimeProfile, "entry": endpoint.Entry, "file": endpoint.Entry, "code": code, "content": code})
 	case http.MethodPut:
-		var req struct {
-			Code    string `json:"code"`
-			Content string `json:"content"`
-			Runtime string `json:"runtime"`
-			File    string `json:"file"`
-			Entry   string `json:"entry"`
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			s.jsonError(w, "读取请求失败", http.StatusBadRequest)
+			return
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var req struct {
+			Code           string `json:"code"`
+			Content        string `json:"content"`
+			Runtime        string `json:"runtime"`
+			RuntimeProfile string `json:"runtime_profile"`
+			File           string `json:"file"`
+			Entry          string `json:"entry"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
 			s.jsonError(w, "请求数据无效", http.StatusBadRequest)
 			return
 		}
+		fields := map[string]bool{}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(body, &raw); err == nil {
+			for key := range raw {
+				fields[key] = true
+			}
+		}
 		if strings.TrimSpace(req.Runtime) != "" {
 			endpoint.Runtime = req.Runtime
+		}
+		if fields["runtime_profile"] {
+			endpoint.RuntimeProfile = req.RuntimeProfile
 		}
 		if strings.TrimSpace(req.Entry) != "" {
 			endpoint.Entry = req.Entry
 		} else if strings.TrimSpace(req.File) != "" {
 			endpoint.Entry = req.File
+		}
+		if err := s.validateOpenAPIRuntimeProfile(endpoint); err != nil {
+			s.jsonError(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 		code := req.Code
 		if code == "" && req.Content != "" {
@@ -231,7 +261,7 @@ func (s *Server) handleOpenAPICode(w http.ResponseWriter, r *http.Request, id st
 			s.jsonError(w, "保存 Open API 代码失败: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		s.jsonResponse(w, map[string]interface{}{"id": saved.ID, "runtime": saved.Runtime, "entry": saved.Entry, "file": saved.Entry, "code": code, "content": code})
+		s.jsonResponse(w, map[string]interface{}{"id": saved.ID, "runtime": saved.Runtime, "runtime_profile": saved.RuntimeProfile, "entry": saved.Entry, "file": saved.Entry, "code": code, "content": code})
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -283,6 +313,10 @@ func (s *Server) saveOpenAPIFromRequest(w http.ResponseWriter, r *http.Request, 
 		s.jsonError(w, "Open API token 不能为空", http.StatusBadRequest)
 		return
 	}
+	if err := s.validateOpenAPIRuntimeProfile(&endpoint); err != nil {
+		s.jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	script := openAPIRequestScript(req, fields)
 	saved, err := saveOpenAPIEndpoint(endpoint, script)
@@ -315,11 +349,17 @@ func applyOpenAPIRequestFields(endpoint *types.OpenAPIEndpoint, req openAPIAdmin
 	if fields["runtime"] {
 		endpoint.Runtime = req.Runtime
 	}
+	if fields["runtime_profile"] {
+		endpoint.RuntimeProfile = req.RuntimeProfile
+	}
 	if fields["entry"] {
 		endpoint.Entry = req.Entry
 	}
 	if fields["description"] {
 		endpoint.Description = req.Description
+	}
+	if fields["builtin"] {
+		endpoint.Builtin = req.Builtin
 	}
 }
 
@@ -349,6 +389,18 @@ func (s *Server) matchOpenAPIEndpoint(openPath, method string) (*types.OpenAPIEn
 		}
 	}
 	return nil, nil
+}
+
+func (s *Server) handleBuiltinOpenAPI(w http.ResponseWriter, r *http.Request, endpoint *types.OpenAPIEndpoint, requestData types.OpenAPIRequest, startedAt time.Time) {
+	log.Printf("[INFO] OpenAPI 内置接口调用开始 endpoint=%s builtin=%s method=%s path=%s client=%s", endpoint.ID, endpoint.Builtin, requestData.Method, requestData.RawPath, requestData.ClientIP)
+	switch endpoint.Builtin {
+	case "qrcode":
+		s.handleOpenAPIQRCode(w, r)
+		logOpenAPICall("INFO", endpoint.ID, requestData.Method, requestData.RawPath, requestData.ClientIP, http.StatusOK, startedAt, "内置接口调用完成")
+	default:
+		logOpenAPICall("ERROR", endpoint.ID, requestData.Method, requestData.RawPath, requestData.ClientIP, http.StatusInternalServerError, startedAt, "内置接口不存在")
+		s.jsonError(w, "内置 Open API 不存在", http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) openAPIDBExecutor() func(string, plugincore.PluginDBAction) plugincore.PluginDBResult {
@@ -437,7 +489,7 @@ func saveOpenAPIEndpoint(endpoint types.OpenAPIEndpoint, script *string) (*types
 	if err := os.MkdirAll(endpointDir, 0755); err != nil {
 		return nil, err
 	}
-	if script == nil {
+	if endpoint.Builtin == "" && script == nil {
 		entryPath, err := safeOpenAPIFilePath(endpointDir, endpoint.Entry)
 		if err != nil {
 			return nil, err
@@ -449,7 +501,7 @@ func saveOpenAPIEndpoint(endpoint types.OpenAPIEndpoint, script *string) (*types
 			return nil, statErr
 		}
 	}
-	if script != nil {
+	if endpoint.Builtin == "" && script != nil {
 		entryPath, err := safeOpenAPIFilePath(endpointDir, endpoint.Entry)
 		if err != nil {
 			return nil, err
@@ -513,17 +565,52 @@ func readOpenAPIScript(endpoint *types.OpenAPIEndpoint) (string, error) {
 
 func openAPIAdminResponse(endpoint *types.OpenAPIEndpoint, script string) map[string]interface{} {
 	return map[string]interface{}{
-		"id":          endpoint.ID,
-		"name":        endpoint.Name,
-		"path":        endpoint.Path,
-		"method":      endpoint.Method,
-		"enabled":     endpoint.Enabled,
-		"has_token":   strings.TrimSpace(endpoint.Token) != "",
-		"runtime":     endpoint.Runtime,
-		"entry":       endpoint.Entry,
-		"description": endpoint.Description,
-		"script":      script,
+		"id":              endpoint.ID,
+		"name":            endpoint.Name,
+		"path":            endpoint.Path,
+		"method":          endpoint.Method,
+		"enabled":         endpoint.Enabled,
+		"has_token":       strings.TrimSpace(endpoint.Token) != "",
+		"runtime":         endpoint.Runtime,
+		"runtime_profile": endpoint.RuntimeProfile,
+		"entry":           endpoint.Entry,
+		"description":     endpoint.Description,
+		"builtin":         endpoint.Builtin,
+		"script":          script,
 	}
+}
+
+func (s *Server) validateOpenAPIRuntimeProfile(endpoint *types.OpenAPIEndpoint) error {
+	if endpoint == nil {
+		return fmt.Errorf("Open API 配置不能为空")
+	}
+	originalRuntime := strings.ToLower(strings.TrimSpace(endpoint.Runtime))
+	originalBuiltin := strings.TrimSpace(endpoint.Builtin)
+	originalProfile := strings.TrimSpace(endpoint.RuntimeProfile)
+	if originalProfile != "" && (originalBuiltin != "" || originalRuntime == "builtin") {
+		return fmt.Errorf("内置 Open API 不允许配置运行环境 Profile")
+	}
+	copyEndpoint := *endpoint
+	if err := normalizeOpenAPIEndpoint(&copyEndpoint); err != nil {
+		return err
+	}
+	endpoint.Runtime = copyEndpoint.Runtime
+	endpoint.RuntimeProfile = copyEndpoint.RuntimeProfile
+	if copyEndpoint.Runtime == "builtin" || copyEndpoint.Builtin != "" {
+		endpoint.RuntimeProfile = ""
+		return nil
+	}
+	if copyEndpoint.RuntimeProfile == "" {
+		return nil
+	}
+	manager := s.runtimeDepsManager()
+	if manager == nil {
+		return fmt.Errorf("依赖管理器不可用，无法校验运行环境 Profile")
+	}
+	if _, err := manager.ResolveRuntime(copyEndpoint.Runtime, copyEndpoint.RuntimeProfile); err != nil {
+		return fmt.Errorf("运行环境 Profile 无效: %w", err)
+	}
+	return nil
 }
 
 func normalizeOpenAPIEndpoint(endpoint *types.OpenAPIEndpoint) error {
@@ -544,6 +631,10 @@ func normalizeOpenAPIEndpoint(endpoint *types.OpenAPIEndpoint) error {
 		endpoint.Path = endpoint.ID
 	}
 	endpoint.Description = strings.TrimSpace(endpoint.Description)
+	endpoint.Builtin = strings.ToLower(strings.TrimSpace(endpoint.Builtin))
+	if endpoint.Builtin != "" && endpoint.Builtin != "qrcode" {
+		return fmt.Errorf("不支持的内置 Open API: %s", endpoint.Builtin)
+	}
 	endpoint.Method = strings.ToUpper(strings.TrimSpace(endpoint.Method))
 	if endpoint.Method == "" {
 		endpoint.Method = http.MethodPost
@@ -553,8 +644,21 @@ func normalizeOpenAPIEndpoint(endpoint *types.OpenAPIEndpoint) error {
 	}
 	endpoint.Token = strings.TrimSpace(endpoint.Token)
 	endpoint.Runtime = strings.ToLower(strings.TrimSpace(endpoint.Runtime))
+	if endpoint.Runtime == "node" {
+		endpoint.Runtime = "nodejs"
+	}
+	if endpoint.Runtime == "py" || endpoint.Runtime == "python3" {
+		endpoint.Runtime = "python"
+	}
+	endpoint.RuntimeProfile = strings.TrimSpace(endpoint.RuntimeProfile)
 	if endpoint.Runtime == "" {
 		endpoint.Runtime = "nodejs"
+	}
+	if endpoint.Builtin != "" {
+		endpoint.Runtime = "builtin"
+		endpoint.RuntimeProfile = ""
+		endpoint.Entry = ""
+		return nil
 	}
 	if endpoint.Runtime != "nodejs" && endpoint.Runtime != "python" {
 		return fmt.Errorf("不支持的运行时: %s", endpoint.Runtime)

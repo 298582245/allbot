@@ -31,6 +31,15 @@
           <el-option label="当前用户" value="current_user" />
           <el-option label="手动/其他" value="manual" />
         </el-select>
+        <el-select v-model="searchRuntimeProfile" clearable placeholder="运行环境" @change="searchItems">
+          <el-option label="默认" :value="DEFAULT_RUNTIME_PROFILE_FILTER" />
+          <el-option
+            v-for="profile in runtimeProfileOptions"
+            :key="profile.id"
+            :label="runtimeProfileLabel(profile)"
+            :value="profile.id"
+          />
+        </el-select>
         <el-select v-model="searchStatus" clearable placeholder="状态" @change="searchItems">
           <el-option label="运行中" value="running" />
           <el-option label="暂停中" value="pausing" />
@@ -48,6 +57,9 @@
           <el-table-column prop="plugin_id" label="插件" min-width="130" show-overflow-tooltip />
           <el-table-column prop="script_path" label="脚本路径" min-width="240" show-overflow-tooltip />
           <el-table-column prop="run_mode" label="运行模式" min-width="130" show-overflow-tooltip />
+          <el-table-column label="运行环境" min-width="130" show-overflow-tooltip>
+            <template #default="{ row }">{{ displayRuntimeProfile(row.runtime_profile) }}</template>
+          </el-table-column>
           <el-table-column prop="union_id" label="UnionID" min-width="180" show-overflow-tooltip />
           <el-table-column label="状态" width="110">
             <template #default="{ row }">
@@ -91,6 +103,7 @@
           <span>插件：{{ currentLog.plugin_id || '-' }}</span>
           <span>脚本：{{ currentLog.script_path || '-' }}</span>
           <span>模式：{{ currentLog.run_mode || '-' }}</span>
+          <span>运行环境：{{ displayRuntimeProfile(currentLog.runtime_profile) }}</span>
           <span>用户：{{ currentLog.union_id || '-' }}</span>
         </div>
         <div class="log-section">
@@ -129,14 +142,18 @@ const retentionDays = ref(0)
 const searchKeyword = ref('')
 const searchUnionId = ref('')
 const searchRunMode = ref('')
+const searchRuntimeProfile = ref('')
 const searchStatus = ref('')
+const runtimeProfiles = ref([])
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 const pageDescription = '查看插件提交的 Node.js / Python 脚本任务；日志放在弹窗里滚动查看，后台不提供手动启动。'
+const DEFAULT_RUNTIME_PROFILE_FILTER = '__default__'
 let refreshTimer = 0
 
 const logTitle = computed(() => currentLog.value ? `脚本任务日志 #${currentLog.value.id}` : '脚本任务日志')
+const runtimeProfileOptions = computed(() => runtimeProfiles.value.filter(profile => profile && profile.id && profile.enabled !== false))
 
 const showPageDescription = () => {
   ElMessageBox.alert(pageDescription, '脚本任务说明', {
@@ -162,6 +179,7 @@ const loadItems = async () => {
     if (searchKeyword.value.trim()) params.set('keyword', searchKeyword.value.trim())
     if (searchUnionId.value.trim()) params.set('union_id', searchUnionId.value.trim())
     if (searchRunMode.value) params.set('run_mode', searchRunMode.value)
+    if (searchRuntimeProfile.value && searchRuntimeProfile.value !== DEFAULT_RUNTIME_PROFILE_FILTER) params.set('runtime_profile', searchRuntimeProfile.value)
     if (searchStatus.value) params.set('status', searchStatus.value)
     params.set('page', String(page.value))
     params.set('page_size', String(pageSize.value))
@@ -172,6 +190,15 @@ const loadItems = async () => {
     if (!Array.isArray(result) && typeof result.retention_days === 'number') retentionDays.value = result.retention_days
   } finally {
     loading.value = false
+  }
+}
+
+const loadRuntimeProfiles = async () => {
+  try {
+    const data = await request.get('/runtime-profiles')
+    runtimeProfiles.value = Array.isArray(data) ? data : []
+  } catch {
+    runtimeProfiles.value = []
   }
 }
 
@@ -189,6 +216,7 @@ const resetSearch = async () => {
   searchKeyword.value = ''
   searchUnionId.value = ''
   searchRunMode.value = ''
+  searchRuntimeProfile.value = ''
   searchStatus.value = ''
   await searchItems()
 }
@@ -265,6 +293,15 @@ const statusType = (status) => ({
   failed: 'danger'
 }[status] || 'info')
 
+const runtimeProfileLabel = (profile) => `${profile.name || profile.id}${profile.default ? '（默认）' : ''}`
+
+const displayRuntimeProfile = (profileID) => {
+  const id = String(profileID || '').trim()
+  if (!id) return '默认'
+  const profile = runtimeProfiles.value.find(item => item.id === id)
+  return profile ? runtimeProfileLabel(profile) : id
+}
+
 const formatTime = (value) => {
   if (!value) return '-'
   const date = new Date(value)
@@ -285,6 +322,7 @@ const stopTimer = () => {
 }
 
 onMounted(async () => {
+  await loadRuntimeProfiles()
   await loadItems()
   if (autoRefresh.value) startTimer()
 })
@@ -305,7 +343,7 @@ onBeforeUnmount(stopTimer)
 .header-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .header-actions > * { min-width: 0; }
 .retention-label { color: #606266; font-size: 13px; white-space: nowrap; }
-.search-bar { display: grid; grid-template-columns: minmax(220px, 1.4fr) minmax(220px, 1.2fr) 150px 130px auto auto; gap: 10px; align-items: center; flex-shrink: 0; }
+.search-bar { display: grid; grid-template-columns: minmax(220px, 1.4fr) minmax(220px, 1.2fr) 150px 150px 130px auto auto; gap: 10px; align-items: center; flex-shrink: 0; }
 .search-bar > * { min-width: 0; }
 .search-bar :deep(.el-input), .search-bar :deep(.el-select), .search-bar :deep(.el-button) { width: 100%; }
 .table-area { flex: 1; min-height: 0; overflow: hidden; position: relative; }
