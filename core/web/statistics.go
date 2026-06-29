@@ -20,11 +20,13 @@ type statisticsOverview struct {
 }
 
 type statisticsSystemSummary struct {
-	Uptime              string `json:"uptime"`
-	PluginCount         int    `json:"plugin_count"`
-	EnabledPluginCount  int    `json:"enabled_plugin_count"`
-	AdapterCount        int    `json:"adapter_count"`
-	RunningAdapterCount int    `json:"running_adapter_count"`
+	Uptime               string `json:"uptime"`
+	TotalUptimeSeconds   int64  `json:"total_uptime_seconds"`
+	CurrentUptimeSeconds int64  `json:"current_uptime_seconds"`
+	PluginCount          int    `json:"plugin_count"`
+	EnabledPluginCount   int    `json:"enabled_plugin_count"`
+	AdapterCount         int    `json:"adapter_count"`
+	RunningAdapterCount  int    `json:"running_adapter_count"`
 }
 
 type statisticsBackupSummary struct {
@@ -140,7 +142,8 @@ func (s *Server) statisticsSystemSummary() statisticsSystemSummary {
 			adapterCount = runningAdapterCount
 		}
 	}
-	return statisticsSystemSummary{Uptime: formatDuration(time.Since(s.startTime)), PluginCount: pluginCount, EnabledPluginCount: enabledPluginCount, AdapterCount: adapterCount, RunningAdapterCount: runningAdapterCount}
+	totalUptimeSeconds, currentUptimeSeconds := s.runtimeSeconds()
+	return statisticsSystemSummary{Uptime: formatDuration(time.Duration(currentUptimeSeconds) * time.Second), TotalUptimeSeconds: totalUptimeSeconds, CurrentUptimeSeconds: currentUptimeSeconds, PluginCount: pluginCount, EnabledPluginCount: enabledPluginCount, AdapterCount: adapterCount, RunningAdapterCount: runningAdapterCount}
 }
 
 func (s *Server) statisticsBackupSummary(db *config.Database) statisticsBackupSummary {

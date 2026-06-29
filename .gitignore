@@ -12,6 +12,7 @@ config.db
 # 插件与备份运行文件
 plugins/
 backups/
+others/
 
 # 缓存与依赖目录
 .gocache/

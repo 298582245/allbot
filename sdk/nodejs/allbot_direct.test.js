@@ -144,6 +144,33 @@ test('push omitted adapterId does not use context adapterId', async () => {
     assert.equal(calls[0].action.union_id, '');
 });
 
+test('sendMessage same platform inherits context adapterId', async () => {
+    const { ctx, calls } = makeContext({ platform: 'qq_office', adapter_id: '3', user_id: 'admin' });
+    await ctx.sendMessage({ platform: 'qq_office', userId: 'target', text: 'hi' });
+    assert.equal(calls[0].expectedAction, 'send_message_response');
+    assert.equal(calls[0].action.platform, 'qq_office');
+    assert.equal(calls[0].action.adapter_id, '3');
+    assert.equal(calls[0].action.user_id, 'target');
+});
+
+test('sendMessage cross platform does not inherit context adapterId', async () => {
+    const { ctx, calls } = makeContext({ platform: 'qq_office', adapter_id: '3', user_id: 'admin' });
+    await ctx.sendMessage({ platform: 'telegram', unionId: 'U_qq_123', text: 'hi' });
+    assert.equal(calls[0].expectedAction, 'send_message_response');
+    assert.equal(calls[0].action.platform, 'telegram');
+    assert.equal(calls[0].action.adapter_id, '');
+    assert.equal(calls[0].action.union_id, 'U_qq_123');
+});
+
+test('sendMessage explicit adapterId still wins', async () => {
+    const { ctx, calls } = makeContext({ platform: 'qq_office', adapter_id: '3' });
+    await ctx.sendMessage({ platform: 'telegram', adapterId: '8', userId: 'u1', text: 'hi' });
+    assert.equal(calls[0].expectedAction, 'send_message_response');
+    assert.equal(calls[0].action.platform, 'telegram');
+    assert.equal(calls[0].action.adapter_id, '8');
+    assert.equal(calls[0].action.user_id, 'u1');
+});
+
 test('push accepts explicit unionId', async () => {
     const { ctx, calls } = makeContext({ platform: 'telegram' });
     await ctx.push({ unionId: 'U_qq_123', content: 'hi' });

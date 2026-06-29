@@ -17,7 +17,15 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.setItem('username', newUsername)
   }
 
-  const logout = () => {
+  const logout = async ({ callApi = true, redirect = true } = {}) => {
+    if (callApi) {
+      try {
+        await fetch('/api/logout', { method: 'POST' })
+      } catch (error) {
+        console.warn('退出登录接口调用失败', error)
+      }
+    }
+
     token.value = ''
     username.value = ''
     isAuthenticated.value = false
@@ -25,7 +33,9 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('token')
     localStorage.removeItem('username')
 
-    router.push('/login')
+    if (redirect) {
+      router.push('/login')
+    }
   }
 
   return {

@@ -29,9 +29,22 @@
       <div class="plugin-grid" v-if="paginatedPlugins.length > 0">
         <div
           class="plugin-card"
+          :class="{ pinned: plugin.pinned }"
           v-for="plugin in paginatedPlugins"
           :key="plugin.id"
         >
+          <div class="plugin-pin-row">
+            <el-button
+              class="plugin-pin-button"
+              :class="{ pinned: plugin.pinned }"
+              :type="plugin.pinned ? 'warning' : 'info'"
+              size="small"
+              text
+              @click="handlePinned(plugin)"
+            >
+              {{ plugin.pinned ? '取消置顶' : '置顶' }}
+            </el-button>
+          </div>
           <div class="plugin-card-header">
             <span class="plugin-name">{{ plugin.name }}</span>
             <el-tag
@@ -54,7 +67,13 @@
             </div>
             <div class="plugin-info-row">
               <span class="label">指令：</span>
-              <code class="trigger-text">{{ plugin.trigger || '无' }}</code>
+              <el-tooltip
+                :content="plugin.trigger || '无'"
+                placement="top"
+                :disabled="!plugin.trigger"
+              >
+                <code class="trigger-text">{{ plugin.trigger || '无' }}</code>
+              </el-tooltip>
             </div>
             <div class="plugin-info-row">
               <span class="label">优先级：</span>
@@ -64,13 +83,20 @@
               <span class="label">平台：</span>
               <span class="platforms">
                 <el-tag
-                  v-for="platform in plugin.platforms"
+                  v-for="platform in visiblePluginPlatforms(plugin)"
                   :key="platform"
                   size="small"
                   type="info"
                 >
                   {{ getPlatformName(platform) }}
                 </el-tag>
+                <el-tooltip
+                  v-if="hiddenPluginPlatformCount(plugin) > 0"
+                  :content="pluginPlatformTooltip(plugin)"
+                  placement="top"
+                >
+                  <el-tag size="small" type="info">+{{ hiddenPluginPlatformCount(plugin) }}</el-tag>
+                </el-tooltip>
                 <span v-if="!plugin.platforms || plugin.platforms.length === 0" style="color: #999">无</span>
               </span>
             </div>
@@ -164,43 +190,30 @@
             <el-form-item label="入口文件">
               <el-input v-model="currentConfig.entry" />
             </el-form-item>
-            <el-divider content-position="left">OpenAPI 配置</el-divider>
-            <el-form-item label="启用 OpenAPI">
-              <el-switch v-model="currentConfig.open_api.enabled" />
+            <el-form-item label="读取脚本变量">
+              <el-switch v-model="currentConfig.script_env.enabled" active-text="开启" inactive-text="关闭" />
+              <div class="field-tip">开启后，脚本运行时会读取“脚本环境变量”页面中已启用的变量。</div>
             </el-form-item>
-            <el-form-item label="接口路径">
-              <el-input v-model="currentConfig.open_api.path" placeholder="默认使用插件 ID">
-                <template #prepend>/api/open/</template>
-              </el-input>
-            </el-form-item>
-            <el-form-item label="请求方法">
-              <el-select v-model="currentConfig.open_api.method" style="width: 220px">
-                <el-option label="GET" value="GET" />
-                <el-option label="POST" value="POST" />
-                <el-option label="PUT" value="PUT" />
-                <el-option label="PATCH" value="PATCH" />
-                <el-option label="DELETE" value="DELETE" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="接口 Token">
-              <el-input v-model="currentConfig.open_api.token" type="password" show-password placeholder="调用插件 OpenAPI 时使用" />
-            </el-form-item>
-            <el-form-item label="OpenAPI 运行时">
-              <el-select v-model="currentConfig.open_api.runtime" style="width: 220px">
-                <el-option label="Node.js" value="nodejs" />
-                <el-option label="Python" value="python" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="OpenAPI 运行环境">
-              <el-select v-model="currentConfig.open_api.runtime_profile" clearable placeholder="继承插件运行环境" style="width: 100%">
+            <el-form-item label="变量名">
+              <el-select
+                v-model="currentConfig.script_env.names"
+                multiple
+                filterable
+                allow-create
+                clearable
+                collapse-tags
+                :disabled="!currentConfig.script_env.enabled"
+                placeholder="不填则读取全部脚本变量"
+                style="width: 100%"
+              >
                 <el-option
-                  v-for="profile in runtimeProfilesBy(currentConfig.open_api.runtime)"
-                  :key="profile.id"
-                  :label="runtimeProfileLabel(profile)"
-                  :value="profile.id"
+                  v-for="item in scriptEnvOptions"
+                  :key="item.name"
+                  :label="item.name"
+                  :value="item.name"
                 />
               </el-select>
-              <div class="field-tip">不选择时继承插件运行环境；选择后仅影响插件 OpenAPI 调用。</div>
+              <div class="field-tip">可输入多个变量名；为空表示读取全部已启用脚本环境变量。</div>
             </el-form-item>
             <el-form-item label="触发规则">
               <el-input v-model="currentConfig.trigger" placeholder="正则表达式" />
@@ -275,38 +288,43 @@
 
         <el-tab-pane v-if="userConfigFields.length > 0" label="用户配置" name="user">
           <el-form :model="currentConfig.user_config" label-width="120px">
-            <el-form-item
-              v-for="field in userConfigFields"
-              :key="field.key"
-              :label="field.label || field.key"
-              :required="Boolean(field.required)"
-            >
-              <el-switch
-                v-if="field.type === 'boolean' || field.type === 'bool'"
-                v-model="currentConfig.user_config[field.key]"
-              />
-              <el-input-number
-                v-else-if="field.type === 'number'"
-                v-model="currentConfig.user_config[field.key]"
-                :step="1"
-                style="width: 220px"
-              />
-              <el-select
-                v-else-if="field.type === 'select'"
-                v-model="currentConfig.user_config[field.key]"
-                style="width: 220px"
-              >
-                <el-option v-for="option in configSelectOptions(field)" :key="option.value" :label="option.label" :value="option.value" />
-              </el-select>
-              <el-input
+            <template v-for="(field, index) in userConfigFields" :key="field.key || `${field.type}-${index}`">
+              <div v-if="field.type === 'divider'" class="config-divider">
+                <el-divider>{{ field.label || '配置分组' }}</el-divider>
+                <div v-if="field.description" class="field-tip config-divider-tip">{{ field.description }}</div>
+              </div>
+              <el-form-item
                 v-else
-                v-model="currentConfig.user_config[field.key]"
-                :type="field.type === 'textarea' ? 'textarea' : 'text'"
-                :rows="field.type === 'textarea' ? 3 : undefined"
-                :placeholder="field.placeholder || ''"
-              />
-              <div v-if="field.description" class="field-tip">{{ field.description }}</div>
-            </el-form-item>
+                :label="field.label || field.key"
+                :required="Boolean(field.required)"
+              >
+                <el-switch
+                  v-if="field.type === 'boolean' || field.type === 'bool'"
+                  v-model="currentConfig.user_config[field.key]"
+                />
+                <el-input-number
+                  v-else-if="field.type === 'number'"
+                  v-model="currentConfig.user_config[field.key]"
+                  :step="1"
+                  style="width: 220px"
+                />
+                <el-select
+                  v-else-if="field.type === 'select'"
+                  v-model="currentConfig.user_config[field.key]"
+                  style="width: 220px"
+                >
+                  <el-option v-for="option in configSelectOptions(field)" :key="option.value" :label="option.label" :value="option.value" />
+                </el-select>
+                <el-input
+                  v-else
+                  v-model="currentConfig.user_config[field.key]"
+                  :type="field.type === 'textarea' ? 'textarea' : 'text'"
+                  :rows="field.type === 'textarea' ? 3 : undefined"
+                  :placeholder="field.placeholder || ''"
+                />
+                <div v-if="field.description" class="field-tip">{{ field.description }}</div>
+              </el-form-item>
+            </template>
           </el-form>
         </el-tab-pane>
       </el-tabs>
@@ -394,6 +412,31 @@
                     </el-checkbox>
                   </el-checkbox-group>
                 </el-form-item>
+                <el-form-item label="读取脚本变量">
+                  <el-switch v-model="createForm.script_env.enabled" active-text="开启" inactive-text="关闭" />
+                  <div class="field-tip">开启后，脚本运行时会读取“脚本环境变量”页面中已启用的变量。</div>
+                </el-form-item>
+                <el-form-item label="变量名">
+                  <el-select
+                    v-model="createForm.script_env.names"
+                    multiple
+                    filterable
+                    allow-create
+                    clearable
+                    collapse-tags
+                    :disabled="!createForm.script_env.enabled"
+                    placeholder="不填则读取全部脚本变量"
+                    style="width: 100%"
+                  >
+                    <el-option
+                      v-for="item in scriptEnvOptions"
+                      :key="item.name"
+                      :label="item.name"
+                      :value="item.name"
+                    />
+                  </el-select>
+                  <div class="field-tip">可输入多个变量名；为空表示读取全部已启用脚本环境变量。</div>
+                </el-form-item>
                 <el-form-item label="启用状态">
                   <el-switch v-model="createForm.enabled" />
                 </el-form-item>
@@ -453,6 +496,14 @@
                 <el-form-item label="运行超时秒数">
                   <el-input-number v-model="createForm.account_ql.run_wait_timeout" :min="1" :step="60" />
                 </el-form-item>
+                <el-form-item label="定时等待完成">
+                  <el-switch v-model="createForm.account_ql.wait_scheduled" active-text="开启" inactive-text="关闭" />
+                  <div class="field-tip">开启后，定时任务触发的一键运行会等待青龙脚本结束，完成后才能执行后置钩子；关闭则保持提交任务后立即返回。</div>
+                </el-form-item>
+                <el-form-item label="启用完成钩子">
+                  <el-switch v-model="createForm.account_ql.enable_after_run" active-text="开启" inactive-text="关闭" />
+                  <div class="field-tip">开启后可在“自定义代码”里编写一键运行完成后的推送逻辑，仅一键运行会触发。</div>
+                </el-form-item>
                 <el-form-item label="启用 CK 检测">
                   <el-switch v-model="createForm.account_ql.enable_ck_check" />
                 </el-form-item>
@@ -487,6 +538,11 @@
                 <div class="code-editor-title">查询代码</div>
                 <div class="field-tip">必须定义 {{ isPythonAccountQLTemplate ? 'async def query(account, ctx, index)' : 'async function query(account, ctx, index)' }}。</div>
                 <div ref="queryEditorContainer" class="create-code-editor"></div>
+              </div>
+              <div v-if="createForm.account_ql.enable_after_run" class="code-editor-section">
+                <div class="code-editor-title">一键运行完成钩子</div>
+                <div class="field-tip">必须定义 {{ isPythonAccountQLTemplate ? 'async def after_run(ctx, accounts, result, helpers)' : 'async function afterRun(ctx, accounts, result, helpers)' }}，可根据 result.status 判断是否推送。</div>
+                <div ref="afterRunEditorContainer" class="create-code-editor"></div>
               </div>
               <div v-if="createForm.account_ql.enable_ck_check" class="code-editor-section">
                 <div class="code-editor-title">CK 检测代码</div>
@@ -625,7 +681,7 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, shallowRef 
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
-import { getAdapterPlatforms, getAdapters, getPlugins, controlPlugin, deletePlugin, getPluginRecycleBin, deletePluginBackup, getPluginTemplates, previewCreatePlugin, validateCreatePlugin, createPlugin, getRuntimeProfiles } from '@/api'
+import { getAdapterPlatforms, getAdapters, getPlugins, controlPlugin, setPluginPinned, deletePlugin, getPluginRecycleBin, deletePluginBackup, getPluginTemplates, previewCreatePlugin, validateCreatePlugin, createPlugin, getRuntimeProfiles, getScriptEnvs } from '@/api'
 import request from '@/utils/request'
 import { EditorView, basicSetup } from 'codemirror'
 import { javascript } from '@codemirror/lang-javascript'
@@ -642,8 +698,10 @@ const recycleBinVisible = ref(false)
 const recycleBinLoading = ref(false)
 const adapters = ref([])
 const runtimeProfiles = ref([])
+const scriptEnvOptions = ref([])
 const currentPage = ref(1)
 const pageSize = 9
+const maxVisiblePluginPlatforms = 3
 const pluginDefaultPlatforms = ['qq', 'qq_office', 'telegram']
 const pluginPlatformFallback = [
   { label: 'QQ', value: 'qq' },
@@ -665,6 +723,7 @@ const configActiveTab = ref('base')
 const createForm = ref(createEmptyPluginForm())
 const parseInputEditorContainer = ref(null)
 const queryEditorContainer = ref(null)
+const afterRunEditorContainer = ref(null)
 const checkCkEditorContainer = ref(null)
 const createDraftKey = 'allbot:create-plugin-draft:v3'
 const createDraftLegacyKey = 'allbot:create-plugin-draft:v2'
@@ -679,6 +738,7 @@ let createDraftTimer = null
 let createPreviewTimer = null
 let parseInputEditorView = null
 let queryEditorView = null
+let afterRunEditorView = null
 let checkCkEditorView = null
 let lastAccountQLDefaults = { prefix: '', table_name: '', env_name: '', task_script: 'scripts/task.js', script_runtime: 'nodejs' }
 let lastAccountQLRuntime = 'nodejs'
@@ -692,12 +752,14 @@ const currentConfig = ref({
   entry: '',
   trigger: '',
   priority: 0,
+  pinned: false,
   platforms: [],
   allowed_adapter_ids: [],
   access_control: createAccessControl(true),
   user_config_schema: [],
   user_config: {},
   open_api: createOpenApiConfig(),
+  script_env: createScriptEnvConfig(),
   enabled: true
 })
 
@@ -722,7 +784,7 @@ watch(() => createForm.value.runtime, (runtime) => {
 
 const userConfigFields = computed(() => {
   return Array.isArray(currentConfig.value.user_config_schema)
-    ? currentConfig.value.user_config_schema.filter(field => field && field.key)
+    ? currentConfig.value.user_config_schema.filter(field => field && (field.key || field.type === 'divider'))
     : []
 })
 
@@ -779,9 +841,13 @@ const filteredPlugins = computed(() => {
   return plugins.value.filter(plugin => getPluginSearchText(plugin).includes(keyword))
 })
 
+const sortedPlugins = computed(() => {
+  return [...filteredPlugins.value].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
+})
+
 const paginatedPlugins = computed(() => {
   const start = (currentPage.value - 1) * pageSize
-  return filteredPlugins.value.slice(start, start + pageSize)
+  return sortedPlugins.value.slice(start, start + pageSize)
 })
 
 watch(pluginSearch, () => {
@@ -792,6 +858,19 @@ watch(filteredPlugins, () => {
   const maxPage = Math.max(1, Math.ceil(filteredPlugins.value.length / pageSize))
   if (currentPage.value > maxPage) currentPage.value = maxPage
 })
+
+function visiblePluginPlatforms(plugin) {
+  return Array.isArray(plugin.platforms) ? plugin.platforms.slice(0, maxVisiblePluginPlatforms) : []
+}
+
+function hiddenPluginPlatformCount(plugin) {
+  return Array.isArray(plugin.platforms) ? Math.max(0, plugin.platforms.length - maxVisiblePluginPlatforms) : 0
+}
+
+function pluginPlatformTooltip(plugin) {
+  if (!Array.isArray(plugin.platforms)) return ''
+  return plugin.platforms.slice(maxVisiblePluginPlatforms).map(platform => getPlatformName(platform)).join('、')
+}
 
 function getPluginSearchText(plugin) {
   const platformNames = Array.isArray(plugin.platforms)
@@ -837,6 +916,15 @@ const loadRuntimeProfiles = async () => {
     runtimeProfiles.value = Array.isArray(data) ? data : []
   } catch (error) {
     runtimeProfiles.value = []
+  }
+}
+
+const loadScriptEnvOptions = async () => {
+  try {
+    const data = await getScriptEnvs()
+    scriptEnvOptions.value = Array.isArray(data?.items) ? data.items : []
+  } catch (error) {
+    scriptEnvOptions.value = []
   }
 }
 
@@ -918,6 +1006,19 @@ const handleReload = async (plugin) => {
   }
 }
 
+const handlePinned = async (plugin) => {
+  const pinned = !plugin.pinned
+  try {
+    await setPluginPinned(plugin.id, pinned)
+    ElMessage.success(pinned ? '已置顶' : '已取消置顶')
+    currentPage.value = 1
+    await loadPlugins()
+  } catch (error) {
+    console.error('设置插件置顶失败:', error)
+    ElMessage.error('设置插件置顶失败')
+  }
+}
+
 const openRecycleBinDialog = () => {
   recycleBinVisible.value = true
 }
@@ -963,10 +1064,13 @@ const handleConfig = async (plugin) => {
     config.allowed_adapter_ids = config.allowed_adapter_ids || []
     config.runtime_profile = config.runtime_profile || ''
     config.priority = Number(config.priority || 0)
+    config.pinned = Boolean(config.pinned)
     config.access_control = normalizeAccessControl(config.access_control, true)
     config.user_config_schema = Array.isArray(config.user_config_schema) ? config.user_config_schema : []
     config.user_config = normalizeUserConfig(config.user_config_schema, config.user_config)
     config.open_api = createOpenApiConfig(plugin.id, config.runtime, config.open_api || {})
+    config.script_env = createScriptEnvConfig(config.script_env || {})
+    await loadScriptEnvOptions()
     currentConfig.value = config
     configActiveTab.value = 'base'
     configDialogVisible.value = true
@@ -994,7 +1098,7 @@ const continueCreatePlugin = async () => {
   openCreateDialog()
 }
 
-const openCreateDialog = () => {
+const openCreateDialog = async () => {
   destroyCreateEditors()
   resetAccountQLDefaultState()
   const draft = loadCreateDraft()
@@ -1003,6 +1107,7 @@ const openCreateDialog = () => {
   accountQLScriptRuntimeTouched = Boolean(draft?.account_ql?.script_runtime)
   normalizeCreateFormShape(createForm.value)
   if (isAccountQLTemplate.value) ensureAccountQLDefaults()
+  await loadScriptEnvOptions()
   createActiveTab.value = 'base'
   createDialogVisible.value = true
   updateCreatePreview()
@@ -1074,8 +1179,10 @@ const handleCreateDialogClose = () => {
 const saveConfig = async () => {
   try {
     currentConfig.value.priority = Number(currentConfig.value.priority || 0)
+    currentConfig.value.pinned = Boolean(currentConfig.value.pinned)
     currentConfig.value.access_control = normalizeAccessControl(currentConfig.value.access_control, true)
     currentConfig.value.open_api = createOpenApiConfig(currentPluginId.value, currentConfig.value.runtime, currentConfig.value.open_api || {})
+    currentConfig.value.script_env = createScriptEnvConfig(currentConfig.value.script_env || {})
     await request.put(`/plugins/config/${currentPluginId.value}`, currentConfig.value)
     ElMessage.success('配置已保存并生效')
     configDialogVisible.value = false
@@ -1096,12 +1203,14 @@ const handleConfigDialogClose = () => {
     entry: '',
     trigger: '',
     priority: 0,
+    pinned: false,
     platforms: [],
     allowed_adapter_ids: [],
     access_control: createAccessControl(true),
     user_config_schema: [],
     user_config: {},
     open_api: createOpenApiConfig(),
+    script_env: createScriptEnvConfig(),
     enabled: true
   }
 }
@@ -1134,6 +1243,14 @@ function createOpenApiConfig(pluginID = '', runtime = 'nodejs', config = {}) {
   }
 }
 
+function createScriptEnvConfig(config = {}) {
+  const names = Array.isArray(config.names) ? config.names : String(config.names || '').split(/[\n,，]/)
+  return {
+    enabled: Boolean(config.enabled),
+    names: [...new Set(names.map(name => String(name || '').trim()).filter(Boolean))]
+  }
+}
+
 function defaultPluginTemplates() {
   return [
     { id: 'basic', name: '普通插件', runtime: 'nodejs', version: '3.0.0', description: '生成基础 Node.js 或 Python 插件骨架', features: ['基础触发正则', '用户配置', '空依赖'], defaults: { runtime: 'nodejs', version: '1.0.0', platforms: [...pluginDefaultPlatforms] } },
@@ -1154,6 +1271,7 @@ function createEmptyPluginForm() {
     platforms: [...pluginDefaultPlatforms],
     enabled: true,
     template: 'basic',
+    script_env: createScriptEnvConfig(),
     user_config_schema: [],
     account_ql: {
       prefix: '',
@@ -1163,6 +1281,9 @@ function createEmptyPluginForm() {
       script_runtime: 'nodejs',
       auth_price_per_month: 0,
       cron: '0 8 * * *',
+      wait_scheduled: true,
+      enable_after_run: false,
+      after_run_code: defaultAfterRunCode('nodejs'),
       enable_ck_check: true,
       ck_check_cron: '25 9 * * *',
       check_ck_code: defaultCheckCkCode('nodejs'),
@@ -1192,6 +1313,7 @@ function normalizeCreatePayload(form) {
       priority: Number(form.priority || 0),
       platforms: Array.isArray(form.platforms) ? form.platforms : [],
       enabled: Boolean(form.enabled),
+      script_env: createScriptEnvConfig(form.script_env || {}),
       account_ql: {
         prefix: String(accountQL.prefix || '').trim(),
         table_name: String(accountQL.table_name || '').trim(),
@@ -1208,6 +1330,9 @@ function normalizeCreatePayload(form) {
         expire_notify_days: String(accountQL.expire_notify_days || '').trim(),
         expire_delete_after_days: Number(accountQL.expire_delete_after_days ?? -1),
         run_wait_timeout: Math.max(1, Number(accountQL.run_wait_timeout || 7200)),
+        wait_scheduled: accountQL.wait_scheduled !== false,
+        enable_after_run: Boolean(accountQL.enable_after_run),
+        after_run_code: String(accountQL.after_run_code || '').trim(),
         parse_input_code: String(accountQL.parse_input_code || '').trim(),
         query_code: String(accountQL.query_code || '').trim(),
         routes: (accountQL.routes || []).map((route, index) => ({
@@ -1247,6 +1372,7 @@ function normalizeCreatePayload(form) {
     priority: Number(form.priority || 0),
     platforms: Array.isArray(form.platforms) ? form.platforms : [],
     enabled: Boolean(form.enabled),
+    script_env: createScriptEnvConfig(form.script_env || {}),
     user_config_schema: schema,
     user_config: userConfig
   }
@@ -1283,6 +1409,21 @@ function defaultQueryCode(runtime = accountQLRuntime.value) {
     }`
   }
   return "async function query(account, ctx, index) {\n  return `${index + 1}. ${account.account_name}｜${account.status || 'active'}`;\n}"
+}
+
+function defaultAfterRunCode(runtime = accountQLRuntime.value) {
+  if (runtime === 'python') {
+    return `async def after_run(ctx, accounts, result, helpers):
+    if result.get("status") != "success":
+        return
+    # 示例：一键运行成功后给触发会话推送消息，可按业务条件改为 ctx.send_message 或 ctx.push
+    await ctx.reply(f"一键运行完成，账号数：{len(accounts)}")`
+  }
+  return `async function afterRun(ctx, accounts, result, helpers) {
+  if (result?.status !== 'success') return;
+  // 示例：一键运行成功后给触发会话推送消息，可按业务条件改为 ctx.sendMessage 或 ctx.push
+  await ctx.reply(` + '`一键运行完成，账号数：${accounts.length}`' + `);
+}`
 }
 
 function defaultCheckCkCode(runtime = accountQLRuntime.value) {
@@ -1370,6 +1511,7 @@ function syncDefaultRuntimeCode(runtime) {
   const previousRuntime = lastAccountQLRuntime || (runtime === 'python' ? 'nodejs' : 'python')
   if (!accountQL.parse_input_code || accountQL.parse_input_code === defaultParseInputCode(previousRuntime)) accountQL.parse_input_code = defaultParseInputCode(runtime)
   if (!accountQL.query_code || accountQL.query_code === defaultQueryCode(previousRuntime)) accountQL.query_code = defaultQueryCode(runtime)
+  if (!accountQL.after_run_code || accountQL.after_run_code === defaultAfterRunCode(previousRuntime)) accountQL.after_run_code = defaultAfterRunCode(runtime)
   if (!accountQL.check_ck_code || accountQL.check_ck_code === defaultCheckCkCode(previousRuntime)) accountQL.check_ck_code = defaultCheckCkCode(runtime)
 }
 
@@ -1430,11 +1572,15 @@ function ensureCreateEditors() {
   if (!isAccountQLTemplate.value || createActiveTab.value !== 'code') return
   const accountQL = createForm.value.account_ql
   if (!accountQL) return
+  if (!accountQL.enable_after_run && afterRunEditorView) {
+    afterRunEditorView.destroy()
+    afterRunEditorView = null
+  }
   if (!accountQL.enable_ck_check && checkCkEditorView) {
     checkCkEditorView.destroy()
     checkCkEditorView = null
   }
-  if (!parseInputEditorContainer.value || !queryEditorContainer.value || (accountQL.enable_ck_check && !checkCkEditorContainer.value)) return
+  if (!parseInputEditorContainer.value || !queryEditorContainer.value || (accountQL.enable_after_run && !afterRunEditorContainer.value) || (accountQL.enable_ck_check && !checkCkEditorContainer.value)) return
   if (!parseInputEditorView) {
     parseInputEditorView = createCodeEditor(parseInputEditorContainer.value, accountQL.parse_input_code, (code) => {
       if (createForm.value.account_ql) createForm.value.account_ql.parse_input_code = code
@@ -1443,6 +1589,11 @@ function ensureCreateEditors() {
   if (!queryEditorView) {
     queryEditorView = createCodeEditor(queryEditorContainer.value, accountQL.query_code, (code) => {
       if (createForm.value.account_ql) createForm.value.account_ql.query_code = code
+    })
+  }
+  if (accountQL.enable_after_run && !afterRunEditorView) {
+    afterRunEditorView = createCodeEditor(afterRunEditorContainer.value, accountQL.after_run_code, (code) => {
+      if (createForm.value.account_ql) createForm.value.account_ql.after_run_code = code
     })
   }
   if (accountQL.enable_ck_check && !checkCkEditorView) {
@@ -1457,6 +1608,7 @@ function syncCreateEditorCode() {
   if (!accountQL) return
   if (parseInputEditorView) accountQL.parse_input_code = parseInputEditorView.state.doc.toString()
   if (queryEditorView) accountQL.query_code = queryEditorView.state.doc.toString()
+  if (afterRunEditorView) accountQL.after_run_code = afterRunEditorView.state.doc.toString()
   if (checkCkEditorView) accountQL.check_ck_code = checkCkEditorView.state.doc.toString()
 }
 
@@ -1469,6 +1621,10 @@ function destroyCreateEditors() {
   if (queryEditorView) {
     queryEditorView.destroy()
     queryEditorView = null
+  }
+  if (afterRunEditorView) {
+    afterRunEditorView.destroy()
+    afterRunEditorView = null
   }
   if (checkCkEditorView) {
     checkCkEditorView.destroy()
@@ -1521,9 +1677,12 @@ function normalizeCreateFormShape(form) {
   const defaults = createEmptyPluginForm()
   const hasScriptRuntime = Boolean(form.account_ql && form.account_ql.script_runtime)
   form.account_ql = { ...defaults.account_ql, ...(form.account_ql || {}) }
+  form.account_ql.wait_scheduled = form.account_ql.wait_scheduled !== false
+  form.account_ql.enable_after_run = Boolean(form.account_ql.enable_after_run)
   form.account_ql.routes = Array.isArray(form.account_ql.routes) ? form.account_ql.routes.map((route, index) => ({ id: route.id || `${Date.now()}_${index}`, command: route.command || '', function_name: route.function_name || '', description: route.description || '', code: route.code || '' })) : []
   form.account_ql.script_runtime = normalizeScriptRuntime(hasScriptRuntime ? form.account_ql.script_runtime : '', form.account_ql.task_script, templateDefaultScriptRuntime(form.template))
   form.platforms = Array.isArray(form.platforms) ? form.platforms : [...defaults.platforms]
+  form.script_env = createScriptEnvConfig(form.script_env || {})
   form.user_config_schema = Array.isArray(form.user_config_schema) ? form.user_config_schema : []
   if (form.template === 'python_account_ql') form.runtime = 'python'
   if (form.template === 'nodejs_account_ql') form.runtime = 'nodejs'
@@ -1782,6 +1941,13 @@ watch(createActiveTab, async (tab) => {
   }
 })
 
+watch(() => createForm.value.account_ql?.enable_after_run, async () => {
+  if (createActiveTab.value === 'code') {
+    await nextTick()
+    ensureCreateEditors()
+  }
+})
+
 watch(() => createForm.value.account_ql?.enable_ck_check, async () => {
   if (createActiveTab.value === 'code') {
     await nextTick()
@@ -1897,6 +2063,7 @@ onBeforeUnmount(() => {
 }
 
 .plugin-card {
+  position: relative;
   border: 1px solid #e4e7ed;
   border-radius: 8px;
   padding: 16px;
@@ -1905,6 +2072,20 @@ onBeforeUnmount(() => {
   background: #fff;
   transition: box-shadow 0.2s;
   min-height: 220px;
+}
+
+.plugin-card.pinned {
+  border-color: #f3d19e;
+}
+
+.plugin-pin-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 8px;
+}
+
+.plugin-pin-button {
+  padding-left: 0;
 }
 
 .plugin-card:hover {
@@ -1946,12 +2127,18 @@ onBeforeUnmount(() => {
 }
 
 .trigger-text {
+  display: -webkit-box;
+  max-height: 38px;
+  overflow: hidden;
   background: #f5f7fa;
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 12px;
+  line-height: 18px;
   color: #606266;
   word-break: break-all;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .runtime-profile-text {
@@ -1960,8 +2147,19 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
+.platforms {
+  display: flex;
+  min-width: 0;
+  max-width: calc(100% - 50px);
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
 .platforms .el-tag {
-  margin-right: 4px;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .field-tip {
@@ -2093,6 +2291,20 @@ onBeforeUnmount(() => {
   align-items: center;
 }
 
+.config-divider {
+  margin: 20px 0 16px;
+}
+
+.config-divider :deep(.el-divider__text) {
+  font-weight: 600;
+  color: #303133;
+}
+
+.config-divider-tip {
+  margin-top: -8px;
+  text-align: center;
+}
+
 .create-config-list {
   display: flex;
   flex-direction: column;
@@ -2208,6 +2420,10 @@ onBeforeUnmount(() => {
   .plugin-card {
     min-height: auto;
     padding: 14px;
+  }
+
+  .plugin-pin-row {
+    margin-bottom: 6px;
   }
 
   .plugin-card-header {

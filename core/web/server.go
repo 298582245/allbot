@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -38,26 +39,65 @@ type pluginBackupFile struct {
 	Timestamp string    `json:"timestamp,omitempty"`
 }
 
+type WebAssetMode string
+
+const (
+	WebAssetModeEmbedded WebAssetMode = "embedded"
+	WebAssetModeExternal WebAssetMode = "external"
+
+	runtimeTotalSecondsKey               = "runtime.total_seconds"
+	runtimeTotalSecondsDescription       = "AllBot 累计运行秒数"
+	runtimePersistIntervalSeconds  int64 = 30
+)
+
 type Server struct {
-	port             string
-	pluginManager    *plugin.Manager
-	router           *router.Router
-	adapterManager   *config.AdapterManager
-	logManager       *LogManager
-	startTime        time.Time
-	webFS            fs.FS
-	releaseClient    updater.ReleaseClient
-	backupService    *backup.Service
-	imageHostService *imagehost.Service
-	runtimeInitJobs  *runtimeProfileInitJobStore
-	sessionMu        sync.RWMutex
-	sessions         map[string]time.Time
-	serverMu         sync.Mutex
-	httpServer       *http.Server
+	port                        string
+	pluginManager               *plugin.Manager
+	router                      *router.Router
+	adapterManager              *config.AdapterManager
+	logManager                  *LogManager
+	startTime                   time.Time
+	webFS                       fs.FS
+	webAssetMode                WebAssetMode
+	externalWebDir              string
+	updateService               *updater.Service
+	releaseClient               updater.ReleaseClient
+	upgradeRunner               func(updater.ApplyUpdateRequest) error
+	upgradeExit                 func()
+	upgradeMu                   sync.Mutex
+	upgradeState                updater.UpgradeState
+	backupService               *backup.Service
+	imageHostService            *imagehost.Service
+	runtimeInitJobs             *runtimeProfileInitJobStore
+	runtimeMu                   sync.Mutex
+	runtimeBaseSeconds          int64
+	runtimeLoaded               bool
+	lastPersistedRuntimeSeconds int64
+	sessionMu                   sync.RWMutex
+	sessions                    map[string]time.Time
+	resourceMu                  sync.Mutex
+	lastCPUIdle                 uint64
+	lastCPUTotal                uint64
+	lastCPUPercent              float64
+	lastCPUAt                   time.Time
+	lastProcessSystemCPUTotal   uint64
+	lastProcessCPUTotal         uint64
+	lastProcessCPUPercent       float64
+	serverMu                    sync.Mutex
+	httpServer                  *http.Server
 }
 
 func NewServer(port string, pluginManager *plugin.Manager, router *router.Router, adapterManager *config.AdapterManager, webFS fs.FS) *Server {
-	return &Server{port: port, pluginManager: pluginManager, router: router, adapterManager: adapterManager, logManager: NewLogManager(500), startTime: time.Now(), webFS: webFS, releaseClient: updater.NewGitHubClient(), runtimeInitJobs: newRuntimeProfileInitJobStore(), sessions: map[string]time.Time{}}
+	updateService := updater.NewService(updater.NewGitHubClient(), updater.DefaultUpgradeRunner)
+	return &Server{port: port, pluginManager: pluginManager, router: router, adapterManager: adapterManager, logManager: NewLogManager(500), startTime: time.Now(), webFS: webFS, webAssetMode: WebAssetModeEmbedded, externalWebDir: "web", updateService: updateService, releaseClient: updater.NewGitHubClient(), upgradeRunner: updater.DefaultUpgradeRunner, upgradeState: updater.UpgradeState{Status: updater.UpgradeStatusIdle, Message: "暂无升级任务"}, runtimeInitJobs: newRuntimeProfileInitJobStore(), sessions: map[string]time.Time{}}
+}
+
+func (s *Server) SetWebAssetMode(mode WebAssetMode) {
+	s.webAssetMode = mode
+}
+
+func (s *Server) SetExternalWebDir(dir string) {
+	s.externalWebDir = dir
 }
 
 func (s *Server) GetLogManager() *LogManager { return s.logManager }
@@ -73,10 +113,12 @@ func (s *Server) SetImageHostService(service *imagehost.Service) {
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/login", s.handleLogin)
+	mux.HandleFunc("/api/logout", s.handleLogout)
 	mux.HandleFunc("/api/open/payments/notify/epay", s.handlePaymentNotifyEpay)
 	mux.HandleFunc("/api/open/payments/return/epay", s.handlePaymentReturnEpay)
 	mux.HandleFunc("/api/open/payments/qrcode/", s.handlePaymentQRCode)
 	mux.HandleFunc("/api/open/images/", s.handleOpenImage)
+	mux.HandleFunc("/api/open/adapters/wechat-official/", s.handleWechatOfficialAdapterCallback)
 	mux.HandleFunc("/api/open/", s.handleOpenAPI)
 	mux.HandleFunc("/api/open-apis", s.handleOpenAPIConfigs)
 	mux.HandleFunc("/api/open-apis/", s.handleOpenAPIConfigDetail)
@@ -92,6 +134,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/plugins", s.handlePlugins)
 	mux.HandleFunc("/api/plugins/", s.handlePluginDetail)
 	mux.HandleFunc("/api/system/status", s.handleSystemStatus)
+	mux.HandleFunc("/api/system/update/status", s.handleSystemUpdateStatus)
+	mux.HandleFunc("/api/system/update/upgrade", s.handleSystemUpgrade)
 	mux.HandleFunc("/api/system/update", s.handleSystemUpdate)
 	mux.HandleFunc("/api/system/message-stats", s.handleMessageStats)
 	mux.HandleFunc("/api/statistics/overview", s.handleStatisticsOverview)
@@ -112,6 +156,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/scheduled-tasks/", s.handleScheduledTaskDetail)
 	mux.HandleFunc("/api/script-tasks", s.handleScriptTasks)
 	mux.HandleFunc("/api/script-tasks/", s.handleScriptTaskDetail)
+	mux.HandleFunc("/api/script-envs", s.handleScriptEnvs)
+	mux.HandleFunc("/api/script-envs/", s.handleScriptEnvDetail)
 	mux.HandleFunc("/api/replies/keywords", s.handleKeywordReplies)
 	mux.HandleFunc("/api/replies/keywords/", s.handleKeywordReplyDetail)
 	mux.HandleFunc("/api/plugin/listen", s.handlePluginListen)
@@ -132,6 +178,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/data/export", s.handleDataExport)
 	mux.HandleFunc("/api/data/import", s.handleDataImport)
 	mux.Handle("/assets/", s.webAssetsHandler())
+	mux.HandleFunc("/login", s.handleIndex)
+	mux.HandleFunc("/login/", s.handleAccessCodeEntry)
 	mux.HandleFunc("/", s.handleIndex)
 
 	server := &http.Server{Addr: ":" + s.port, Handler: s.corsMiddleware(s.authMiddleware(mux))}
@@ -144,7 +192,77 @@ func (s *Server) Start() error {
 	return nil
 }
 
+func (s *Server) runtimeSeconds() (int64, int64) {
+	currentSeconds := int64(time.Since(s.startTime).Seconds())
+	if currentSeconds < 0 {
+		currentSeconds = 0
+	}
+	baseSeconds := s.runtimeBase()
+	totalSeconds := baseSeconds + currentSeconds
+	if totalSeconds-s.lastPersistedRuntimeSeconds >= runtimePersistIntervalSeconds {
+		s.persistRuntimeSeconds(totalSeconds)
+	}
+	return totalSeconds, currentSeconds
+}
+
+func (s *Server) runtimeBase() int64 {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if !s.runtimeLoaded {
+		s.runtimeBaseSeconds = s.loadPersistedRuntimeSeconds()
+		s.lastPersistedRuntimeSeconds = s.runtimeBaseSeconds
+		s.runtimeLoaded = true
+	}
+	return s.runtimeBaseSeconds
+}
+
+func (s *Server) loadPersistedRuntimeSeconds() int64 {
+	database := s.runtimeDatabase()
+	if database == nil {
+		return s.lastPersistedRuntimeSeconds
+	}
+	value, err := database.GetSetting(runtimeTotalSecondsKey)
+	if err != nil {
+		return s.lastPersistedRuntimeSeconds
+	}
+	seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || seconds < 0 {
+		return 0
+	}
+	return seconds
+}
+
+func (s *Server) persistRuntimeSeconds(totalSeconds int64) {
+	if totalSeconds <= 0 {
+		return
+	}
+	database := s.runtimeDatabase()
+	if database == nil {
+		s.runtimeMu.Lock()
+		s.lastPersistedRuntimeSeconds = totalSeconds
+		s.runtimeMu.Unlock()
+		return
+	}
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if totalSeconds <= s.lastPersistedRuntimeSeconds {
+		return
+	}
+	if err := database.SetSetting(runtimeTotalSecondsKey, strconv.FormatInt(totalSeconds, 10), runtimeTotalSecondsDescription); err == nil {
+		s.lastPersistedRuntimeSeconds = totalSeconds
+	}
+}
+
+func (s *Server) runtimeDatabase() *config.Database {
+	if s.adapterManager == nil {
+		return nil
+	}
+	return s.adapterManager.GetDatabase()
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
+	totalSeconds, _ := s.runtimeSeconds()
+	s.persistRuntimeSeconds(totalSeconds)
 	s.serverMu.Lock()
 	server := s.httpServer
 	s.serverMu.Unlock()
@@ -183,6 +301,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, "创建登录会话失败", http.StatusInternalServerError)
 		return
 	}
+	s.setSessionCookie(w, token)
 	s.jsonResponse(w, map[string]interface{}{"token": token, "user": map[string]string{"username": req.Username}})
 }
 
@@ -239,6 +358,7 @@ func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 			"port":                port,
 			"trigger":             stringValue(config, "trigger", ""),
 			"priority":            intValue(config, "priority", 0),
+			"pinned":              boolValue(config, "pinned", false),
 			"platforms":           stringSliceValue(config, "platforms"),
 			"allowed_adapter_ids": stringSliceValue(config, "allowed_adapter_ids"),
 			"user_config_schema":  config["user_config_schema"],
@@ -246,11 +366,14 @@ func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 			"enabled":             boolValue(config, "enabled", true),
 		})
 	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return boolValue(result[i], "pinned", false) && !boolValue(result[j], "pinned", false)
+	})
 	s.jsonResponse(w, result)
 }
 
 func pluginError(pluginID, message string) map[string]interface{} {
-	return map[string]interface{}{"id": pluginID, "name": pluginID, "version": "unknown", "runtime": "unknown", "runtime_profile": "", "status": "error", "port": 0, "trigger": "", "priority": 0, "platforms": []string{}, "allowed_adapter_ids": []string{}, "user_config_schema": []interface{}{}, "user_config": map[string]interface{}{}, "enabled": false, "error": message}
+	return map[string]interface{}{"id": pluginID, "name": pluginID, "version": "unknown", "runtime": "unknown", "runtime_profile": "", "status": "error", "port": 0, "trigger": "", "priority": 0, "pinned": false, "platforms": []string{}, "allowed_adapter_ids": []string{}, "user_config_schema": []interface{}{}, "user_config": map[string]interface{}{}, "enabled": false, "error": message}
 }
 
 func (s *Server) handlePluginDetail(w http.ResponseWriter, r *http.Request) {
@@ -502,6 +625,16 @@ func (s *Server) handlePluginAction(w http.ResponseWriter, pluginID, action stri
 				return
 			}
 		}
+	case "pin":
+		if err := s.pluginManager.SetPluginPinned(pluginID, true); err != nil {
+			s.jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	case "unpin":
+		if err := s.pluginManager.SetPluginPinned(pluginID, false); err != nil {
+			s.jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	case "start", "stop":
 	default:
 		s.jsonError(w, "不支持的操作: "+action, http.StatusBadRequest)
@@ -541,7 +674,12 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 	} else if s.router != nil {
 		messageCount = int64(s.router.MessageCount())
 	}
-	s.jsonResponse(w, map[string]interface{}{"uptime": formatDuration(time.Since(s.startTime)), "pluginCount": len(plugins), "enabledPluginCount": enabledPluginCount, "adapterCount": adapterCount, "runningAdapterCount": runningAdapterCount, "messageCount": messageCount, "todayMessageCount": todayMessageCount})
+	totalUptimeSeconds, currentUptimeSeconds := s.runtimeSeconds()
+	response := map[string]interface{}{"uptime": formatDuration(time.Duration(currentUptimeSeconds) * time.Second), "totalUptimeSeconds": totalUptimeSeconds, "currentUptimeSeconds": currentUptimeSeconds, "pluginCount": len(plugins), "enabledPluginCount": enabledPluginCount, "adapterCount": adapterCount, "runningAdapterCount": runningAdapterCount, "messageCount": messageCount, "todayMessageCount": todayMessageCount}
+	for key, value := range s.systemResourceStatus() {
+		response[key] = value
+	}
+	s.jsonResponse(w, response)
 }
 
 func (s *Server) handleMessageStats(w http.ResponseWriter, r *http.Request) {
@@ -585,8 +723,11 @@ func (s *Server) handleAdapters(w http.ResponseWriter, r *http.Request) {
 		result := make([]map[string]interface{}, 0, len(adapters))
 		for _, item := range adapters {
 			_, running := runningAdapters[item.ID]
-			result = append(result, map[string]interface{}{"id": item.ID, "platform": item.Platform, "remark": item.Remark, "description": item.Description, "enabled": item.Enabled, "config": utils.MaskSensitiveConfig(item.Config), "running": running, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt})
+			result = append(result, map[string]interface{}{"id": item.ID, "platform": item.Platform, "remark": item.Remark, "description": item.Description, "enabled": item.Enabled, "pinned": item.Pinned, "config": utils.MaskSensitiveConfig(item.Config), "running": running, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt})
 		}
+		sort.SliceStable(result, func(i, j int) bool {
+			return boolValue(result[i], "pinned", false) && !boolValue(result[j], "pinned", false)
+		})
 		s.jsonResponse(w, result)
 		return
 	}
@@ -637,6 +778,21 @@ func (s *Server) handleAdapterDetail(w http.ResponseWriter, r *http.Request) {
 		s.jsonResponse(w, map[string]interface{}{"message": "配置已删除"})
 		return
 	}
+	if r.Method == http.MethodPost {
+		if idErr != nil {
+			s.jsonError(w, "适配器 ID 无效", http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			Action string `json:"action"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.jsonError(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		s.handleAdapterAction(w, id, req.Action)
+		return
+	}
 	if r.Method == http.MethodGet {
 		var item *config.AdapterConfig
 		var err error
@@ -653,10 +809,29 @@ func (s *Server) handleAdapterDetail(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "配置不存在", http.StatusNotFound)
 			return
 		}
-		s.jsonResponse(w, map[string]interface{}{"id": item.ID, "platform": item.Platform, "remark": item.Remark, "description": item.Description, "enabled": item.Enabled, "config": utils.MaskSensitiveConfig(item.Config), "running": s.adapterManager.GetAdapterByID(item.ID) != nil, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt})
+		s.jsonResponse(w, map[string]interface{}{"id": item.ID, "platform": item.Platform, "remark": item.Remark, "description": item.Description, "enabled": item.Enabled, "pinned": item.Pinned, "config": utils.MaskSensitiveConfig(item.Config), "running": s.adapterManager.GetAdapterByID(item.ID) != nil, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt})
 		return
 	}
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+func (s *Server) handleAdapterAction(w http.ResponseWriter, id int64, action string) {
+	switch action {
+	case "pin":
+		if err := s.adapterManager.SetAdapterPinned(id, true); err != nil {
+			s.jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	case "unpin":
+		if err := s.adapterManager.SetAdapterPinned(id, false); err != nil {
+			s.jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	default:
+		s.jsonError(w, "不支持的操作: "+action, http.StatusBadRequest)
+		return
+	}
+	s.jsonResponse(w, map[string]interface{}{"message": "操作成功"})
 }
 
 func (s *Server) handlePluginListen(w http.ResponseWriter, r *http.Request) {
@@ -710,6 +885,9 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 		if _, ok := config["priority"]; !ok {
 			config["priority"] = 0
 		}
+		if _, ok := config["pinned"]; !ok {
+			config["pinned"] = false
+		}
 		if _, ok := config["user_config_schema"]; !ok {
 			config["user_config_schema"] = []interface{}{}
 		}
@@ -724,6 +902,9 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if _, ok := config["open_api"]; !ok {
 			config["open_api"] = map[string]interface{}{"enabled": false, "path": pluginID, "method": "POST", "token": "", "runtime": stringValue(config, "runtime", "nodejs"), "runtime_profile": stringValue(config, "runtime_profile", "")}
+		}
+		if _, ok := config["script_env"]; !ok {
+			config["script_env"] = map[string]interface{}{"enabled": false, "names": []string{}}
 		}
 		s.jsonResponse(w, config)
 		return
@@ -1210,8 +1391,8 @@ func isTextPreviewFile(path string) bool {
 }
 
 func (s *Server) webAssetsHandler() http.Handler {
-	if _, err := os.Stat("web/assets"); err == nil {
-		return http.FileServer(http.Dir("web"))
+	if s.webAssetMode == WebAssetModeExternal {
+		return http.FileServer(http.Dir(s.externalWebDir))
 	}
 	if s.webFS != nil {
 		return http.FileServer(http.FS(s.webFS))
@@ -1219,11 +1400,22 @@ func (s *Server) webAssetsHandler() http.Handler {
 	return http.NotFoundHandler()
 }
 
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	data, err := os.ReadFile("web/index.html")
-	if err != nil && s.webFS != nil {
-		data, err = fs.ReadFile(s.webFS, "index.html")
+func (s *Server) readWebIndex() ([]byte, error) {
+	if s.webAssetMode == WebAssetModeExternal {
+		return os.ReadFile(filepath.Join(s.externalWebDir, "index.html"))
 	}
+	if s.webFS == nil {
+		return nil, fs.ErrNotExist
+	}
+	return fs.ReadFile(s.webFS, "index.html")
+}
+
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if !s.accessGranted(r) {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := s.readWebIndex()
 	if err != nil {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(`<html><body><h1>AllBot</h1><p>Web UI files not found.</p></body></html>`))
@@ -1233,9 +1425,137 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
+// accessGranted 判断当前 HTML 页面请求是否被允许渲染。
+// 未开启访问码时始终允许；开启后需满足以下任一条件：已登录（携带有效会话 cookie）、或携带有效的访问码通行 cookie。
+func (s *Server) accessGranted(r *http.Request) bool {
+	enabled, code := s.accessCodeConfig()
+	if !enabled || code == "" {
+		return true
+	}
+	if s.requestHasValidSession(r) {
+		return true
+	}
+	return s.requestHasAccessPass(r, code)
+}
+
+// handleAccessCodeEntry 处理形如 /login/<访问码> 的入口请求。
+// 访问码正确时种下通行 cookie 并重定向到 /login；错误时返回 404，避免暴露入口存在。
+func (s *Server) handleAccessCodeEntry(w http.ResponseWriter, r *http.Request) {
+	enabled, code := s.accessCodeConfig()
+	// 未开启访问码时，/login/xxx 视为普通前端路由，交回 SPA 渲染。
+	if !enabled || code == "" {
+		s.handleIndex(w, r)
+		return
+	}
+	provided := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/login/"))
+	provided = strings.Trim(provided, "/")
+	if provided == "" {
+		s.handleIndex(w, r)
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(code)) != 1 {
+		http.NotFound(w, r)
+		return
+	}
+	s.setAccessPassCookie(w, code)
+	http.Redirect(w, r, "/login", http.StatusFound)
+}
+
+// handleLogout 注销当前会话并清除相关 cookie。
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if token := s.requestSessionToken(r); token != "" {
+		s.sessionMu.Lock()
+		delete(s.sessions, token)
+		s.sessionMu.Unlock()
+	}
+	s.clearSessionCookie(w)
+	s.jsonResponse(w, map[string]bool{"success": true})
+}
+
+// accessCodeConfig 读取访问码开关与码值，读取失败时按未开启处理，避免误锁后台。
+func (s *Server) accessCodeConfig() (bool, string) {
+	database := s.runtimeDatabase()
+	if database == nil {
+		return false, ""
+	}
+	settings, err := database.GetSystemSettings()
+	if err != nil || settings == nil {
+		return false, ""
+	}
+	return settings.AccessCodeEnabled, strings.TrimSpace(settings.AccessCode)
+}
+
+const (
+	sessionCookieName    = "allbot_session"
+	accessPassCookieName = "allbot_access"
+)
+
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int((24 * time.Hour).Seconds()),
+	})
+}
+
+func (s *Server) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+func (s *Server) setAccessPassCookie(w http.ResponseWriter, code string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     accessPassCookieName,
+		Value:    accessCodeHash(code),
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int((30 * 24 * time.Hour).Seconds()),
+	})
+}
+
+// accessCodeHash 生成访问码的 SHA-256 十六进制摘要，避免在 cookie 中明文存储访问码。
+func accessCodeHash(code string) string {
+	sum := sha256.Sum256([]byte(code))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Server) requestSessionToken(r *http.Request) string {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cookie.Value)
+}
+
+func (s *Server) requestHasValidSession(r *http.Request) bool {
+	token := s.requestSessionToken(r)
+	if token == "" {
+		return false
+	}
+	return s.validAdminToken(token)
+}
+
+func (s *Server) requestHasAccessPass(r *http.Request, code string) bool {
+	cookie, err := r.Cookie(accessPassCookieName)
+	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(cookie.Value)), []byte(accessCodeHash(code))) == 1
+}
+
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/login" || strings.HasPrefix(r.URL.Path, "/api/open/") {
+		if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/login" || r.URL.Path == "/api/logout" || strings.HasPrefix(r.URL.Path, "/api/open/") {
 			next.ServeHTTP(w, r)
 			return
 		}

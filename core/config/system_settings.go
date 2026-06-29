@@ -49,6 +49,9 @@ type SystemSettings struct {
 	AutoLoadPlugins bool                      `json:"auto_load_plugins"`
 	PointsUnit      string                    `json:"points_unit"`
 	AccessControl   types.AccessControlConfig `json:"access_control"`
+	// 安全访问码：开启后访问登录页需在 URL 携带访问码，否则返回 404
+	AccessCodeEnabled bool   `json:"access_code_enabled"`
+	AccessCode        string `json:"access_code"`
 }
 
 type BackupSettings struct {
@@ -99,6 +102,9 @@ func (d *Database) GetSystemSettings() (*SystemSettings, error) {
 		AutoLoadPlugins: valueOrDefault(items, "plugin.auto_load", "true") == "true",
 		PointsUnit:      valueOrDefault(items, "user.points_unit", "积分"),
 		AccessControl:   ParseAccessControlConfig(items["access_control"]),
+
+		AccessCodeEnabled: valueOrDefault(items, "security.access_code_enabled", "false") == "true",
+		AccessCode:        items["security.access_code"],
 	}, nil
 }
 
@@ -128,6 +134,9 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 		"plugin.auto_load":     {boolString(settings.AutoLoadPlugins), "启动时自动加载插件"},
 		"user.points_unit":     {settings.PointsUnit, "用户积分单位"},
 		"access_control":       {MarshalAccessControlConfig(settings.AccessControl), "系统访问控制配置"},
+
+		"security.access_code_enabled": {boolString(settings.AccessCodeEnabled), "是否开启安全访问入口"},
+		"security.access_code":         {strings.TrimSpace(settings.AccessCode), "登录页安全访问码"},
 	}
 	for key, item := range items {
 		if err := d.SetSetting(key, item.value, item.description); err != nil {

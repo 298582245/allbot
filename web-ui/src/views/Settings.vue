@@ -24,6 +24,13 @@
           <el-form-item label="修改密码">
             <el-button type="primary" @click="showPasswordDialog">修改密码</el-button>
           </el-form-item>
+          <el-form-item label="安全访问入口">
+            <el-switch v-model="form.access_code_enabled" />
+            <span class="hint">{{ form.access_code_enabled ? '启用' : '禁用' }}，开启后登录页需要输入访问码才能继续登录</span>
+          </el-form-item>
+          <el-form-item label="访问码">
+            <el-input v-model="form.access_code" placeholder="请输入安全访问码" :disabled="!form.access_code_enabled" show-password />
+          </el-form-item>
           <el-form-item label="管理端口">
             <el-alert title="管理后台端口由启动环境变量 ALLBOT_WEB_PORT 控制，修改后需要重启服务。" type="info" :closable="false" show-icon />
           </el-form-item>
@@ -58,7 +65,7 @@
               <el-button size="small" :loading="checkingUpdate" @click="loadUpdateInfo">检查更新</el-button>
               <el-tooltip :content="upgradeButtonTip" placement="top">
                 <span class="disabled-button-wrap">
-                  <el-button size="small" type="primary" disabled>升级</el-button>
+                  <el-button size="small" type="primary" :disabled="!canUpgrade" :loading="upgrading" @click="handleUpgrade">升级</el-button>
                 </span>
               </el-tooltip>
             </div>
@@ -89,6 +96,14 @@
               <el-tag :type="updateStatusType" effect="plain">{{ updateStatusText }}</el-tag>
               <p v-if="updateInfo.error" class="info-tip error">{{ updateInfo.error }}</p>
               <p v-if="systemInfo.upgradeMessage" class="info-tip">{{ systemInfo.upgradeMessage }}</p>
+              <p v-if="upgradeState.message" class="info-tip">{{ upgradeState.message }}</p>
+              <p v-if="upgradeState.error" class="info-tip error">{{ upgradeState.error }}</p>
+            </div>
+            <div class="info-item">
+              <span>升级资产</span>
+              <strong>{{ displayValue(systemInfo.matchedAssetName) }}</strong>
+              <p v-if="systemInfo.matchedAssetSize" class="info-tip">大小：{{ formatFileSize(systemInfo.matchedAssetSize) }}</p>
+              <p v-if="systemInfo.checksumAssetName" class="info-tip">校验：{{ systemInfo.checksumAssetName }}</p>
             </div>
             <div class="info-item wide">
               <span>Release 内容</span>
@@ -132,10 +147,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getUpdateInfo } from '@/api'
+import { getUpdateInfo, getUpdateStatus, startSystemUpgrade } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import request from '@/utils/request'
 
@@ -143,6 +158,8 @@ const authStore = useAuthStore()
 const loading = ref(false)
 const saving = ref(false)
 const checkingUpdate = ref(false)
+const upgrading = ref(false)
+const upgradePollTimer = ref(null)
 const pageDescription = '管理 Web UI、插件加载和系统基础信息。'
 
 const showPageDescription = () => {
@@ -157,6 +174,8 @@ const form = reactive({
   platform_admins: [],
   auto_refresh: true,
   refresh_interval: 5,
+  access_code_enabled: false,
+  access_code: '',
   plugin_dir: './plugins',
   auto_load_plugins: true,
   points_unit: '积分',
@@ -164,11 +183,14 @@ const form = reactive({
 })
 
 const updateInfo = reactive(createEmptyUpdateInfo())
+const upgradeState = reactive(createEmptyUpgradeState())
 
 const systemInfo = computed(() => {
   const current = objectValue(updateInfo.current)
   const latest = objectValue(updateInfo.latest)
   const release = objectValue(updateInfo.release)
+  const matchedAsset = objectValue(updateInfo.matchedAsset || updateInfo.matched_asset)
+  const checksumAsset = objectValue(updateInfo.checksumAsset || updateInfo.checksum_asset)
   return {
     version: firstText(updateInfo.displayVersion, updateInfo.display_version, updateInfo.version, updateInfo.currentVersion, updateInfo.current_version, current.displayVersion, current.display_version, current.version),
     commit: firstText(updateInfo.commit, current.commit),
@@ -178,12 +200,18 @@ const systemInfo = computed(() => {
     hasUpdate: Boolean(firstDefined(updateInfo.hasUpdate, updateInfo.has_update)),
     upgradeSupported: Boolean(firstDefined(updateInfo.upgradeSupported, updateInfo.upgrade_supported)),
     upgradeMessage: firstText(updateInfo.upgradeMessage, updateInfo.upgrade_message, updateInfo.message),
+    matchedAssetName: firstText(matchedAsset.name),
+    matchedAssetSize: Number(firstDefined(matchedAsset.size, 0)),
+    checksumAssetName: firstText(checksumAsset.name),
     releaseBody: firstText(updateInfo.releaseBody, updateInfo.release_body, updateInfo.body, latest.body, release.body),
     releaseUrl: firstText(updateInfo.releaseUrl, updateInfo.release_url, updateInfo.url, updateInfo.htmlUrl, updateInfo.html_url, latest.url, latest.htmlUrl, latest.html_url, release.url, release.htmlUrl, release.html_url)
   }
 })
 
 const updateStatusText = computed(() => {
+  if (upgradeState.status === 'downloading') return '下载升级包'
+  if (upgradeState.status === 'restarting') return '正在重启'
+  if (upgradeState.status === 'failed') return '升级失败'
   if (!updateInfo.loaded) return '未检查'
   if (updateInfo.error) return '检查失败'
   if (systemInfo.value.hasUpdate) return '发现新版本'
@@ -191,16 +219,21 @@ const updateStatusText = computed(() => {
 })
 
 const updateStatusType = computed(() => {
-  if (updateInfo.error) return 'danger'
+  if (updateInfo.error || upgradeState.status === 'failed') return 'danger'
+  if (upgradeState.status === 'downloading' || upgradeState.status === 'restarting') return 'warning'
   if (systemInfo.value.hasUpdate) return 'warning'
   if (updateInfo.loaded) return 'success'
   return 'info'
 })
 
+const canUpgrade = computed(() => systemInfo.value.hasUpdate && systemInfo.value.upgradeSupported && !upgrading.value && upgradeState.status !== 'downloading' && upgradeState.status !== 'restarting')
+
 const upgradeButtonTip = computed(() => {
+  if (upgradeState.status === 'downloading') return '正在下载升级包，请稍候'
+  if (upgradeState.status === 'restarting') return '服务正在重启并应用更新，请稍后刷新页面'
   if (!systemInfo.value.hasUpdate) return systemInfo.value.upgradeMessage || '当前没有可升级版本'
   if (!systemInfo.value.upgradeSupported) return systemInfo.value.upgradeMessage || '当前环境暂不支持在线升级'
-  return systemInfo.value.upgradeMessage || '升级功能暂未开放'
+  return systemInfo.value.upgradeMessage || '开始一键升级'
 })
 
 const passwordDialogVisible = ref(false)
@@ -234,6 +267,8 @@ const loadSettings = async () => {
       platform_admins: Array.isArray(data.platform_admins) ? data.platform_admins : [],
       auto_refresh: data.auto_refresh,
       refresh_interval: data.refresh_interval,
+      access_code_enabled: Boolean(data.access_code_enabled),
+      access_code: data.access_code || '',
       plugin_dir: data.plugin_dir,
       auto_load_plugins: data.auto_load_plugins,
       points_unit: data.points_unit || '积分',
@@ -261,9 +296,65 @@ const loadUpdateInfo = async () => {
   }
 }
 
+const loadUpgradeStatus = async () => {
+  const data = await getUpdateStatus()
+  Object.assign(upgradeState, createEmptyUpgradeState(), normalizeUpgradeState(data))
+  upgrading.value = upgradeState.status === 'downloading' || upgradeState.status === 'restarting'
+  return upgradeState.status
+}
+
+const startUpgradePolling = () => {
+  stopUpgradePolling()
+  upgradePollTimer.value = window.setInterval(async () => {
+    try {
+      const status = await loadUpgradeStatus()
+      if (status !== 'downloading' && status !== 'restarting') {
+        stopUpgradePolling()
+      }
+    } catch (error) {
+      Object.assign(upgradeState, createEmptyUpgradeState(), {
+        status: 'failed',
+        message: '获取升级状态失败',
+        error: error?.response?.data?.error || error?.message || '获取升级状态失败'
+      })
+      upgrading.value = false
+      stopUpgradePolling()
+    }
+  }, 1500)
+}
+
+const stopUpgradePolling = () => {
+  if (!upgradePollTimer.value) return
+  window.clearInterval(upgradePollTimer.value)
+  upgradePollTimer.value = null
+}
+
+const handleUpgrade = async () => {
+  if (!canUpgrade.value) return
+  await ElMessageBox.confirm('升级会下载新版程序并自动重启 AllBot，确定继续吗？', '确认升级', {
+    confirmButtonText: '开始升级',
+    cancelButtonText: '取消',
+    type: 'warning'
+  })
+  upgrading.value = true
+  try {
+    const data = await startSystemUpgrade()
+    Object.assign(upgradeState, createEmptyUpgradeState(), normalizeUpgradeState(data))
+    ElMessage.success('升级任务已启动，服务将自动重启')
+    startUpgradePolling()
+  } catch (error) {
+    Object.assign(upgradeState, createEmptyUpgradeState(), {
+      status: 'failed',
+      message: '启动升级失败',
+      error: error?.response?.data?.error || error?.message || '启动升级失败'
+    })
+    upgrading.value = false
+  }
+}
+
 const loadPageData = () => {
   loading.value = true
-  Promise.allSettled([loadSettings(), loadUpdateInfo()]).finally(() => {
+  Promise.allSettled([loadSettings(), loadUpdateInfo(), loadUpgradeStatus()]).finally(() => {
     loading.value = false
   })
 }
@@ -284,15 +375,21 @@ const handleChangePassword = async () => {
     })
     ElMessage.success('设置已保存')
     passwordDialogVisible.value = false
-    authStore.logout()
+    await authStore.logout()
   })
 }
 
 const handleSave = async () => {
+  form.access_code = String(form.access_code || '').trim()
+  if (form.access_code_enabled && !form.access_code) {
+    ElMessage.warning('开启安全访问入口时必须填写访问码')
+    return
+  }
   saving.value = true
   try {
     await request.put('/settings', {
       ...form,
+      access_code: form.access_code,
       platform_admins: form.platform_admins.filter(item => item.platform && item.user_id),
       access_control: normalizeAccessControl(form.access_control)
     })
@@ -305,6 +402,7 @@ const handleSave = async () => {
 }
 
 onMounted(loadPageData)
+onBeforeUnmount(stopUpgradePolling)
 
 function createEmptyUpdateInfo() {
   return {
@@ -327,6 +425,10 @@ function createEmptyUpdateInfo() {
     upgradeSupported: false,
     upgrade_supported: false,
     upgradeMessage: '',
+    matchedAsset: null,
+    matched_asset: null,
+    checksumAsset: null,
+    checksum_asset: null,
     upgrade_message: '',
     releaseBody: '',
     release_body: '',
@@ -342,7 +444,22 @@ function createEmptyUpdateInfo() {
   }
 }
 
+function createEmptyUpgradeState() {
+  return {
+    status: 'idle',
+    message: '',
+    error: '',
+    version: '',
+    assetName: '',
+    downloadedAt: ''
+  }
+}
+
 function normalizeUpdateInfo(value) {
+  return value && typeof value === 'object' ? value : {}
+}
+
+function normalizeUpgradeState(value) {
   return value && typeof value === 'object' ? value : {}
 }
 
@@ -361,6 +478,14 @@ function firstText(...items) {
 
 function displayValue(value, fallback = '未知') {
   return String(value || '').trim() || fallback
+}
+
+function formatFileSize(value) {
+  const size = Number(value)
+  if (!Number.isFinite(size) || size <= 0) return '未知'
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
 function createAccessControl() {

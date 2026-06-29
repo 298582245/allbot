@@ -37,6 +37,10 @@ const accountQLCheckCKCode = `async function checkCk(account, ctx) {
   return { valid: true };
 }`
 
+const accountQLAfterRunCode = `async function afterRun(ctx, accounts, result, helpers) {
+  if (result?.status === 'success') await ctx.reply('运行完成');
+}`
+
 const accountQLRouteCode = `async function withdraw(ctx, helpers) {
   await ctx.reply('提现处理中');
 }`
@@ -56,6 +60,10 @@ const pythonAccountQLQueryCode = `async def query(account, ctx, index):
 
 const pythonAccountQLCheckCKCode = `async def check_ck(account, ctx):
     return {'valid': True}`
+
+const pythonAccountQLAfterRunCode = `async def after_run(ctx, accounts, result, helpers):
+    if result.get('status') == 'success':
+        await ctx.reply('运行完成')`
 
 const pythonAccountQLRouteCode = `async def custom_route(ctx, helpers):
     await ctx.reply('自定义指令已执行')`
@@ -85,6 +93,39 @@ func TestNormalizeBasicCreatePluginKeepsExistingSchemaBehavior(t *testing.T) {
 	}
 }
 
+func TestBuildCreatePluginPlanIncludesScriptEnvConfig(t *testing.T) {
+	plan, err := buildCreatePluginPlan(createPluginRequest{
+		Name:     "脚本变量插件",
+		Runtime:  "nodejs",
+		Trigger:  "^env$",
+		Enabled:  true,
+		Template: "basic",
+		ScriptEnv: types.ScriptEnvConfig{
+			Enabled: true,
+			Names:   []string{" API_TOKEN ", "API_TOKEN", "BAD=NAME", "OTHER_TOKEN"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildCreatePluginPlan returned error: %v", err)
+	}
+	if !plan.Config.ScriptEnv.Enabled {
+		t.Fatal("script env should be enabled")
+	}
+	expected := []string{"API_TOKEN", "OTHER_TOKEN"}
+	if len(plan.Config.ScriptEnv.Names) != len(expected) {
+		t.Fatalf("script env names = %#v, expected %#v", plan.Config.ScriptEnv.Names, expected)
+	}
+	for index, name := range expected {
+		if plan.Config.ScriptEnv.Names[index] != name {
+			t.Fatalf("script env names = %#v, expected %#v", plan.Config.ScriptEnv.Names, expected)
+		}
+	}
+	files := renderCreatePluginFiles(plan)
+	assertContains(t, files[0].Content, "\"script_env\":")
+	assertContains(t, files[0].Content, "\"API_TOKEN\"")
+	assertContains(t, files[0].Content, "\"OTHER_TOKEN\"")
+}
+
 func TestBasicPluginTemplateUsesSafeConfigVariableNames(t *testing.T) {
 	fields := []types.PluginUserConfigField{
 		{Key: "class", Default: "reserved"},
@@ -112,6 +153,8 @@ func TestNodeAccountQLTemplateGenerateConfigAndFiles(t *testing.T) {
 	withTempWorkdir(t, func() {
 		req := validAccountQLCreateRequest()
 		req.AccountQL.Prefix = "粉象+"
+		req.AccountQL.EnableAfterRun = boolPtr(true)
+		req.AccountQL.AfterRunCode = accountQLAfterRunCode
 		req.AccountQL.EnableExpireCheck = boolPtr(true)
 		req.AccountQL.ExpireCheckCron = "15 10 * * *"
 		req.AccountQL.ExpireNotifyDays = "10,3,0"
@@ -151,8 +194,11 @@ func TestNodeAccountQLTemplateGenerateConfigAndFiles(t *testing.T) {
 		assertContains(t, mainJS, "runtimeConfig: 'script_runtime'")
 		assertContains(t, mainJS, "scriptConfig: 'task_script'")
 		assertContains(t, mainJS, "timeoutConfig: 'run_wait_timeout'")
+		assertContains(t, mainJS, "waitScheduled: true")
+		assertContains(t, mainJS, "afterRun,")
 		assertContains(t, mainJS, "function parseInput")
 		assertContains(t, mainJS, "async function query")
+		assertContains(t, mainJS, "async function afterRun")
 		assertContains(t, mainJS, "async function checkCk")
 		assertContains(t, mainJS, "async function withdraw")
 		assertContains(t, mainJS, "\"提现\": withdraw")
@@ -200,6 +246,8 @@ func TestNodeAccountQLTemplateCanUsePythonTaskScript(t *testing.T) {
 func TestPythonAccountQLTemplateGenerateConfigAndFiles(t *testing.T) {
 	withTempWorkdir(t, func() {
 		req := validPythonAccountQLCreateRequest()
+		req.AccountQL.EnableAfterRun = boolPtr(true)
+		req.AccountQL.AfterRunCode = pythonAccountQLAfterRunCode
 		req.AccountQL.EnableExpireCheck = boolPtr(true)
 		req.AccountQL.Routes = []createAccountQLRouteRequest{{Command: "提现", FunctionName: "custom_route", Description: "提现", Code: pythonAccountQLRouteCode}}
 		recorder := performCreatePlugin(t, req)
@@ -231,6 +279,9 @@ func TestPythonAccountQLTemplateGenerateConfigAndFiles(t *testing.T) {
 		assertContains(t, mainPY, "\"runtime_config\": \"script_runtime\"")
 		assertContains(t, mainPY, "\"script_config\": \"task_script\"")
 		assertContains(t, mainPY, "\"timeout_config\": \"run_wait_timeout\"")
+		assertContains(t, mainPY, "\"wait_scheduled\": True")
+		assertContains(t, mainPY, "\"after_run\": after_run")
+		assertContains(t, mainPY, "async def after_run")
 		assertContains(t, mainPY, "\"expire_check\"")
 		assertContains(t, mainPY, "\"ck_check\"")
 
@@ -428,7 +479,7 @@ func TestCreatePluginReturnsDiagnosticsAndMetadata(t *testing.T) {
 			t.Fatalf("expected diagnostics, got %#v", diagnostics)
 		}
 		metadata := result["metadata"].(map[string]interface{})
-		if metadata["env_name"] != "DEMO_CK" || metadata["script_runtime"] != "nodejs" || metadata["structure"] != "account_ql" {
+		if metadata["env_name"] != "DEMO_CK" || metadata["script_runtime"] != "nodejs" || metadata["structure"] != "account_ql" || metadata["wait_scheduled"] != true || metadata["enable_after_run"] != false {
 			t.Fatalf("unexpected metadata: %#v", metadata)
 		}
 		config := readPluginJSON(t, filepath.Join("plugins", "ql_demo"))
@@ -500,6 +551,10 @@ func TestNodeAccountQLTemplateValidation(t *testing.T) {
 		}},
 		{name: "parseInput as longer name", mutate: func(req *createPluginRequest) { req.AccountQL.ParseInputCode = "function parseInputOld(raw, ctx) {}" }},
 		{name: "missing query", mutate: func(req *createPluginRequest) { req.AccountQL.QueryCode = "async function other() {}" }},
+		{name: "missing afterRun", mutate: func(req *createPluginRequest) {
+			req.AccountQL.EnableAfterRun = boolPtr(true)
+			req.AccountQL.AfterRunCode = "async function other() {}"
+		}},
 		{name: "missing checkCk", mutate: func(req *createPluginRequest) { req.AccountQL.CheckCKCode = "async function other() {}" }},
 		{name: "python runtime", mutate: func(req *createPluginRequest) { req.Runtime = "python" }},
 		{name: "builtin route command", mutate: func(req *createPluginRequest) {
@@ -548,6 +603,10 @@ func TestPythonAccountQLTemplateValidation(t *testing.T) {
 			req.AccountQL.ParseInputCode = "# def parse_input(raw, ctx):\n#     pass\ndef other():\n    pass"
 		}},
 		{name: "missing query", mutate: func(req *createPluginRequest) { req.AccountQL.QueryCode = "async def other():\n    pass" }},
+		{name: "missing after_run", mutate: func(req *createPluginRequest) {
+			req.AccountQL.EnableAfterRun = boolPtr(true)
+			req.AccountQL.AfterRunCode = "async def other():\n    pass"
+		}},
 		{name: "missing check_ck", mutate: func(req *createPluginRequest) { req.AccountQL.CheckCKCode = "async def other():\n    pass" }},
 		{name: "invalid route function", mutate: func(req *createPluginRequest) {
 			req.AccountQL.Routes = []createAccountQLRouteRequest{{Command: "提现", FunctionName: "bad-name", Code: "async def bad_name(ctx, plugin):\n    pass"}}
@@ -584,6 +643,7 @@ func validAccountQLCreateRequest() createPluginRequest {
 			Cron:              "5 8 * * *",
 			CKCheckCron:       "25 9 * * *",
 			RunWaitTimeout:    7200,
+			WaitScheduled:     boolPtr(true),
 			ParseInputCode:    accountQLParseInputCode,
 			QueryCode:         accountQLQueryCode,
 			CheckCKCode:       accountQLCheckCKCode,

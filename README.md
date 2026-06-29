@@ -19,7 +19,7 @@ AllBot 是一个基于 Go 的多平台机器人框架，内置 Web 管理后台�
 - 前端：Vue 3、Vite、Element Plus、Pinia
 - 插件运行时：Node.js、Python
 - 数据库：`config.db`，首次启动自动创建
-- 管理后台静态文件：`web/`，由 `web-ui/` 构建生成并被 Go 程序嵌入
+- 管理后台静态文件：`web/`，由 `web-ui/` 构建生成，并在 Go 构建时嵌入二进制
 
 ## 快速启动
 
@@ -38,7 +38,7 @@ npm --prefix web-ui install
 npm --prefix web-ui run build
 ```
 
-构建产物会输出到 `web/`。
+构建产物会输出到 `web/`，用于后续 Go 构建时嵌入二进制。
 
 ### 3. 构建后端
 
@@ -85,6 +85,38 @@ $env:ALLBOT_WEB_PORT = "3001"
 .\allbot.exe
 ```
 
+管理后台默认使用二进制内嵌资源。自动更新只替换 `allbot.exe` / `allbot` 时，内嵌 Web UI 会随二进制一起更新，不会被运行目录残留的旧 `web/` 覆盖。
+
+如需显式使用运行目录外部 `web/`，可设置 `ALLBOT_WEB_MODE=external`：
+
+```powershell
+$env:ALLBOT_WEB_MODE = "external"
+.\allbot.exe
+```
+
+`ALLBOT_WEB_MODE` 仅支持 `embedded` 和 `external`。启用 `external` 后，外部 `web/` 不会随自动更新维护，需要用户自行更新并保证 `web/index.html` 存在。
+
+### 5. 在线升级
+
+管理后台的“系统设置”页面会检查 GitHub Release，并在发现当前平台可用资产时启用“一键升级”。升级流程会下载新版二进制到 `runtime/update/`，启动临时更新器，关闭当前进程后备份旧程序并替换为新版程序，然后自动重新启动。
+
+Release 资产名称需要包含 `allbot`、目标系统和架构，例如：
+
+```text
+allbot-windows-amd64.exe
+allbot-linux-amd64
+allbot-linux-arm64
+```
+
+Release 必须同时提供校验文件，命名为 `checksums-v版本号.txt`，例如 `checksums-v1.0.2.txt`。文件内容使用 SHA256 清单格式，每行包含 `sha256 文件名`：
+
+```text
+3b7c...  allbot-windows-amd64.exe
+8a2d...  allbot-linux-amd64
+```
+
+一键升级会先下载目标二进制和 checksum 文件，只有 SHA256 校验通过后才会备份旧程序并替换新版程序。升级失败时可查看 `runtime/update/backup/` 中的旧程序备份。
+
 ## 命令参数与运行文件
 
 ### 命令参数
@@ -101,7 +133,7 @@ runtime/       插件运行时依赖目录
 plugins/       插件目录
 openapis/      Open API 脚本与配置目录
 logs/          日志目录
-web/           管理后台构建产物
+web/           管理后台构建产物，默认仅用于 Go 构建嵌入；运行时需 ALLBOT_WEB_MODE=external 才会读取
 ```
 
 ## 管理后台

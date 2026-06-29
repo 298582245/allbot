@@ -263,10 +263,31 @@ func (m *AdapterManager) StopAll() {
 	m.adapters = make(map[int64]adapter.Adapter)
 }
 
+func (m *AdapterManager) SetAdapterPinned(id int64, pinned bool) error {
+	config, err := m.db.GetAdapterByID(id)
+	if err != nil {
+		return err
+	}
+	if config == nil {
+		return fmt.Errorf("适配器不存在: %d", id)
+	}
+	config.Pinned = pinned
+	return m.db.SaveAdapter(config)
+}
+
 func (m *AdapterManager) SaveAdapterConfig(id int64, platform, remark, description string, enabled bool, configData interface{}) error {
 	mergedConfigData, err := m.mergeExistingSensitiveConfig(id, platform, configData)
 	if err != nil {
 		return err
+	}
+
+	existingPinned := false
+	if id > 0 {
+		if existing, err := m.db.GetAdapterByID(id); err != nil {
+			return fmt.Errorf("获取原配置失败: %w", err)
+		} else if existing != nil {
+			existingPinned = existing.Pinned
+		}
 	}
 
 	configJSON, err := json.Marshal(mergedConfigData)
@@ -280,6 +301,7 @@ func (m *AdapterManager) SaveAdapterConfig(id int64, platform, remark, descripti
 		Remark:      remark,
 		Description: description,
 		Enabled:     enabled,
+		Pinned:      existingPinned,
 		Config:      string(configJSON),
 	}
 

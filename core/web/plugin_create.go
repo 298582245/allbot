@@ -30,6 +30,7 @@ type createPluginRequest struct {
 	Enabled          bool                          `json:"enabled"`
 	UserConfigSchema []types.PluginUserConfigField `json:"user_config_schema"`
 	UserConfig       map[string]interface{}        `json:"user_config"`
+	ScriptEnv        types.ScriptEnvConfig         `json:"script_env"`
 	Template         string                        `json:"template"`
 	AccountQL        *createAccountQLRequest       `json:"account_ql"`
 }
@@ -44,6 +45,9 @@ type createAccountQLRequest struct {
 	Cron                  string                        `json:"cron"`
 	CKCheckCron           string                        `json:"ck_check_cron"`
 	RunWaitTimeout        int                           `json:"run_wait_timeout"`
+	WaitScheduled         *bool                         `json:"wait_scheduled"`
+	EnableAfterRun        *bool                         `json:"enable_after_run"`
+	AfterRunCode          string                        `json:"after_run_code"`
 	ParseInputCode        string                        `json:"parse_input_code"`
 	QueryCode             string                        `json:"query_code"`
 	EnableCKCheck         *bool                         `json:"enable_ck_check"`
@@ -120,6 +124,9 @@ type accountQLTemplate struct {
 	Cron                  string
 	CKCheckCron           string
 	RunWaitTimeout        int
+	WaitScheduled         bool
+	EnableAfterRun        bool
+	AfterRunCode          string
 	ParseInputCode        string
 	QueryCode             string
 	EnableCKCheck         bool
@@ -347,6 +354,7 @@ func buildCreatePluginPlan(req createPluginRequest) (*createPluginPlan, error) {
 		req.UserConfigSchema = normalizeCreatePluginSchema(req.UserConfigSchema)
 		req.UserConfig = normalizeCreatePluginUserConfig(req.UserConfigSchema, req.UserConfig)
 	}
+	req.ScriptEnv = normalizeCreatePluginScriptEnv(req.ScriptEnv)
 	entry := "main.py"
 	if req.Runtime == "nodejs" {
 		entry = "main.js"
@@ -370,6 +378,7 @@ func buildCreatePluginPlan(req createPluginRequest) (*createPluginPlan, error) {
 		UserConfig:        req.UserConfig,
 		AccessControl:     &accessControl,
 		OpenAPI:           types.OpenAPIConfig{Enabled: false, Path: pluginID, Method: "POST", Runtime: req.Runtime},
+		ScriptEnv:         req.ScriptEnv,
 		Template:          plan.Template,
 		TemplateVersion:   plan.TemplateVersion,
 		TemplateMetadata:  plan.Metadata,
@@ -407,6 +416,8 @@ func buildAccountQLTemplateMetadata(plan *createPluginPlan) map[string]interface
 	metadata["task_script"] = plan.AccountQL.TaskScript
 	metadata["script_runtime"] = plan.AccountQL.ScriptRuntime
 	metadata["commands"] = plan.Commands
+	metadata["wait_scheduled"] = plan.AccountQL.WaitScheduled
+	metadata["enable_after_run"] = plan.AccountQL.EnableAfterRun
 	metadata["enable_ck_check"] = plan.AccountQL.EnableCKCheck
 	metadata["enable_expire_check"] = plan.AccountQL.EnableExpireCheck
 	routes := make([]map[string]string, 0, len(plan.AccountQL.Routes))
@@ -522,6 +533,8 @@ func buildCreateValidationIssue(err error) createValidationIssue {
 		field, tab = "account_ql.parse_input_code", "code"
 	case strings.Contains(message, "查询代码"):
 		field, tab = "account_ql.query_code", "code"
+	case strings.Contains(message, "一键运行完成钩子代码"):
+		field, tab = "account_ql.after_run_code", "code"
 	case strings.Contains(message, "CK 检测代码"):
 		field, tab = "account_ql.check_ck_code", "code"
 	case strings.Contains(message, "自定义指令"):
@@ -558,6 +571,7 @@ func accountQLTemplateDefaults(runtime string) map[string]interface{} {
 		"expire_notify_days":       "7,3,1,0",
 		"expire_delete_after_days": -1,
 		"run_wait_timeout":         7200,
+		"wait_scheduled":           true,
 	}
 }
 
@@ -619,12 +633,15 @@ func normalizeAccountQLTemplate(pluginID string, templateName string, req *creat
 		Cron:              strings.TrimSpace(accountQL.Cron),
 		CKCheckCron:       strings.TrimSpace(accountQL.CKCheckCron),
 		RunWaitTimeout:    accountQL.RunWaitTimeout,
+		AfterRunCode:      strings.TrimSpace(accountQL.AfterRunCode),
 		ParseInputCode:    strings.TrimSpace(accountQL.ParseInputCode),
 		QueryCode:         strings.TrimSpace(accountQL.QueryCode),
 		CheckCKCode:       strings.TrimSpace(accountQL.CheckCKCode),
 		ExpireCheckCron:   strings.TrimSpace(accountQL.ExpireCheckCron),
 		ExpireNotifyDays:  strings.TrimSpace(accountQL.ExpireNotifyDays),
 	}
+	options.WaitScheduled = boolPointerDefault(accountQL.WaitScheduled, true)
+	options.EnableAfterRun = boolPointerDefault(accountQL.EnableAfterRun, false)
 	options.EnableCKCheck = boolPointerDefault(accountQL.EnableCKCheck, true)
 	options.EnableExpireCheck = boolPointerDefault(accountQL.EnableExpireCheck, false)
 	options.ExpireDeleteAfterDays = intPointerDefault(accountQL.ExpireDeleteAfterDays, -1)
@@ -669,6 +686,12 @@ func normalizeAccountQLTemplate(pluginID string, templateName string, req *creat
 	}
 	if !containsAccountQLFunctionDefinition(runtime, options.QueryCode, queryFunction) {
 		return nil, fmt.Errorf("查询代码必须定义 %s 函数", queryFunction)
+	}
+	if options.EnableAfterRun {
+		afterRunFunction := accountQLAfterRunFunctionName(runtime)
+		if !containsAccountQLFunctionDefinition(runtime, options.AfterRunCode, afterRunFunction) {
+			return nil, fmt.Errorf("一键运行完成钩子代码必须定义 %s 函数", afterRunFunction)
+		}
 	}
 	if options.EnableCKCheck && !containsAccountQLFunctionDefinition(runtime, options.CheckCKCode, ckFunction) {
 		return nil, fmt.Errorf("CK 检测代码必须定义 %s 函数", ckFunction)
@@ -730,6 +753,13 @@ func accountQLFunctionNames(runtime string) (string, string, string) {
 	return "parseInput", "query", "checkCk"
 }
 
+func accountQLAfterRunFunctionName(runtime string) string {
+	if runtime == "python" {
+		return "after_run"
+	}
+	return "afterRun"
+}
+
 func normalizeAccountQLRoutes(runtime string, options accountQLTemplate, routes []createAccountQLRouteRequest) ([]accountQLRouteTemplate, error) {
 	result := make([]accountQLRouteTemplate, 0, len(routes))
 	seenCommands := map[string]bool{}
@@ -737,7 +767,7 @@ func normalizeAccountQLRoutes(runtime string, options accountQLTemplate, routes 
 		seenCommands[command] = true
 	}
 	parseFunction, queryFunction, ckFunction := accountQLFunctionNames(runtime)
-	seenFunctions := map[string]bool{parseFunction: true, queryFunction: true, ckFunction: true}
+	seenFunctions := map[string]bool{parseFunction: true, queryFunction: true, ckFunction: true, accountQLAfterRunFunctionName(runtime): true}
 	for index, route := range routes {
 		command := strings.TrimSpace(route.Command)
 		if command == "" {
@@ -939,6 +969,20 @@ func normalizeCreatePluginSchema(fields []types.PluginUserConfigField) []types.P
 	return result
 }
 
+func normalizeCreatePluginScriptEnv(config types.ScriptEnvConfig) types.ScriptEnvConfig {
+	names := make([]string, 0, len(config.Names))
+	seen := map[string]bool{}
+	for _, name := range config.Names {
+		name = strings.TrimSpace(name)
+		if name == "" || strings.ContainsAny(name, "=\x00") || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return types.ScriptEnvConfig{Enabled: config.Enabled, Names: names}
+}
+
 func normalizeCreatePluginUserConfig(fields []types.PluginUserConfigField, values map[string]interface{}) map[string]interface{} {
 	if values == nil {
 		values = map[string]interface{}{}
@@ -1000,6 +1044,9 @@ func nodeAccountQLPluginTemplate(options accountQLTemplate) string {
 		"",
 		options.QueryCode,
 	}
+	if options.EnableAfterRun {
+		lines = append(lines, "", options.AfterRunCode)
+	}
 	if options.EnableCKCheck {
 		lines = append(lines, "", options.CheckCKCode)
 	}
@@ -1046,6 +1093,12 @@ func nodeAccountQLPluginTemplate(options accountQLTemplate) string {
 		fmt.Sprintf("    script: %s,", jsLiteral(options.TaskScript)),
 		"    scriptConfig: 'task_script',",
 		"    timeoutConfig: 'run_wait_timeout',",
+		fmt.Sprintf("    waitScheduled: %s,", jsLiteral(options.WaitScheduled)),
+	)
+	if options.EnableAfterRun {
+		lines = append(lines, "    afterRun,")
+	}
+	lines = append(lines,
 		"    env: (ctx, accounts) => ({ [ENV_NAME]: accounts.map((item) => item.env_value).join('\\n') })",
 		"  },",
 		"  schedules: {",
@@ -1089,6 +1142,9 @@ func pythonAccountQLPluginTemplate(options accountQLTemplate) string {
 		"",
 		options.QueryCode,
 	}
+	if options.EnableAfterRun {
+		lines = append(lines, "", "", options.AfterRunCode)
+	}
 	if options.EnableCKCheck {
 		lines = append(lines, "", "", options.CheckCKCode)
 	}
@@ -1128,6 +1184,12 @@ func pythonAccountQLPluginTemplate(options accountQLTemplate) string {
 		fmt.Sprintf("        \"script\": %s,", pythonLiteral(options.TaskScript)),
 		"        \"script_config\": \"task_script\",",
 		"        \"timeout_config\": \"run_wait_timeout\",",
+		fmt.Sprintf("        \"wait_scheduled\": %s,", pythonLiteral(options.WaitScheduled)),
+	)
+	if options.EnableAfterRun {
+		lines = append(lines, "        \"after_run\": after_run,")
+	}
+	lines = append(lines,
 		"        \"env\": {},",
 		"    },",
 		"    \"schedules\": {",

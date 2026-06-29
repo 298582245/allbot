@@ -118,10 +118,11 @@ class Context:
 
     async def send_message(self, **options: Any) -> Dict[str, Any]:
         """主动发送私聊或群聊消息，用于定时通知。"""
+        target_platform = str(options.get("platform") or self.platform)
         return self._request({
             "action": "send_message",
-            "platform": str(options.get("platform") or self.platform),
-            "adapter_id": str(options.get("adapter_id") or options.get("adapterId") or self.adapter_id),
+            "platform": target_platform,
+            "adapter_id": self._adapter_id_for(options, target_platform),
             "user_id": str(options.get("user_id") or options.get("userId") or self.user_id),
             "group_id": str(options.get("group_id") or options.get("groupId") or ""),
             "union_id": str(options.get("union_id") or options.get("unionId") or ""),
@@ -204,6 +205,15 @@ class Context:
     def meta(self, key: str, default: str = "") -> str:
         """获取平台原始扩展字段。"""
         return self.metadata.get(key, default)
+
+    def _adapter_id_for(self, options: Dict[str, Any], target_platform: str = "") -> str:
+        if "adapter_id" in options:
+            return str(options.get("adapter_id") or "")
+        if "adapterId" in options:
+            return str(options.get("adapterId") or "")
+        if not target_platform or target_platform == self.platform:
+            return str(self.adapter_id or "")
+        return ""
 
     def config(self, key: str = "", default: Any = "") -> Any:
         """获取后台为当前插件填写的用户配置。"""
@@ -492,6 +502,19 @@ class Database:
 
 def normalize_env(env: Dict[str, Any]) -> Dict[str, str]:
     return {str(key): str(value) for key, value in env.items() if str(key)}
+
+
+def normalize_columns(columns: Any) -> List[Dict[str, str]]:
+    result = []
+    source = columns if isinstance(columns, list) else []
+    for item in source:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("field") or item.get("column") or "").strip()
+        if not name:
+            continue
+        result.append({"name": name, "type": str(item.get("type") or "TEXT").strip() or "TEXT"})
+    return result
 
 
 def split_push_user_and_union_id(user_id: Any, union_id: Any) -> tuple[str, str]:

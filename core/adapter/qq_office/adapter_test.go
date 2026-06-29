@@ -123,6 +123,41 @@ func TestQQOfficeSendMessagePostsDMS(t *testing.T) {
 	}
 }
 
+func TestQQOfficeSendTargetPrivateUserUsesC2CPath(t *testing.T) {
+	var messageCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/v2/users/openid123/messages":
+			atomic.AddInt32(&messageCalls, 1)
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, expected POST", r.Method)
+			}
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode message body failed: %v", err)
+			}
+			if body["content"] != "你好" || body["msg_type"] != float64(0) {
+				t.Fatalf("message body = %#v", body)
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	if err := adp.SendMessage(adp.SendTarget("openid123", ""), "你好"); err != nil {
+		t.Fatalf("SendMessage returned error: %v", err)
+	}
+	if atomic.LoadInt32(&messageCalls) != 1 {
+		t.Fatalf("messageCalls=%d, expected 1", messageCalls)
+	}
+}
+
 func TestQQOfficeSendMessageIncrementsReplySeq(t *testing.T) {
 	bodies := make(chan map[string]interface{}, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

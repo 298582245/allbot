@@ -15,6 +15,58 @@ import (
 	"github.com/allbot/allbot/core/types"
 )
 
+func TestSetPluginPinnedPersistsConfigAndMemory(t *testing.T) {
+	pluginRoot := t.TempDir()
+	pluginDir := filepath.Join(pluginRoot, "demo")
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "entry.js"), []byte("console.log('ok')"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	config := map[string]interface{}{
+		"name":         "演示插件",
+		"version":      "1.0.0",
+		"runtime":      "nodejs",
+		"entry":        "entry.js",
+		"platforms":    []string{"qq"},
+		"priority":     0,
+		"trigger":      "^demo$",
+		"enabled":      true,
+		"dependencies": map[string]string{},
+	}
+	data, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(pluginRoot, deps.NewManager(t.TempDir()))
+	if _, err := manager.LoadPlugin(pluginDir); err != nil {
+		t.Fatalf("LoadPlugin returned error: %v", err)
+	}
+	if err := manager.SetPluginPinned("demo", true); err != nil {
+		t.Fatalf("SetPluginPinned returned error: %v", err)
+	}
+	process := manager.GetPlugin("demo")
+	if process == nil || process.Plugin == nil || !process.Plugin.Pinned {
+		t.Fatalf("plugin should be pinned in memory: %#v", process)
+	}
+	stored, err := os.ReadFile(filepath.Join(pluginDir, "plugin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(stored, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw["pinned"] != true {
+		t.Fatalf("plugin.json should persist pinned=true, got %#v", raw["pinned"])
+	}
+}
+
 func TestExecutePluginPaymentWaitWritesResponse(t *testing.T) {
 	manager, plugin, pluginPath := newManagerTestPlugin(t, `
 const readline = require('readline');
@@ -335,7 +387,7 @@ rl.on('line', (line) => {
 	if err != nil {
 		t.Fatalf("ExecutePlugin returned error: %v", err)
 	}
-	if received.RuntimeProfile != "node18" || received.Script != "task.js" || !received.Wait {
+	if received.PluginID != plugin.ID || received.RuntimeProfile != "node18" || received.Script != "task.js" || !received.Wait {
 		t.Fatalf("unexpected script action: %#v", received)
 	}
 }
@@ -409,6 +461,48 @@ func TestRunPluginScriptRecordsRuntimeProfileAndEnv(t *testing.T) {
 	}
 	if !strings.Contains(output, "node_modules") {
 		t.Fatalf("expected output to include NODE_PATH, got %q", output)
+	}
+}
+
+func TestRunPluginScriptInjectsEnabledScriptEnv(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node 不可用，跳过脚本执行测试")
+	}
+	pluginPath := t.TempDir()
+	script := `console.log(JSON.stringify({ token: process.env.API_TOKEN || '', explicit: process.env.EXPLICIT || '', disabled: process.env.DISABLED || '' }));`
+	if err := os.WriteFile(filepath.Join(pluginPath, "task.js"), []byte(script), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(pluginPath, deps.NewManager(t.TempDir()))
+	configureManagerTestProfiles(t, manager)
+	database, err := config.NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	manager.SetDatabase(database)
+	if _, err := database.SaveScriptEnvVar(&config.ScriptEnvVar{Name: "API_TOKEN", Value: "secret", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SaveScriptEnvVar(&config.ScriptEnvVar{Name: "DISABLED", Value: "skip", Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	manager.plugins["plugin-test"] = &PluginProcess{Plugin: &types.Plugin{ID: "plugin-test", ScriptEnv: types.ScriptEnvConfig{Enabled: true, Names: []string{"API_TOKEN", "DISABLED"}}}}
+
+	result := manager.RunPluginScript(pluginPath, ScriptRunAction{PluginID: "plugin-test", Runtime: "nodejs", RuntimeProfile: "node18", Script: "task.js", Env: map[string]string{"EXPLICIT": "value"}, Wait: true, Timeout: 10})
+	if !result.Success {
+		t.Fatalf("RunPluginScript failed: %#v", result)
+	}
+	items, err := database.ListScriptRunLogs(config.ScriptRunLogFilter{PluginID: "plugin-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := database.GetScriptRunLog(items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(detail.Output, `"token":"secret"`) || !strings.Contains(detail.Output, `"explicit":"value"`) || strings.Contains(detail.Output, "skip") {
+		t.Fatalf("unexpected output: %q", detail.Output)
 	}
 }
 

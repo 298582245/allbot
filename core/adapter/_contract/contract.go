@@ -1,6 +1,10 @@
 package contract
 
-import "github.com/allbot/allbot/core/types"
+import (
+	"net/http"
+
+	"github.com/allbot/allbot/core/types"
+)
 
 // Adapter 定义平台适配器的统一能力契约。
 type Adapter interface {
@@ -48,6 +52,11 @@ type ReplyTextFormatter interface {
 // SendTargetResolver 由适配器按自身目标格式解析插件主动发送目标。
 type SendTargetResolver interface {
 	SendTarget(userID string, groupID string) string
+}
+
+// HTTPCallbackHandler 由需要接收开放 HTTP 回调的平台适配器实现。
+type HTTPCallbackHandler interface {
+	HandleHTTPCallback(relativePath string, w http.ResponseWriter, r *http.Request)
 }
 
 // UserInfo 表示平台用户信息。

@@ -11,9 +11,11 @@ func TestBuiltinAdaptersRegistered(t *testing.T) {
 		platform    string
 		displayName string
 	}{
+		{platform: "dingtalk", displayName: "钉钉机器人（Stream）"},
 		{platform: "qq", displayName: "QQ"},
 		{platform: "qq_office", displayName: "QQ 官方机器人"},
 		{platform: "telegram", displayName: "Telegram"},
+		{platform: "wechat_official", displayName: "微信公众号"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.platform, func(t *testing.T) {

@@ -27,6 +27,7 @@ const routes = [
       { path: 'runtime-profiles', name: 'RuntimeProfiles', component: () => import('@/views/RuntimeProfiles.vue'), meta: { title: '运行环境' } },
       { path: 'scheduled-tasks', name: 'ScheduledTasks', component: () => import('@/views/ScheduledTasks.vue'), meta: { title: '定时任务' } },
       { path: 'script-tasks', name: 'ScriptTasks', component: () => import('@/views/ScriptTasks.vue'), meta: { title: '脚本任务' } },
+      { path: 'script-envs', name: 'ScriptEnvs', component: () => import('@/views/ScriptEnvs.vue'), meta: { title: '脚本环境变量' } },
       { path: 'replies/keywords', name: 'KeywordReplies', component: () => import('@/views/KeywordReplies.vue'), meta: { title: '关键字回复' } },
       { path: 'adapters', name: 'Adapters', component: () => import('@/views/Adapters.vue'), meta: { title: '对接管理' } },
       { path: 'logs', name: 'Logs', component: () => import('@/views/Logs.vue'), meta: { title: '日志查看' } },

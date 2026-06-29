@@ -9,6 +9,7 @@ type AdapterConfig struct {
 	Remark      string    `json:"remark"`
 	Description string    `json:"description"`
 	Enabled     bool      `json:"enabled"`
+	Pinned      bool      `json:"pinned"`
 	Config      string    `json:"config"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`

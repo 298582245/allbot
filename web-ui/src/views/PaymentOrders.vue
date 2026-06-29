@@ -192,15 +192,15 @@
 
         <section class="detail-section">
           <div class="section-title">原始回调</div>
-          <pre class="raw-box">{{ detail.order.notify_raw || '暂无回调内容' }}</pre>
+          <pre class="raw-box">{{ formatRawPayload(detail.order.notify_raw) || '暂无回调内容' }}</pre>
         </section>
 
         <section class="detail-section">
           <div class="section-title">事件日志</div>
           <el-timeline>
             <el-timeline-item v-for="event in detail.events" :key="event.id" :timestamp="formatTime(event.created_at)">
-              <div class="event-title">{{ event.event_type }}：{{ event.message || '-' }}</div>
-              <pre v-if="event.payload" class="event-payload">{{ event.payload }}</pre>
+              <div class="event-title">{{ event.event_type }}：{{ formatRawPayload(event.message) || '-' }}</div>
+              <pre v-if="event.payload" class="event-payload">{{ formatRawPayload(event.payload) }}</pre>
             </el-timeline-item>
           </el-timeline>
           <el-empty v-if="!detail.events || detail.events.length === 0" description="暂无事件" />
@@ -400,6 +400,21 @@ function formatTime(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '-'
   return date.toLocaleString()
+}
+
+function formatRawPayload(value) {
+  if (!value) return ''
+  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  const decoded = decodeUnicodeEscapes(text)
+  try {
+    return JSON.stringify(JSON.parse(decoded), null, 2)
+  } catch {
+    return decoded
+  }
+}
+
+function decodeUnicodeEscapes(text) {
+  return String(text).replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
 }
 
 function statusTagType(status) {

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/allbot/allbot/core/adapter"
+	dingtalkadapter "github.com/allbot/allbot/core/adapter/dingtalk"
 	qqadapter "github.com/allbot/allbot/core/adapter/qq"
 	qqofficeadapter "github.com/allbot/allbot/core/adapter/qq_office"
 	telegramadapter "github.com/allbot/allbot/core/adapter/telegram"
@@ -58,6 +59,15 @@ func TestAdapterReplyFormatters(t *testing.T) {
 	}
 	if got := formatReplyText(qqOffice, qqOfficeMsg, "你好"); got != "你好" {
 		t.Fatalf("QQ 官方 reply text = %q", got)
+	}
+
+	dingTalk := dingtalkadapter.NewDingTalkAdapter("client", "secret", "robot", "", "")
+	dingTalkMsg := &types.Message{Platform: "dingtalk", UserID: "staff-1", GroupID: "cid", Metadata: map[string]string{"dingtalk_session_webhook": "https://example.com/hook"}}
+	if got := resolveReplyTarget(dingTalk, dingTalkMsg); got != "webhook_b64_aHR0cHM6Ly9leGFtcGxlLmNvbS9ob29r" {
+		t.Fatalf("DingTalk target = %q", got)
+	}
+	if got := formatReplyText(dingTalk, dingTalkMsg, "你好"); got != "[CQ:at,qq=staff-1] 你好" {
+		t.Fatalf("DingTalk reply text = %q", got)
 	}
 }
 

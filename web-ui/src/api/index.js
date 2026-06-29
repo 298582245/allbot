@@ -25,6 +25,24 @@ export const getUpdateInfo = () => {
   })
 }
 
+// 获取升级状态
+export const getUpdateStatus = () => {
+  return request({
+    url: '/system/update/status',
+    method: 'get',
+    silent: true
+  })
+}
+
+// 执行一键升级
+export const startSystemUpgrade = () => {
+  return request({
+    url: '/system/update/upgrade',
+    method: 'post',
+    timeout: 15 * 60 * 1000
+  })
+}
+
 // 获取仪表盘消息统计
 export const getMessageStats = (params = {}) => {
   return request({
@@ -114,6 +132,11 @@ export const controlPlugin = (pluginId, action) => {
   })
 }
 
+// 设置插件置顶状态
+export const setPluginPinned = (pluginId, pinned) => {
+  return controlPlugin(pluginId, pinned ? 'pin' : 'unpin')
+}
+
 // 删除插件
 export const deletePlugin = (pluginId) => {
   return request({
@@ -136,6 +159,41 @@ export const deletePluginBackup = (name) => {
     url: '/plugins/recycle-bin',
     method: 'delete',
     params: { name }
+  })
+}
+
+// 获取脚本环境变量列表
+export const getScriptEnvs = (params = {}) => {
+  return request({
+    url: '/script-envs',
+    method: 'get',
+    params
+  })
+}
+
+// 创建脚本环境变量
+export const createScriptEnv = (data) => {
+  return request({
+    url: '/script-envs',
+    method: 'post',
+    data
+  })
+}
+
+// 更新脚本环境变量
+export const updateScriptEnv = (id, data) => {
+  return request({
+    url: `/script-envs/${encodeURIComponent(String(id))}`,
+    method: 'put',
+    data
+  })
+}
+
+// 删除脚本环境变量
+export const deleteScriptEnv = (id) => {
+  return request({
+    url: `/script-envs/${encodeURIComponent(String(id))}`,
+    method: 'delete'
   })
 }
 
@@ -285,6 +343,15 @@ export const saveAdapter = (data) => {
     url: '/adapters',
     method: 'post',
     data
+  })
+}
+
+// 设置适配器置顶状态
+export const setAdapterPinned = (adapterId, pinned) => {
+  return request({
+    url: `/adapters/${adapterId}`,
+    method: 'post',
+    data: { action: pinned ? 'pin' : 'unpin' }
   })
 }
 

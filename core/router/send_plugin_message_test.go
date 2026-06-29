@@ -133,7 +133,7 @@ func TestRouterSendPluginMessageExplicitStoppedAdapterDoesNotFallback(t *testing
 	}
 }
 
-func TestRouterSendPluginMessageUnionWithPlatformDoesNotFallbackToOtherPlatform(t *testing.T) {
+func TestRouterSendPluginMessageUnionWithPlatformFallsBackToOtherPlatform(t *testing.T) {
 	db, err := config.NewDatabase(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -171,12 +171,13 @@ func TestRouterSendPluginMessageUnionWithPlatformDoesNotFallbackToOtherPlatform(
 		}
 	})
 
-	err = r.sendPluginMessage("plugin", plugincore.SendMessageAction{Platform: "qq_office", UnionID: "U_qq_office_office_user", Text: "hello"})
-	if err == nil || !strings.Contains(err.Error(), "qq office failed") {
-		t.Fatalf("error = %v", err)
+	err = r.sendPluginMessage("plugin", plugincore.SendMessageAction{Platform: "qq_office", AdapterID: strconv.FormatInt(qqOffice.ID, 10), UnionID: "U_qq_office_office_user", Text: "hello"})
+	if err != nil {
+		t.Fatalf("sendPluginMessage returned error: %v", err)
 	}
-	if len(telegramFake.sentMessages()) != 0 {
-		t.Fatalf("unexpected fallback to telegram: %#v", telegramFake.sentMessages())
+	messages := telegramFake.sentMessages()
+	if len(messages) != 1 || messages[0].target != "telegram-user" || messages[0].text != "hello" {
+		t.Fatalf("fallback messages = %#v", messages)
 	}
 }
 

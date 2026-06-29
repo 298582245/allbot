@@ -262,16 +262,43 @@ class AccountQLPlugin:
         if not accounts:
             await ctx.reply(f"暂无账号，请发送【{self.prefix}登录】添加。")
             return
-        await ctx.reply("请输入要查询的账号：\n[0] 全部查询\n--------------------\n" + "\n".join([f"[{i + 1}] {self.account_name(item)}" for i, item in enumerate(accounts)]))
-        choice = (await ctx.listen(60)).strip().lower()
-        if choice == "0":
-            await self.reply_queries(ctx, accounts, separate=True)
-        else:
+        if len(accounts) == 1:
+            await self.reply_queries(ctx, accounts, separate=False)
+            return
+        selected = await self.select_accounts_for_query(ctx, accounts)
+        if not selected:
+            await ctx.reply("已取消查询")
+            return
+        await self.reply_queries(ctx, selected["accounts"], separate=selected["all"])
+
+    async def select_accounts_for_query(self, ctx: Context, accounts: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        page_size = 20
+        total_pages = (len(accounts) + page_size - 1) // page_size
+        page = 0
+        while True:
+            start = page * page_size
+            page_accounts = accounts[start:start + page_size]
+            lines = ["请输入要查询的账号：", "[0] 全部查询", "--------------------"]
+            lines.extend([f"[{start + i + 1}] {self.account_name(item)}" for i, item in enumerate(page_accounts)])
+            if total_pages > 1:
+                lines.extend(["--------------------", f"第 {page + 1}/{total_pages} 页，回复 n 下一页，p 上一页，q 退出"])
+            await ctx.reply("\n".join(lines))
+            choice = (await ctx.listen(60)).strip().lower()
+            if not choice or choice == "q":
+                return None
+            if choice == "0":
+                return {"all": True, "accounts": accounts}
+            if total_pages > 1 and choice == "n":
+                page = (page + 1) % total_pages
+                continue
+            if total_pages > 1 and choice == "p":
+                page = (page - 1 + total_pages) % total_pages
+                continue
             index = parse_int(choice, 0) - 1
             if index < 0 or index >= len(accounts):
                 await ctx.reply("❌账号序号错误")
-                return
-            await self.reply_queries(ctx, [accounts[index]], separate=False)
+                return None
+            return {"all": False, "accounts": [accounts[index]]}
 
     async def reply_queries(self, ctx: Context, accounts: List[Dict[str, Any]], separate: bool) -> None:
         query = self.account.get("query")
@@ -307,9 +334,15 @@ class AccountQLPlugin:
         await self.run_accounts(ctx, runnable, "all_authorized" if all_users else "current_user", f"{self.prefix}一键运行" if all_users else f"{self.prefix}运行")
 
     async def run_accounts(self, ctx: Context, accounts: List[Dict[str, Any]], run_mode: str, title: str) -> None:
-        wait = ctx.meta("fake") != "true"
+        is_scheduled = ctx.meta("fake") == "true"
+        if "wait_scheduled" in self.ql:
+            wait_scheduled = self.ql.get("wait_scheduled")
+        else:
+            wait_scheduled = self.ql.get("waitScheduled")
+        wait = wait_scheduled is True if is_scheduled else True
         if wait:
             await ctx.reply(f"🚀开始执行{title}，共 {len(accounts)} 个账号。")
+        started_at = datetime.datetime.now(datetime.timezone.utc)
         timeout_config = self.ql.get("timeout_config") or self.ql.get("timeoutConfig") or "run_wait_timeout"
         timeout = max(1, parse_int(ctx.config(timeout_config, self.ql.get("timeout", 7200)), parse_int(self.ql.get("timeout"), 7200)))
         env_option = self.ql.get("env", {})
@@ -326,12 +359,38 @@ class AccountQLPlugin:
         if result.get("timeout"):
             await ctx.reply(script_task_message(result, f"{title}仍在运行"))
             return
+        if run_mode == "all_authorized":
+            await self.call_after_run(ctx, accounts, result, run_mode, title, is_scheduled)
         if result.get("status") == "success":
             await self.check_ck_after_run(ctx, accounts)
-        if self.account.get("query"):
+        if run_mode != "all_authorized" and self.account.get("query"):
             await self.reply_queries(ctx, accounts, separate=True)
+        elif run_mode == "all_authorized":
+            elapsed_ms = (datetime.datetime.now(datetime.timezone.utc) - started_at).total_seconds() * 1000
+            await ctx.reply(self.run_summary_message(result, len(accounts), elapsed_ms))
         else:
             await ctx.reply(f"{'✅执行完成' if result.get('status') == 'success' else '❌执行失败'}：{title}")
+
+    def run_summary_message(self, result: Dict[str, Any], account_count: int, elapsed_ms: float) -> str:
+        if result.get("status") != "success":
+            error = result.get("error") or ""
+            return f"❌{self.prefix}生活运行失败！共运行{account_count}个账号，耗时{format_duration_seconds(elapsed_ms)}{f'，错误：{error}' if error else ''}"
+        return f"✅{self.prefix}生活运行完成！共运行{account_count}个账号，耗时{format_duration_seconds(elapsed_ms)}"
+
+    async def call_after_run(self, ctx: Context, accounts: List[Dict[str, Any]], result: Dict[str, Any], run_mode: str, title: str, is_scheduled: bool) -> None:
+        after_run = self.ql.get("after_run") or self.ql.get("afterRun")
+        if not callable(after_run):
+            return
+        helpers = self.helpers(ctx)
+        helpers.run_mode = run_mode
+        helpers.runMode = run_mode
+        helpers.title = title
+        helpers.is_scheduled = is_scheduled
+        helpers.isScheduled = is_scheduled
+        try:
+            await maybe_await(after_run(ctx, accounts, result, helpers))
+        except Exception as error:
+            print(f"{self.prefix} after_run 执行失败：{error}", file=sys.stderr)
 
     async def check_ck_after_run(self, ctx: Context, accounts: List[Dict[str, Any]]) -> None:
         checker = self.account.get("check_ck") or self.account.get("checkCk")
@@ -378,9 +437,11 @@ class AccountQLPlugin:
         if not admin:
             print(f"声明{self.prefix}定时任务失败：没有已启动平台的管理员身份", file=sys.stderr)
             return
-        for item in normalize_schedules(self.prefix, self.schedules):
+        normalized_schedules = normalize_schedules(self.prefix, self.schedules)
+        default_max_count = max(3, len(normalized_schedules))
+        for item in normalized_schedules:
             try:
-                await ctx.set_scheduled_task(task_key=item["task_key"], name=item["name"], description=item["description"], cron=str(ctx.config(item["cron_config"], item["cron"])), platform=str(admin.get("platform") or ""), adapter_id=str(admin.get("adapter_id") or ""), user_id=str(admin.get("user_id") or ""), group_id="", content=item["content"], max_count=item.get("max_count", 3))
+                await ctx.set_scheduled_task(task_key=item["task_key"], name=item["name"], description=item["description"], cron=str(ctx.config(item["cron_config"], item["cron"])), platform=str(admin.get("platform") or ""), adapter_id=str(admin.get("adapter_id") or ""), user_id=str(admin.get("user_id") or ""), group_id="", content=item["content"], max_count=max(item.get("max_count") or 0, default_max_count))
             except Exception as error:
                 print(f"声明定时任务失败：{item.get('task_key')} {error}", file=sys.stderr)
 
@@ -599,8 +660,13 @@ def script_task_message(result: Dict[str, Any], fallback: str) -> str:
 
 def normalize_schedules(prefix: str, schedules: Dict[str, Any]) -> List[Dict[str, Any]]:
     result = []
+    run_items = []
     if schedules.get("run"):
-        item = schedules["run"]
+        run_items.append(schedules["run"])
+    extra_runs = schedules.get("runs") or schedules.get("run_list") or schedules.get("runList") or []
+    if isinstance(extra_runs, list):
+        run_items.extend(extra_runs)
+    for item in run_items:
         result.append({"task_key": item.get("task_key") or item.get("taskKey") or f"{prefix}-default-run", "name": item.get("name", f"{prefix}自动运行"), "description": item.get("description", "默认脚本运行任务"), "cron_config": item.get("cron_config") or item.get("cronConfig") or "cron", "cron": item.get("cron", "0 8 * * *"), "content": item.get("content", f"{prefix}一键运行"), "max_count": item.get("max_count") or item.get("maxCount") or 3})
     expire_item = schedules.get("expire_check") or schedules.get("expireCheck")
     if expire_item:
@@ -665,6 +731,11 @@ def is_authorized(value: str) -> bool:
 def format_time(value: str) -> str:
     date = parse_time(value)
     return "无" if is_min_time(date) else date.strftime("%Y/%m/%d %H:%M:%S")
+
+
+def format_duration_seconds(ms: float) -> str:
+    seconds = max(0.0, float(ms or 0)) / 1000
+    return f"{seconds:.3f}秒"
 
 
 def safe_timestamp(value: datetime.datetime) -> float:

@@ -7,11 +7,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -27,6 +29,7 @@ import (
 	"github.com/allbot/allbot/core/router"
 	"github.com/allbot/allbot/core/session"
 	"github.com/allbot/allbot/core/types"
+	"github.com/allbot/allbot/core/updater"
 	"github.com/allbot/allbot/core/web"
 )
 
@@ -34,8 +37,30 @@ import (
 var embeddedWeb embed.FS
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--apply-update" {
+		if err := updater.ApplyUpdate(os.Args[2]); err != nil {
+			log.Fatalf("应用更新失败: %v", err)
+		}
+		return
+	}
+
 	pluginDir := flag.String("plugins", "./plugins", "插件目录")
+	showAccessCode := flag.Bool("show-access-code", false, "显示当前安全访问码并退出")
+	resetPassword := flag.Bool("reset-password", false, "重置管理员密码并退出")
 	flag.Parse()
+
+	if *showAccessCode {
+		if err := printAccessCode("./config.db", os.Stdout); err != nil {
+			log.Fatalf("查询安全访问码失败: %v", err)
+		}
+		return
+	}
+	if *resetPassword {
+		if err := resetAdminPassword("./config.db", os.Stdout); err != nil {
+			log.Fatalf("重置管理员密码失败: %v", err)
+		}
+		return
+	}
 
 	if delay := restartDelayFromEnv(); delay > 0 {
 		time.Sleep(delay)
@@ -43,6 +68,7 @@ func main() {
 
 	log.Println("AllBot 启动中...")
 	restartChan := make(chan router.RestartRequest, 1)
+	upgradeExitChan := make(chan struct{}, 1)
 	var restartRequested atomic.Bool
 	requestRestart := func(request router.RestartRequest) error {
 		if !restartRequested.CompareAndSwap(false, true) {
@@ -60,6 +86,15 @@ func main() {
 	webPort, err := resolveWebPort()
 	if err != nil {
 		log.Fatalf("Web UI 端口配置错误: %v", err)
+	}
+	webAssetMode, err := resolveWebAssetMode()
+	if err != nil {
+		log.Fatalf("Web UI 资源模式配置错误: %v", err)
+	}
+	if webAssetMode == web.WebAssetModeExternal {
+		if err := validateExternalWebDir("web"); err != nil {
+			log.Fatalf("外部 Web UI 目录无效: %v", err)
+		}
 	}
 	if err := os.MkdirAll(*pluginDir, 0755); err != nil {
 		log.Fatalf("创建插件目录失败: %v", err)
@@ -128,6 +163,14 @@ func main() {
 		log.Fatalf("初始化内嵌 Web UI 失败: %v", err)
 	}
 	webServer := web.NewServer(webPort, pluginManager, messageRouter, adapterManager, webFiles)
+	webServer.SetWebAssetMode(webAssetMode)
+	keywordReplyManager.SetUpdateHandler(webServer.UpdateService())
+	webServer.SetUpgradeExitHandler(func() {
+		select {
+		case upgradeExitChan <- struct{}{}:
+		default:
+		}
+	})
 	backupService := backup.NewService(configDB, pluginManager.PluginDir())
 	backupService.Start()
 	webServer.SetBackupService(backupService)
@@ -154,6 +197,11 @@ func main() {
 	log.Printf("- 插件目录: %s", *pluginDir)
 	log.Printf("- 已加载插件: %d 个", len(plugins))
 	log.Printf("- Web UI: http://localhost:%s", webPort)
+	if webAssetMode == web.WebAssetModeExternal {
+		log.Printf("- Web UI 资源模式: %s (web)", webAssetMode)
+	} else {
+		log.Printf("- Web UI 资源模式: %s", webAssetMode)
+	}
 	log.Printf("- 管理员账号: %s", adminPasswordInit.Username)
 
 	shutdown := func() {
@@ -182,6 +230,10 @@ func main() {
 		case <-sigChan:
 			shutdown()
 			return
+		case <-upgradeExitChan:
+			log.Println("AllBot 准备应用更新并重启...")
+			shutdown()
+			return
 		case request := <-restartChan:
 			log.Println("AllBot 准备重启...")
 			if err := saveRestartContext(request); err != nil {
@@ -200,6 +252,95 @@ func main() {
 			return
 		}
 	}
+}
+
+func resetAdminPassword(dbPath string, output io.Writer) error {
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("未找到配置数据库 %s，请在 AllBot 工作目录执行", dbPath)
+		}
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("配置数据库路径 %s 是目录", dbPath)
+	}
+	database, err := config.NewDatabase(dbPath)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	password, err := config.GenerateAdminPassword()
+	if err != nil {
+		return err
+	}
+	hash, err := config.HashAdminPassword(password)
+	if err != nil {
+		return err
+	}
+	if err := database.SetSetting("admin.password", hash, "管理员密码哈希"); err != nil {
+		return err
+	}
+	if err := database.SetSetting("admin.generated_password", password, "首次自动生成的管理员默认密码"); err != nil {
+		return err
+	}
+	username := "admin"
+	settings, err := database.GetSystemSettings()
+	if err == nil && strings.TrimSpace(settings.AdminUsername) != "" {
+		username = strings.TrimSpace(settings.AdminUsername)
+	}
+	_, err = fmt.Fprintf(output, "管理员密码已重置\n管理员账号: %s\n新密码: %s\n", username, password)
+	return err
+}
+
+func printAccessCode(dbPath string, output io.Writer) error {
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("未找到配置数据库 %s，请在 AllBot 工作目录执行", dbPath)
+		}
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("配置数据库路径 %s 是目录", dbPath)
+	}
+	database, err := config.NewDatabase(dbPath)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	settings, err := database.GetSystemSettings()
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprint(output, formatAccessCodeStatus(settings.AccessCodeEnabled, settings.AccessCode))
+	return err
+}
+
+func formatAccessCodeStatus(enabled bool, code string) string {
+	code = strings.TrimSpace(code)
+	var builder strings.Builder
+	if enabled {
+		builder.WriteString("安全访问码已开启\n")
+	} else {
+		builder.WriteString("安全访问码未开启\n")
+	}
+	if code == "" {
+		builder.WriteString("当前未设置访问码\n")
+		return builder.String()
+	}
+	if enabled {
+		builder.WriteString("访问码: ")
+		builder.WriteString(code)
+		builder.WriteString("\n访问入口: /login/")
+		builder.WriteString(code)
+		builder.WriteString("\n")
+		return builder.String()
+	}
+	builder.WriteString("当前保存的访问码: ")
+	builder.WriteString(code)
+	builder.WriteString("\n")
+	return builder.String()
 }
 
 func saveRestartContext(request router.RestartRequest) error {
@@ -224,6 +365,15 @@ func saveRestartContext(request router.RestartRequest) error {
 }
 
 func notifyRestartCompleted(adapterManager *config.AdapterManager) {
+	if strings.TrimSpace(os.Getenv("ALLBOT_UPDATED")) == "1" {
+		fromVersion := strings.TrimSpace(os.Getenv("ALLBOT_UPDATED_FROM"))
+		toVersion := strings.TrimSpace(os.Getenv("ALLBOT_UPDATED_TO"))
+		if fromVersion != "" && toVersion != "" {
+			log.Printf("AllBot 已升级完成: %s -> %s", fromVersion, toVersion)
+		} else {
+			log.Println("AllBot 已升级完成")
+		}
+	}
 	if strings.TrimSpace(os.Getenv("ALLBOT_RESTARTED")) != "1" || adapterManager == nil {
 		return
 	}
@@ -324,6 +474,32 @@ func resolveWebPort() (string, error) {
 		return "", fmt.Errorf("ALLBOT_WEB_PORT 必须是 1-65535 的有效端口")
 	}
 	return strconv.Itoa(port), nil
+}
+
+func resolveWebAssetMode() (web.WebAssetMode, error) {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("ALLBOT_WEB_MODE")))
+	if value == "" {
+		return web.WebAssetModeEmbedded, nil
+	}
+	switch web.WebAssetMode(value) {
+	case web.WebAssetModeEmbedded:
+		return web.WebAssetModeEmbedded, nil
+	case web.WebAssetModeExternal:
+		return web.WebAssetModeExternal, nil
+	default:
+		return "", fmt.Errorf("ALLBOT_WEB_MODE 只支持 embedded 或 external")
+	}
+}
+
+func validateExternalWebDir(dir string) error {
+	info, err := os.Stat(filepath.Join(dir, "index.html"))
+	if err != nil {
+		return fmt.Errorf("缺少 %s: %w", filepath.Join(dir, "index.html"), err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s 不能是目录", filepath.Join(dir, "index.html"))
+	}
+	return nil
 }
 
 func startBindCodeCleaner(db *config.Database) {

@@ -132,6 +132,30 @@ class PaySdkTest(unittest.TestCase):
         self.assertEqual(calls[0]["action"]["group_id"], "")
         self.assertEqual(calls[0]["action"]["union_id"], "")
 
+    def test_send_message_same_platform_inherits_context_adapter_id(self):
+        ctx, calls = self.make_context({"platform": "qq_office", "adapter_id": "3", "user_id": "admin"})
+        asyncio.run(ctx.send_message(platform="qq_office", userId="target", text="hi"))
+        self.assertEqual(calls[0]["expected_action"], "send_message_response")
+        self.assertEqual(calls[0]["action"]["platform"], "qq_office")
+        self.assertEqual(calls[0]["action"]["adapter_id"], "3")
+        self.assertEqual(calls[0]["action"]["user_id"], "target")
+
+    def test_send_message_cross_platform_does_not_inherit_context_adapter_id(self):
+        ctx, calls = self.make_context({"platform": "qq_office", "adapter_id": "3", "user_id": "admin"})
+        asyncio.run(ctx.send_message(platform="telegram", unionId="U_qq_123", text="hi"))
+        self.assertEqual(calls[0]["expected_action"], "send_message_response")
+        self.assertEqual(calls[0]["action"]["platform"], "telegram")
+        self.assertEqual(calls[0]["action"]["adapter_id"], "")
+        self.assertEqual(calls[0]["action"]["union_id"], "U_qq_123")
+
+    def test_send_message_explicit_adapter_id_still_wins(self):
+        ctx, calls = self.make_context({"platform": "qq_office", "adapter_id": "3"})
+        asyncio.run(ctx.send_message(platform="telegram", adapterId="8", userId="u1", text="hi"))
+        self.assertEqual(calls[0]["expected_action"], "send_message_response")
+        self.assertEqual(calls[0]["action"]["platform"], "telegram")
+        self.assertEqual(calls[0]["action"]["adapter_id"], "8")
+        self.assertEqual(calls[0]["action"]["user_id"], "u1")
+
     def test_push_accepts_snake_case_options(self):
         ctx, calls = self.make_context()
         asyncio.run(ctx.push(user_id="u2", group_id="g2", text="hi", platform="telegram", adapter_id="3"))

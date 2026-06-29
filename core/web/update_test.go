@@ -30,12 +30,15 @@ func TestHandleSystemUpdateDetectsNewVersion(t *testing.T) {
 		Name:    "v1.0.1",
 		Body:    "修复问题",
 		URL:     "https://github.com/298582245/allbot/releases/tag/v1.0.1",
-		Assets:  []updater.ReleaseAsset{{Name: "allbot-windows-amd64.exe", DownloadURL: "https://example.com/allbot.exe", Size: 123}},
+		Assets: []updater.ReleaseAsset{
+			{Name: "allbot-windows-amd64.exe", DownloadURL: "https://example.com/allbot.exe", Size: 123},
+			{Name: "checksums-v1.0.1.txt", DownloadURL: "https://example.com/checksums-v1.0.1.txt", Size: 64},
+		},
 	}})
 
 	response := performSystemUpdateRequest(t, server, http.MethodGet)
 
-	if response.CurrentVersion != "v1.0.0" || response.DisplayVersion != "AllBot v1.0.0" {
+	if response.CurrentVersion != "v1.0.0" || response.DisplayVersion != "AllBot v1.0.0 (local)" {
 		t.Fatalf("current version = %q, display = %q", response.CurrentVersion, response.DisplayVersion)
 	}
 	if response.Commit != "abc123" || response.BuildTime != "2026-06-03T10:00:00+08:00" || response.GoVersion == "" {
@@ -47,14 +50,58 @@ func TestHandleSystemUpdateDetectsNewVersion(t *testing.T) {
 	if response.ReleaseName != "v1.0.1" || response.ReleaseBody != "修复问题" || response.ReleaseURL == "" {
 		t.Fatalf("release info = %#v", response)
 	}
-	if len(response.Assets) != 1 || response.Assets[0].DownloadURL != "https://example.com/allbot.exe" || response.Assets[0].Size != 123 {
+	if len(response.Assets) != 2 || response.Assets[0].DownloadURL != "https://example.com/allbot.exe" || response.Assets[0].Size != 123 {
 		t.Fatalf("assets = %#v", response.Assets)
 	}
-	if response.UpgradeSupported || !strings.Contains(response.UpgradeMessage, "暂不支持 Web 一键升级") {
+	if !response.UpgradeSupported || !strings.Contains(response.UpgradeMessage, "可一键升级") {
 		t.Fatalf("upgrade = %v, message = %q", response.UpgradeSupported, response.UpgradeMessage)
+	}
+	if response.MatchedAsset.Name != "allbot-windows-amd64.exe" {
+		t.Fatalf("matched asset = %#v", response.MatchedAsset)
+	}
+	if response.ChecksumAsset.Name != "checksums-v1.0.1.txt" {
+		t.Fatalf("checksum asset = %#v", response.ChecksumAsset)
 	}
 	if response.Error != "" || !strings.Contains(response.Message, "发现新版本") {
 		t.Fatalf("error = %q, message = %q", response.Error, response.Message)
+	}
+}
+
+func TestHandleSystemUpdateReportsUnsupportedWhenChecksumMissing(t *testing.T) {
+	withVersionValues(t, "v1.0.0", "abc123", "build")
+	server := &Server{}
+	server.SetReleaseClient(fakeReleaseClient{release: &updater.ReleaseInfo{
+		Version: "v1.0.1",
+		Name:    "v1.0.1",
+		Assets:  []updater.ReleaseAsset{{Name: "allbot-windows-amd64.exe", DownloadURL: "https://example.com/allbot.exe", Size: 123}},
+	}})
+
+	response := performSystemUpdateRequest(t, server, http.MethodGet)
+
+	if !response.HasUpdate {
+		t.Fatal("expected update")
+	}
+	if response.UpgradeSupported || !strings.Contains(response.UpgradeMessage, "校验文件") {
+		t.Fatalf("upgrade = %v, message = %q", response.UpgradeSupported, response.UpgradeMessage)
+	}
+}
+
+func TestHandleSystemUpdateReportsUnsupportedWhenAssetMissing(t *testing.T) {
+	withVersionValues(t, "v1.0.0", "abc123", "build")
+	server := &Server{}
+	server.SetReleaseClient(fakeReleaseClient{release: &updater.ReleaseInfo{
+		Version: "v1.0.1",
+		Name:    "v1.0.1",
+		Assets:  []updater.ReleaseAsset{{Name: "allbot-linux-arm64", DownloadURL: "https://example.com/allbot", Size: 123}},
+	}})
+
+	response := performSystemUpdateRequest(t, server, http.MethodGet)
+
+	if !response.HasUpdate {
+		t.Fatal("expected update")
+	}
+	if response.UpgradeSupported || !strings.Contains(response.UpgradeMessage, "未找到当前平台") {
+		t.Fatalf("upgrade = %v, message = %q", response.UpgradeSupported, response.UpgradeMessage)
 	}
 }
 
@@ -80,7 +127,7 @@ func TestHandleSystemUpdateKeepsCurrentInfoOnReleaseError(t *testing.T) {
 
 	response := performSystemUpdateRequest(t, server, http.MethodGet)
 
-	if response.CurrentVersion != "v1.0.0" || response.DisplayVersion != "AllBot v1.0.0" {
+	if response.CurrentVersion != "v1.0.0" || response.DisplayVersion != "AllBot v1.0.0 (local)" {
 		t.Fatalf("current info = %#v", response)
 	}
 	if response.HasUpdate || response.LatestVersion != "" {
@@ -121,6 +168,47 @@ func TestHandleSystemUpdateReturnsReleaseInfoWhenVersionInvalid(t *testing.T) {
 	}
 	if !strings.Contains(response.Error, "最新版本无效") || !strings.Contains(response.Message, "版本比较失败") {
 		t.Fatalf("error = %q, message = %q", response.Error, response.Message)
+	}
+}
+
+func TestHandleSystemUpdateStatusDefault(t *testing.T) {
+	server := &Server{}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/system/update/status", nil)
+
+	server.handleSystemUpdateStatus(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	var response updater.UpgradeState
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != updater.UpgradeStatusIdle {
+		t.Fatalf("upgrade status = %#v", response)
+	}
+}
+
+func TestHandleSystemUpgradeRejectsMissingPlatformAsset(t *testing.T) {
+	withVersionValues(t, "v1.0.0", "abc123", "build")
+	server := &Server{}
+	server.SetReleaseClient(fakeReleaseClient{release: &updater.ReleaseInfo{
+		Version: "v1.0.1",
+		Name:    "v1.0.1",
+		Assets:  []updater.ReleaseAsset{{Name: "allbot-linux-arm64", DownloadURL: "https://example.com/allbot", Size: 123}},
+	}})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/system/update/upgrade", nil)
+
+	server.handleSystemUpgrade(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	state := server.UpdateService().CurrentState()
+	if state.Status != updater.UpgradeStatusFailed || !strings.Contains(state.Message, "未找到当前平台") {
+		t.Fatalf("state = %#v", state)
 	}
 }
 

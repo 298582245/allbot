@@ -24,8 +24,20 @@
 
       <div v-loading="loading" class="adapters-content">
       <div class="adapter-grid">
-        <el-card v-for="adapter in paginatedAdapters" :key="adapter.id" class="adapter-card" shadow="hover">
+        <el-card v-for="adapter in paginatedAdapters" :key="adapter.id" class="adapter-card" :class="{ pinned: adapter.pinned }" shadow="hover">
         <template #header>
+          <div class="adapter-pin-row">
+            <el-button
+              class="adapter-pin-button"
+              :class="{ pinned: adapter.pinned }"
+              :type="adapter.pinned ? 'warning' : 'info'"
+              size="small"
+              text
+              @click="handlePinned(adapter)"
+            >
+              {{ adapter.pinned ? '取消置顶' : '置顶' }}
+            </el-button>
+          </div>
           <div class="card-header">
             <div>
               <div class="card-title">{{ adapter.remark || getPlatformName(adapter.platform) + ' #' + adapter.id }}</div>
@@ -94,6 +106,16 @@
           <span class="switch-text">{{ form.enabled ? '启用' : '禁用' }}</span>
         </el-form-item>
 
+        <el-alert v-if="isWechatOfficialPlatform" class="wechat-callback-alert" type="info" show-icon :closable="false">
+          <template #title>微信公众号回调地址</template>
+          <div class="wechat-callback-content">
+            <div>在微信公众平台「服务器配置」中填写以下 URL，消息加解密方式选择明文模式：</div>
+            <code>{{ wechatOfficialCallbackURL }}</code>
+            <div>如果这里显示 localhost，请换成微信能公网访问的域名或内网穿透地址。</div>
+            <div v-if="!form.id">保存机器人后会生成实际 ID，重新编辑即可看到完整回调地址。</div>
+          </div>
+        </el-alert>
+
         <template v-for="field in currentConfigSchema" :key="field.key">
           <el-form-item :label="field.label || field.key" :prop="`config.${field.key}`">
             <el-switch v-if="field.type === 'boolean'" v-model="form.config[field.key]" />
@@ -125,7 +147,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled, Plus } from '@element-plus/icons-vue'
-import { deleteAdapter, getAdapterPlatforms, getAdapters, saveAdapter } from '@/api'
+import { deleteAdapter, getAdapterPlatforms, getAdapters, saveAdapter, setAdapterPinned } from '@/api'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -190,6 +212,8 @@ const adapterPlatformMap = computed(() => Object.fromEntries(adapterPlatforms.va
 const currentPlatform = computed(() => adapterPlatformMap.value[form.platform] || adapterPlatformFallback.find(item => item.platform === form.platform) || null)
 const currentConfigSchema = computed(() => normalizeConfigSchema(currentPlatform.value?.config_schema))
 const platformNames = computed(() => Object.fromEntries(adapterPlatforms.value.map(item => [item.platform, item.display_name || item.platform])))
+const isWechatOfficialPlatform = computed(() => form.platform === 'wechat_official')
+const wechatOfficialCallbackURL = computed(() => buildWechatOfficialCallbackURL())
 const rules = computed(() => {
   const result = {
     platform: [{ required: true, message: '请选择平台', trigger: 'change' }],
@@ -216,9 +240,13 @@ const filteredAdapters = computed(() => {
   return adapters.value.filter(adapter => getAdapterSearchText(adapter).includes(keyword))
 })
 
+const sortedAdapters = computed(() => {
+  return [...filteredAdapters.value].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
+})
+
 const paginatedAdapters = computed(() => {
   const start = (currentPage.value - 1) * pageSize
-  return filteredAdapters.value.slice(start, start + pageSize)
+  return sortedAdapters.value.slice(start, start + pageSize)
 })
 
 watch(searchKeyword, () => {
@@ -283,6 +311,18 @@ function configFieldOptions(field) {
   })
 }
 
+function buildWechatOfficialCallbackURL() {
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  const adapterID = form.id || '保存后生成的ID'
+  const callbackPath = normalizeCallbackPath(form.config.callback_path)
+  return `${origin}/api/open/adapters/wechat-official/${adapterID}/${callbackPath}`
+}
+
+function normalizeCallbackPath(value) {
+  const path = String(value || '').trim().replace(/^\/+|\/+$/g, '')
+  return path || 'callback'
+}
+
 async function loadAdapterPlatforms() {
   try {
     const items = await getAdapterPlatforms()
@@ -295,7 +335,8 @@ async function loadAdapterPlatforms() {
 async function loadAdapters() {
   loading.value = true
   try {
-    adapters.value = await getAdapters()
+    const items = await getAdapters()
+    adapters.value = Array.isArray(items) ? items : []
     if (currentPage.value > Math.max(1, Math.ceil(filteredAdapters.value.length / pageSize))) {
       currentPage.value = 1
     }
@@ -387,6 +428,14 @@ async function handleSave() {
 
 function buildConfig() {
   return { ...form.config }
+}
+
+async function handlePinned(row) {
+  const pinned = !row.pinned
+  await setAdapterPinned(row.id, pinned)
+  ElMessage.success(pinned ? '已置顶' : '已取消置顶')
+  currentPage.value = 1
+  await loadAdapters()
 }
 
 async function handleToggleEnabled(row, enabled) {
@@ -520,6 +569,20 @@ onMounted(async () => {
   min-height: 220px;
 }
 
+.adapter-card.pinned {
+  border-color: #f3d19e;
+}
+
+.adapter-pin-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 8px;
+}
+
+.adapter-pin-button {
+  padding-left: 0;
+}
+
 .card-header {
   display: flex;
   justify-content: space-between;
@@ -584,6 +647,25 @@ onMounted(async () => {
   color: #909399;
   font-size: 12px;
   line-height: 1.4;
+}
+
+.wechat-callback-alert {
+  margin-bottom: 18px;
+}
+
+.wechat-callback-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  line-height: 1.5;
+}
+
+.wechat-callback-content code {
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: #1f2d3d;
+  background: #f5f7fa;
+  word-break: break-all;
 }
 
 @media (max-width: 768px) {

@@ -2,7 +2,9 @@
 package loader
 
 import (
+	_ "github.com/allbot/allbot/core/adapter/dingtalk"
 	_ "github.com/allbot/allbot/core/adapter/qq"
 	_ "github.com/allbot/allbot/core/adapter/qq_office"
 	_ "github.com/allbot/allbot/core/adapter/telegram"
+	_ "github.com/allbot/allbot/core/adapter/wechat_official"
 )

@@ -252,6 +252,31 @@ func (m *Manager) TogglePlugin(pluginID string, enabled bool) error {
 		return fmt.Errorf("plugin not found: %s", pluginID)
 	}
 
+	if err := m.updatePluginConfigValue(pluginID, "enabled", enabled); err != nil {
+		return err
+	}
+
+	process.Plugin.Enabled = enabled
+	return nil
+}
+
+func (m *Manager) SetPluginPinned(pluginID string, pinned bool) error {
+	m.mu.Lock()
+	process, ok := m.plugins[pluginID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("plugin not found: %s", pluginID)
+	}
+
+	if err := m.updatePluginConfigValue(pluginID, "pinned", pinned); err != nil {
+		return err
+	}
+
+	process.Plugin.Pinned = pinned
+	return nil
+}
+
+func (m *Manager) updatePluginConfigValue(pluginID, key string, value interface{}) error {
 	configPath := filepath.Join(m.pluginDir, pluginID, "plugin.json")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -261,17 +286,12 @@ func (m *Manager) TogglePlugin(pluginID string, enabled bool) error {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return err
 	}
-	config["enabled"] = enabled
+	config[key] = value
 	newData, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(configPath, newData, 0644); err != nil {
-		return err
-	}
-
-	process.Plugin.Enabled = enabled
-	return nil
+	return os.WriteFile(configPath, newData, 0644)
 }
 
 func (m *Manager) ReloadPlugin(pluginID string) error {
@@ -707,7 +727,7 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 				if runtimeProfile == "" {
 					runtimeProfile = strings.TrimSpace(plugin.RuntimeProfile)
 				}
-				result = scriptFunc(plugin.ID, ScriptRunAction{RequestID: action.RequestID, Runtime: action.Runtime, RuntimeProfile: runtimeProfile, Script: action.Script, Cwd: action.Cwd, Env: action.Env, Timeout: action.Timeout, Wait: action.Wait, RunMode: action.RunMode, UnionID: action.UnionID})
+				result = scriptFunc(plugin.ID, ScriptRunAction{RequestID: action.RequestID, PluginID: plugin.ID, Runtime: action.Runtime, RuntimeProfile: runtimeProfile, Script: action.Script, Cwd: action.Cwd, Env: action.Env, Timeout: action.Timeout, Wait: action.Wait, RunMode: action.RunMode, UnionID: action.UnionID})
 			}
 			response, _ := json.Marshal(map[string]interface{}{"action": "script_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
 			response = append(response, '\n')
@@ -961,9 +981,20 @@ func (m *Manager) RunPluginScript(pluginPath string, action ScriptRunAction) Plu
 	}
 	m.mu.RLock()
 	database := m.database
+	scriptEnv := types.ScriptEnvConfig{}
+	if process := m.plugins[action.PluginID]; process != nil && process.Plugin != nil {
+		scriptEnv = normalizeScriptEnvConfig(process.Plugin.ScriptEnv)
+	}
 	m.mu.RUnlock()
 	if database == nil {
 		return PluginUserResult{Success: false, Error: "数据库未初始化，无法创建脚本任务"}
+	}
+	if scriptEnv.Enabled {
+		env, err := database.ScriptEnvMap(scriptEnv.Names)
+		if err != nil {
+			return PluginUserResult{Success: false, Error: err.Error()}
+		}
+		action.Env = mergeScriptEnv(env, action.Env)
 	}
 	action.RuntimeProfile = strings.TrimSpace(action.RuntimeProfile)
 	resolved, err := m.depsManager.ResolveRuntime(runtimeName, action.RuntimeProfile)
@@ -1064,6 +1095,20 @@ func (m *Manager) preparePluginScript(pluginPath string, action ScriptRunAction)
 		}
 	}
 	return runtimeName, fullScript, workDir, nil
+}
+
+func mergeScriptEnv(stored map[string]string, explicit map[string]string) map[string]string {
+	if len(stored) == 0 && len(explicit) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(stored)+len(explicit))
+	for key, value := range stored {
+		merged[key] = value
+	}
+	for key, value := range explicit {
+		merged[key] = value
+	}
+	return merged
 }
 
 func (m *Manager) runPluginScriptTask(ctx context.Context, logID int64, runtimeName, fullScript, workDir string, resolved deps.ResolvedRuntime, action ScriptRunAction) {
@@ -1286,11 +1331,13 @@ func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
 		Platforms:         config.Platforms,
 		AllowedAdapterIDs: config.AllowedAdapterIDs,
 		Priority:          config.Priority,
+		Pinned:            config.Pinned,
 		Trigger:           config.Trigger,
 		Enabled:           config.Enabled,
 		UserConfig:        config.UserConfig,
 		AccessControl:     pluginAccessControl(config.AccessControl),
 		OpenAPI:           normalizeOpenAPIConfig(config.OpenAPI, config.Runtime),
+		ScriptEnv:         normalizeScriptEnvConfig(config.ScriptEnv),
 		Template:          config.Template,
 		TemplateVersion:   config.TemplateVersion,
 		TemplateMetadata:  config.TemplateMetadata,
@@ -1320,6 +1367,21 @@ func normalizeOpenAPIConfig(config types.OpenAPIConfig, runtime string) types.Op
 		config.Runtime = runtime
 	}
 	config.RuntimeProfile = strings.TrimSpace(config.RuntimeProfile)
+	return config
+}
+
+func normalizeScriptEnvConfig(config types.ScriptEnvConfig) types.ScriptEnvConfig {
+	names := make([]string, 0, len(config.Names))
+	seen := map[string]bool{}
+	for _, name := range config.Names {
+		name = strings.TrimSpace(name)
+		if name == "" || strings.ContainsAny(name, "=\x00") || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	config.Names = names
 	return config
 }
 

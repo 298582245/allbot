@@ -3,6 +3,10 @@ chcp 65001 >nul
 set VERSION=v1.0.1
 set APP_NAME=allbot
 set CHECKSUM_FILE=checksums-%VERSION%.txt
+for /f %%i in ('git rev-parse HEAD 2^>nul') do set COMMIT=%%i
+if "%COMMIT%"=="" set COMMIT=unknown
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "Get-Date -Format yyyy-MM-ddTHH:mm:ssK"`) do set BUILD_TIME=%%i
+set LDFLAGS=-s -w -X github.com/allbot/allbot/core/version.Version=%VERSION% -X github.com/allbot/allbot/core/version.Commit=%COMMIT% -X github.com/allbot/allbot/core/version.BuildTime=%BUILD_TIME% -X github.com/allbot/allbot/core/version.BuildChannel=release
 
 echo ========================================
 echo  构建 %APP_NAME% %VERSION%
@@ -12,7 +16,7 @@ echo.
 echo [1/5] 构建 Linux AMD64...
 set GOOS=linux
 set GOARCH=amd64
-go build -ldflags="-s -w" -o %APP_NAME%-%VERSION%-linux-amd64
+go build -ldflags="%LDFLAGS%" -o %APP_NAME%-%VERSION%-linux-amd64
 if %errorlevel% neq 0 (
     echo ❌ Linux AMD64 构建失败！
 ) else (
@@ -23,7 +27,7 @@ echo.
 echo [2/5] 构建 Linux ARM64...
 set GOOS=linux
 set GOARCH=arm64
-go build -ldflags="-s -w" -o %APP_NAME%-%VERSION%-linux-arm64
+go build -ldflags="%LDFLAGS%" -o %APP_NAME%-%VERSION%-linux-arm64
 if %errorlevel% neq 0 (
     echo ❌ Linux ARM64 构建失败！
 ) else (
@@ -34,7 +38,7 @@ echo.
 echo [3/5] 构建 Windows AMD64 (64位)...
 set GOOS=windows
 set GOARCH=amd64
-go build -ldflags="-s -w" -o %APP_NAME%-%VERSION%-windows-amd64.exe
+go build -ldflags="%LDFLAGS%" -o %APP_NAME%-%VERSION%-windows-amd64.exe
 if %errorlevel% neq 0 (
     echo ❌ Windows AMD64 构建失败！
 ) else (
@@ -45,7 +49,7 @@ echo.
 echo [4/5] 构建 Windows 386 (32位)...
 set GOOS=windows
 set GOARCH=386
-go build -ldflags="-s -w" -o %APP_NAME%-%VERSION%-windows-386.exe
+go build -ldflags="%LDFLAGS%" -o %APP_NAME%-%VERSION%-windows-386.exe
 if %errorlevel% neq 0 (
     echo ❌ Windows 386 构建失败！
 ) else (

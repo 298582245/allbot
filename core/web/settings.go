@@ -3,8 +3,6 @@ package web
 import (
 	"encoding/json"
 	"net/http"
-
-	"github.com/allbot/allbot/core/config"
 )
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
@@ -17,12 +15,26 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jsonResponse(w, settings)
 	case http.MethodPut:
-		var settings config.SystemSettings
-		if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+		var payload map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			s.jsonError(w, "请求数据无效", http.StatusBadRequest)
 			return
 		}
-		if err := s.adapterManager.GetDatabase().SaveSystemSettings(&settings); err != nil {
+		settings, err := s.adapterManager.GetDatabase().GetSystemSettings()
+		if err != nil {
+			s.jsonError(w, "获取系统设置失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			s.jsonError(w, "请求数据无效", http.StatusBadRequest)
+			return
+		}
+		if err := json.Unmarshal(data, settings); err != nil {
+			s.jsonError(w, "请求数据无效", http.StatusBadRequest)
+			return
+		}
+		if err := s.adapterManager.GetDatabase().SaveSystemSettings(settings); err != nil {
 			s.jsonError(w, "保存系统设置失败: "+err.Error(), http.StatusBadRequest)
 			return
 		}

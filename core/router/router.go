@@ -916,32 +916,52 @@ func (r *Router) sendPluginMessageToUnion(pluginID, unionID, platform, adapterID
 		log.Printf("[SYSTEM] Plugin %s load union accounts failed: union=%s err=%v", pluginID, unionID, err)
 		return false, err
 	}
-	matchedScope := false
+	platforms := unionNotifyPlatforms(accounts, platform)
+	if len(platforms) == 0 {
+		return false, nil
+	}
 	var lastErr error
+	for _, scope := range platforms {
+		for _, account := range accounts {
+			if account == nil || account.Platform == "" || account.UserID == "" || account.Platform != scope {
+				continue
+			}
+			currentAdapterID := ""
+			if scope == platform {
+				currentAdapterID = adapterID
+			}
+			if err := r.sendPluginMessage(pluginID, plugincore.SendMessageAction{Platform: account.Platform, AdapterID: currentAdapterID, UserID: account.UserID, Text: text}); err != nil {
+				log.Printf("[SYSTEM] Plugin %s union notify failed: union=%s platform=%s user=%s err=%v", pluginID, unionID, account.Platform, account.UserID, err)
+				lastErr = err
+				continue
+			}
+			return true, nil
+		}
+	}
+	if lastErr != nil {
+		return false, lastErr
+	}
+	return false, fmt.Errorf("UnionID %s 没有可用平台账号", unionID)
+}
+
+func unionNotifyPlatforms(accounts []*config.UserAccount, preferred string) []string {
+	seen := make(map[string]bool)
+	platforms := make([]string, 0, len(accounts))
+	add := func(platform string) {
+		platform = strings.TrimSpace(platform)
+		if platform == "" || seen[platform] {
+			return
+		}
+		seen[platform] = true
+		platforms = append(platforms, platform)
+	}
+	add(preferred)
 	for _, account := range accounts {
-		if account == nil || account.Platform == "" || account.UserID == "" {
-			continue
-		}
-		if platform != "" && account.Platform != platform {
-			continue
-		}
-		matchedScope = true
-		if err := r.sendPluginMessage(pluginID, plugincore.SendMessageAction{Platform: account.Platform, AdapterID: adapterID, UserID: account.UserID, Text: text}); err != nil {
-			log.Printf("[SYSTEM] Plugin %s union notify failed: union=%s platform=%s user=%s err=%v", pluginID, unionID, account.Platform, account.UserID, err)
-			lastErr = err
-			continue
-		}
-		return true, nil
-	}
-	if platform != "" {
-		if lastErr != nil {
-			return false, lastErr
-		}
-		if !matchedScope {
-			return false, fmt.Errorf("UnionID %s 没有 %s 平台账号", unionID, platform)
+		if account != nil {
+			add(account.Platform)
 		}
 	}
-	return false, nil
+	return platforms
 }
 
 func (r *Router) resolveAdapterInfo(platform string, adapterID string) (string, string, string, string, error) {

@@ -53,6 +53,7 @@ func createTables(db *sql.DB) error {
 		remark TEXT NOT NULL DEFAULT '',
 		description TEXT NOT NULL DEFAULT '',
 		enabled INTEGER NOT NULL DEFAULT 0,
+		pinned INTEGER NOT NULL DEFAULT 0,
 		config TEXT NOT NULL,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -135,6 +136,18 @@ func createTables(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_plugin_accounts_query ON plugin_accounts(plugin_id, union_id, env_name, status);
 	CREATE INDEX IF NOT EXISTS idx_plugin_accounts_all_query ON plugin_accounts(plugin_id, env_name, status);
 
+	CREATE TABLE IF NOT EXISTS script_env_vars (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL UNIQUE,
+		value TEXT NOT NULL DEFAULT '',
+		remark TEXT NOT NULL DEFAULT '',
+		enabled INTEGER NOT NULL DEFAULT 1,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_script_env_vars_enabled ON script_env_vars(enabled, name);
+
 	CREATE TABLE IF NOT EXISTS plugin_authorizations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		plugin_id TEXT NOT NULL,
@@ -172,6 +185,8 @@ func createTables(db *sql.DB) error {
 		runtime_profile TEXT NOT NULL DEFAULT '',
 		run_mode TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL DEFAULT '',
+		run_total INTEGER NOT NULL DEFAULT 0,
+		failed_total INTEGER NOT NULL DEFAULT 0,
 		output TEXT NOT NULL DEFAULT '',
 		error TEXT NOT NULL DEFAULT '',
 		started_at DATETIME NOT NULL,
@@ -385,6 +400,7 @@ func ensureBuiltinKeywordReplies(db *sql.DB) error {
 		{"插件列表", "平台管理员交互式管理插件启停和访问控制", true},
 		{"system", "返回系统运行信息", true},
 		{"version", "返回框架版本信息", false},
+		{"更新", "平台管理员触发 AllBot 一键升级", true},
 		{"重启", "平台管理员触发 AllBot 进程重启", true},
 	}
 	for _, item := range items {
@@ -464,6 +480,13 @@ func migrateAdaptersTable(db *sql.DB) error {
 		return err
 	}
 
+	if !columns["pinned"] {
+		if _, err := db.Exec(`ALTER TABLE adapters ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+		columns["pinned"] = true
+	}
+
 	needsRebuild := columns["platform"] && hasUniqueIndexOnPlatform(db)
 	if columns["remark"] && columns["description"] && !needsRebuild {
 		return nil
@@ -482,6 +505,7 @@ func migrateAdaptersTable(db *sql.DB) error {
 			remark TEXT NOT NULL DEFAULT '',
 			description TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 0,
+			pinned INTEGER NOT NULL DEFAULT 0,
 			config TEXT NOT NULL,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -499,10 +523,15 @@ func migrateAdaptersTable(db *sql.DB) error {
 		descriptionExpr = "COALESCE(description, '')"
 	}
 
+	pinnedExpr := "0"
+	if columns["pinned"] {
+		pinnedExpr = "COALESCE(pinned, 0)"
+	}
+
 	copySQL := fmt.Sprintf(`
-		INSERT INTO adapters_new (id, platform, remark, description, enabled, config, created_at, updated_at)
-		SELECT id, platform, %s, %s, enabled, config, created_at, updated_at FROM adapters
-	`, remarkExpr, descriptionExpr)
+		INSERT INTO adapters_new (id, platform, remark, description, enabled, pinned, config, created_at, updated_at)
+		SELECT id, platform, %s, %s, enabled, %s, config, created_at, updated_at FROM adapters
+	`, remarkExpr, descriptionExpr, pinnedExpr)
 	if _, err := tx.Exec(copySQL); err != nil {
 		return err
 	}
@@ -558,6 +587,22 @@ func migrateScriptRunLogsTable(db *sql.DB) error {
 	}
 	if !columns["runtime_profile"] {
 		if _, err := db.Exec(`ALTER TABLE script_run_logs ADD COLUMN runtime_profile TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if !columns["run_total"] {
+		if _, err := db.Exec(`ALTER TABLE script_run_logs ADD COLUMN run_total INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`UPDATE script_run_logs SET run_total = 1 WHERE run_total = 0`); err != nil {
+			return err
+		}
+	}
+	if !columns["failed_total"] {
+		if _, err := db.Exec(`ALTER TABLE script_run_logs ADD COLUMN failed_total INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`UPDATE script_run_logs SET failed_total = 1 WHERE status IN ('failed', 'error') AND failed_total = 0`); err != nil {
 			return err
 		}
 	}
@@ -627,7 +672,7 @@ func hasUniqueIndexOnPlatform(db *sql.DB) bool {
 
 func (d *Database) GetAllAdapters() ([]*AdapterConfig, error) {
 	rows, err := d.db.Query(`
-		SELECT id, platform, remark, description, enabled, config, created_at, updated_at
+		SELECT id, platform, remark, description, enabled, pinned, config, created_at, updated_at
 		FROM adapters
 		ORDER BY id
 	`)
@@ -651,13 +696,14 @@ func (d *Database) GetAllAdapters() ([]*AdapterConfig, error) {
 func (d *Database) GetAdapter(platform string) (*AdapterConfig, error) {
 	var adapter AdapterConfig
 	var enabled int
+	var pinned int
 	err := d.db.QueryRow(`
-		SELECT id, platform, remark, description, enabled, config, created_at, updated_at
+		SELECT id, platform, remark, description, enabled, pinned, config, created_at, updated_at
 		FROM adapters
 		WHERE platform = ?
 		ORDER BY id
 		LIMIT 1
-	`, platform).Scan(&adapter.ID, &adapter.Platform, &adapter.Remark, &adapter.Description, &enabled, &adapter.Config, &adapter.CreatedAt, &adapter.UpdatedAt)
+	`, platform).Scan(&adapter.ID, &adapter.Platform, &adapter.Remark, &adapter.Description, &enabled, &pinned, &adapter.Config, &adapter.CreatedAt, &adapter.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -667,17 +713,19 @@ func (d *Database) GetAdapter(platform string) (*AdapterConfig, error) {
 	}
 
 	adapter.Enabled = enabled == 1
+	adapter.Pinned = pinned == 1
 	return &adapter, nil
 }
 
 func (d *Database) GetAdapterByID(id int64) (*AdapterConfig, error) {
 	var adapter AdapterConfig
 	var enabled int
+	var pinned int
 	err := d.db.QueryRow(`
-		SELECT id, platform, remark, description, enabled, config, created_at, updated_at
+		SELECT id, platform, remark, description, enabled, pinned, config, created_at, updated_at
 		FROM adapters
 		WHERE id = ?
-	`, id).Scan(&adapter.ID, &adapter.Platform, &adapter.Remark, &adapter.Description, &enabled, &adapter.Config, &adapter.CreatedAt, &adapter.UpdatedAt)
+	`, id).Scan(&adapter.ID, &adapter.Platform, &adapter.Remark, &adapter.Description, &enabled, &pinned, &adapter.Config, &adapter.CreatedAt, &adapter.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -687,6 +735,7 @@ func (d *Database) GetAdapterByID(id int64) (*AdapterConfig, error) {
 	}
 
 	adapter.Enabled = enabled == 1
+	adapter.Pinned = pinned == 1
 	return &adapter, nil
 }
 
@@ -698,13 +747,17 @@ func (d *Database) SaveAdapter(adapter *AdapterConfig) error {
 	if adapter.Enabled {
 		enabled = 1
 	}
+	pinned := 0
+	if adapter.Pinned {
+		pinned = 1
+	}
 
 	if adapter.ID == 0 {
 		adapter.CreatedAt = now
 		result, err := d.db.Exec(`
-			INSERT INTO adapters (platform, remark, description, enabled, config, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, adapter.Platform, adapter.Remark, adapter.Description, enabled, adapter.Config, adapter.CreatedAt, adapter.UpdatedAt)
+			INSERT INTO adapters (platform, remark, description, enabled, pinned, config, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, adapter.Platform, adapter.Remark, adapter.Description, enabled, pinned, adapter.Config, adapter.CreatedAt, adapter.UpdatedAt)
 		if err != nil {
 			return err
 		}
@@ -723,9 +776,9 @@ func (d *Database) SaveAdapter(adapter *AdapterConfig) error {
 
 	_, err = d.db.Exec(`
 		UPDATE adapters
-		SET platform = ?, remark = ?, description = ?, enabled = ?, config = ?, updated_at = ?
+		SET platform = ?, remark = ?, description = ?, enabled = ?, pinned = ?, config = ?, updated_at = ?
 		WHERE id = ?
-	`, adapter.Platform, adapter.Remark, adapter.Description, enabled, adapter.Config, adapter.UpdatedAt, adapter.ID)
+	`, adapter.Platform, adapter.Remark, adapter.Description, enabled, pinned, adapter.Config, adapter.UpdatedAt, adapter.ID)
 	if err != nil {
 		return err
 	}
@@ -749,10 +802,12 @@ func scanAdapter(scanner interface {
 }) (*AdapterConfig, error) {
 	var adapter AdapterConfig
 	var enabled int
-	if err := scanner.Scan(&adapter.ID, &adapter.Platform, &adapter.Remark, &adapter.Description, &enabled, &adapter.Config, &adapter.CreatedAt, &adapter.UpdatedAt); err != nil {
+	var pinned int
+	if err := scanner.Scan(&adapter.ID, &adapter.Platform, &adapter.Remark, &adapter.Description, &enabled, &pinned, &adapter.Config, &adapter.CreatedAt, &adapter.UpdatedAt); err != nil {
 		return nil, err
 	}
 	adapter.Enabled = enabled == 1
+	adapter.Pinned = pinned == 1
 	return &adapter, nil
 }
 

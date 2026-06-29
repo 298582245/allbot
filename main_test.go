@@ -1,14 +1,144 @@
 package main
 
 import (
+	"bytes"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/router"
+	"github.com/allbot/allbot/core/web"
 )
+
+func TestFormatAccessCodeStatus(t *testing.T) {
+	cases := []struct {
+		name     string
+		enabled  bool
+		code     string
+		expected string
+	}{
+		{name: "enabled with code", enabled: true, code: "abc123", expected: "安全访问码已开启\n访问码: abc123\n访问入口: /login/abc123\n"},
+		{name: "disabled with code", enabled: false, code: "abc123", expected: "安全访问码未开启\n当前保存的访问码: abc123\n"},
+		{name: "enabled without code", enabled: true, code: "", expected: "安全访问码已开启\n当前未设置访问码\n"},
+		{name: "disabled without code", enabled: false, code: "", expected: "安全访问码未开启\n当前未设置访问码\n"},
+		{name: "trim code", enabled: true, code: "  abc123  ", expected: "安全访问码已开启\n访问码: abc123\n访问入口: /login/abc123\n"},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			if got := formatAccessCodeStatus(item.enabled, item.code); got != item.expected {
+				t.Fatalf("formatAccessCodeStatus() = %q, expected %q", got, item.expected)
+			}
+		})
+	}
+}
+
+func TestResetAdminPassword(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "config.db")
+	database, err := config.NewDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	if err := database.SetSetting("admin.username", "root", "管理员用户名"); err != nil {
+		t.Fatalf("SetSetting username returned error: %v", err)
+	}
+	if err := database.SetSetting("admin.password", "old-password", "管理员密码哈希"); err != nil {
+		t.Fatalf("SetSetting password returned error: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	var output bytes.Buffer
+	if err := resetAdminPassword(dbPath, &output); err != nil {
+		t.Fatalf("resetAdminPassword returned error: %v", err)
+	}
+	text := output.String()
+	if !strings.Contains(text, "管理员账号: root") {
+		t.Fatalf("output missing username: %q", text)
+	}
+	password := passwordFromResetOutput(text)
+	if password == "" {
+		t.Fatalf("output missing password: %q", text)
+	}
+
+	database, err = config.NewDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("NewDatabase returned error after reset: %v", err)
+	}
+	defer database.Close()
+	ok, err := database.VerifyAdminPassword(password)
+	if err != nil {
+		t.Fatalf("VerifyAdminPassword returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("new password should verify")
+	}
+	generatedPassword, err := database.GetSetting("admin.generated_password")
+	if err != nil {
+		t.Fatalf("GetSetting generated password returned error: %v", err)
+	}
+	if generatedPassword != password {
+		t.Fatal("generated password setting should match output password")
+	}
+}
+
+func TestResetAdminPasswordRejectsMissingDatabase(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "config.db")
+	var output bytes.Buffer
+	if err := resetAdminPassword(dbPath, &output); err == nil {
+		t.Fatal("resetAdminPassword expected missing database error")
+	}
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatalf("database should not be created, stat error: %v", err)
+	}
+}
+
+func TestPrintAccessCode(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "config.db")
+	database, err := config.NewDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	settings, err := database.GetSystemSettings()
+	if err != nil {
+		t.Fatalf("GetSystemSettings returned error: %v", err)
+	}
+	settings.AccessCodeEnabled = true
+	settings.AccessCode = "test-code"
+	if err := database.SaveSystemSettings(settings); err != nil {
+		t.Fatalf("SaveSystemSettings returned error: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	var output bytes.Buffer
+	if err := printAccessCode(dbPath, &output); err != nil {
+		t.Fatalf("printAccessCode returned error: %v", err)
+	}
+	text := output.String()
+	if !strings.Contains(text, "访问码: test-code") {
+		t.Fatalf("output missing access code: %q", text)
+	}
+	if !strings.Contains(text, "/login/test-code") {
+		t.Fatalf("output missing login path: %q", text)
+	}
+}
+
+func TestPrintAccessCodeRejectsMissingDatabase(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "config.db")
+	var output bytes.Buffer
+	if err := printAccessCode(dbPath, &output); err == nil {
+		t.Fatal("printAccessCode expected missing database error")
+	}
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatalf("database should not be created, stat error: %v", err)
+	}
+}
 
 func TestResolveWebPortDefault(t *testing.T) {
 	t.Setenv("ALLBOT_WEB_PORT", "")
@@ -52,6 +182,60 @@ func TestResolveWebPortInvalid(t *testing.T) {
 				t.Fatalf("resolveWebPort() = %q, expected error", port)
 			}
 		})
+	}
+}
+
+func TestResolveWebAssetMode(t *testing.T) {
+	cases := []struct {
+		name     string
+		value    string
+		expected web.WebAssetMode
+	}{
+		{name: "empty", value: "", expected: web.WebAssetModeEmbedded},
+		{name: "blank", value: "  ", expected: web.WebAssetModeEmbedded},
+		{name: "embedded", value: "embedded", expected: web.WebAssetModeEmbedded},
+		{name: "external", value: "external", expected: web.WebAssetModeExternal},
+		{name: "case and trim", value: " External ", expected: web.WebAssetModeExternal},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			t.Setenv("ALLBOT_WEB_MODE", item.value)
+			mode, err := resolveWebAssetMode()
+			if err != nil {
+				t.Fatalf("resolveWebAssetMode returned error: %v", err)
+			}
+			if mode != item.expected {
+				t.Fatalf("mode = %q, expected %q", mode, item.expected)
+			}
+		})
+	}
+}
+
+func TestResolveWebAssetModeInvalid(t *testing.T) {
+	invalidValues := []string{"auto", "1", "true"}
+	for _, value := range invalidValues {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("ALLBOT_WEB_MODE", value)
+			if mode, err := resolveWebAssetMode(); err == nil {
+				t.Fatalf("resolveWebAssetMode() = %q, expected error", mode)
+			}
+		})
+	}
+}
+
+func TestValidateExternalWebDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("ok"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateExternalWebDir(dir); err != nil {
+		t.Fatalf("validateExternalWebDir returned error: %v", err)
+	}
+}
+
+func TestValidateExternalWebDirRejectsMissingIndex(t *testing.T) {
+	if err := validateExternalWebDir(t.TempDir()); err == nil {
+		t.Fatal("validateExternalWebDir expected missing index error")
 	}
 }
 
@@ -169,6 +353,15 @@ func TestFormatRestartDuration(t *testing.T) {
 	if got := formatRestartDuration(1500 * time.Millisecond); got != "1.5s" {
 		t.Fatalf("formatRestartDuration returned %q", got)
 	}
+}
+
+func passwordFromResetOutput(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "新密码: ") {
+			return strings.TrimPrefix(line, "新密码: ")
+		}
+	}
+	return ""
 }
 
 func envValue(env []string, key string) string {

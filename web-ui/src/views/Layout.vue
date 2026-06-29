@@ -26,6 +26,14 @@
             <el-icon><Cpu /></el-icon>
             <span>插件管理</span>
           </el-menu-item>
+          <el-menu-item index="/script-envs">
+            <el-icon><Setting /></el-icon>
+            <span>脚本变量</span>
+          </el-menu-item>
+          <el-menu-item index="/script-tasks">
+            <el-icon><Document /></el-icon>
+            <span>脚本任务</span>
+          </el-menu-item>
           <el-menu-item index="/open-apis">
             <el-icon><Link /></el-icon>
             <span>开放接口</span>
@@ -48,10 +56,6 @@
           <el-menu-item index="/scheduled-tasks">
             <el-icon><Timer /></el-icon>
             <span>定时任务</span>
-          </el-menu-item>
-          <el-menu-item index="/script-tasks">
-            <el-icon><Document /></el-icon>
-            <span>脚本任务</span>
           </el-menu-item>
         </el-sub-menu>
 
@@ -135,7 +139,9 @@
 
     <el-container>
       <el-header class="header">
-        <div class="header-left"><h3>{{ currentTitle }}</h3></div>
+        <div class="header-left">
+          <h3>{{ currentTitle }}</h3>
+        </div>
         <div class="header-right">
           <el-dropdown @command="handleCommand">
             <span class="user-info">
@@ -206,91 +212,192 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
-import { useRoute } from 'vue-router'
-import { ElMessageBox } from 'element-plus'
-import { DataAnalysis, Grid, Connection, Document, Setting, User, SwitchButton, Cpu, Coin, Box, ChatDotRound, ChatLineRound, Lock, Timer, Link, Money, Tickets, FolderChecked, Picture } from '@element-plus/icons-vue'
-import { useAuthStore } from '@/stores/auth'
+import { computed, ref } from "vue";
+import { useRoute } from "vue-router";
+import { ElMessageBox } from "element-plus";
+import {
+  DataAnalysis,
+  Grid,
+  Connection,
+  Document,
+  Setting,
+  User,
+  SwitchButton,
+  Cpu,
+  Coin,
+  Box,
+  ChatDotRound,
+  ChatLineRound,
+  Lock,
+  Timer,
+  Link,
+  Money,
+  Tickets,
+  FolderChecked,
+  Picture,
+} from "@element-plus/icons-vue";
+import { useAuthStore } from "@/stores/auth";
 
-const route = useRoute()
-const authStore = useAuthStore()
-const moreDrawerVisible = ref(false)
-const menuRef = ref(null)
-const submenuKeys = ['pluginApis', 'messageTasks', 'dataBackups', 'platformAuth', 'payments', 'operations']
-const topLevelMenuIndexes = ['/dashboard']
+const route = useRoute();
+const authStore = useAuthStore();
+const moreDrawerVisible = ref(false);
+const menuRef = ref(null);
+const submenuKeys = [
+  "pluginApis",
+  "messageTasks",
+  "dataBackups",
+  "platformAuth",
+  "payments",
+  "operations",
+];
+const topLevelMenuIndexes = ["/dashboard"];
 const activeMenu = computed(() => {
-  if (route.path.startsWith('/open-apis')) return '/open-apis'
-  if (route.path === '/payments') return '/payments/config'
-  return route.path
-})
-const sidebarActiveMenu = computed(() => activeMenu.value)
-const currentTitle = computed(() => route.meta.title || 'AllBot')
+  if (route.path.startsWith("/open-apis")) return "/open-apis";
+  if (route.path === "/payments") return "/payments/config";
+  return route.path;
+});
+const sidebarActiveMenu = computed(() => activeMenu.value);
+const currentTitle = computed(() => route.meta.title || "AllBot");
 const primaryMobileNavItems = [
-  { path: '/dashboard', title: '仪表盘', icon: DataAnalysis },
-  { path: '/plugins', title: '插件', icon: Cpu },
-  { path: '/adapters', title: '平台', icon: Connection },
-  { path: '/settings', title: '设置', icon: Setting }
-]
+  { path: "/dashboard", title: "仪表盘", icon: DataAnalysis },
+  { path: "/plugins", title: "插件", icon: Cpu },
+  { path: "/adapters", title: "平台", icon: Connection },
+  { path: "/settings", title: "设置", icon: Setting },
+];
 const moreMobileNavItems = [
-  { path: '/open-apis', title: '开放接口', icon: Link },
-  { path: '/sdk', title: 'SDK管理', icon: Document },
-  { path: '/replies/keywords', title: '关键字回复', icon: ChatDotRound },
-  { path: '/scheduled-tasks', title: '定时任务', icon: Timer },
-  { path: '/script-tasks', title: '脚本任务', icon: Document },
-  { path: '/data', title: '数据管理', icon: Coin },
-  { path: '/statistics', title: '数据统计', icon: DataAnalysis },
-  { path: '/images', title: '图床管理', icon: Picture },
-  { path: '/backups', title: '备份中心', icon: FolderChecked },
-  { path: '/permissions', title: '权限控制', icon: Lock },
-  { path: '/payments/config', title: '支付配置', icon: Money },
-  { path: '/payments/orders', title: '订单管理', icon: Tickets },
-  { path: '/dependencies', title: '依赖管理', icon: Box },
-  { path: '/runtime-profiles', title: '运行环境', icon: Setting },
-  { path: '/logs', title: '日志查看', icon: Document }
-]
-const isMoreActive = computed(() => moreMobileNavItems.some((item) => activeMenu.value === item.path))
+  { path: "/open-apis", title: "开放接口", icon: Link },
+  { path: "/sdk", title: "SDK管理", icon: Document },
+  { path: "/replies/keywords", title: "关键字回复", icon: ChatDotRound },
+  { path: "/scheduled-tasks", title: "定时任务", icon: Timer },
+  { path: "/script-tasks", title: "脚本任务", icon: Document },
+  { path: "/script-envs", title: "脚本变量", icon: Setting },
+  { path: "/data", title: "数据管理", icon: Coin },
+  { path: "/statistics", title: "数据统计", icon: DataAnalysis },
+  { path: "/images", title: "图床管理", icon: Picture },
+  { path: "/backups", title: "备份中心", icon: FolderChecked },
+  { path: "/permissions", title: "权限控制", icon: Lock },
+  { path: "/payments/config", title: "支付配置", icon: Money },
+  { path: "/payments/orders", title: "订单管理", icon: Tickets },
+  { path: "/dependencies", title: "依赖管理", icon: Box },
+  { path: "/runtime-profiles", title: "运行环境", icon: Setting },
+  { path: "/logs", title: "日志查看", icon: Document },
+];
+const isMoreActive = computed(() =>
+  moreMobileNavItems.some((item) => activeMenu.value === item.path)
+);
 
 const handleMenuOpen = (index) => {
-  submenuKeys.filter((key) => key !== index).forEach((key) => menuRef.value?.close(key))
-}
+  submenuKeys
+    .filter((key) => key !== index)
+    .forEach((key) => menuRef.value?.close(key));
+};
 
 const handleMenuSelect = (index) => {
   if (topLevelMenuIndexes.includes(index)) {
-    submenuKeys.forEach((key) => menuRef.value?.close(key))
+    submenuKeys.forEach((key) => menuRef.value?.close(key));
   }
-}
+};
 
 const handleCommand = async (command) => {
-  if (command === 'logout') {
-    await ElMessageBox.confirm('确定要退出登录吗？', '提示', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning'
-    })
-    authStore.logout()
+  if (command === "logout") {
+    await ElMessageBox.confirm("确定要退出登录吗？", "提示", {
+      confirmButtonText: "确定",
+      cancelButtonText: "取消",
+      type: "warning",
+    });
+    await authStore.logout();
   }
-}
+};
 </script>
 
 <style scoped>
-.layout-container { height: 100vh; overflow: hidden; min-height: 0; }
-.sidebar { background: #001529; color: white; }
-.logo { height: 60px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(255,255,255,0.1); }
-.logo h2 { font-size: 20px; color: white; margin: 0; }
-.sidebar-menu { border: none; background: #001529; }
-.sidebar-menu :deep(.el-menu), .sidebar-menu :deep(.el-sub-menu .el-menu) { background: #001529; }
-.sidebar-menu :deep(.el-menu-item), .sidebar-menu :deep(.el-sub-menu__title) { color: rgba(255,255,255,0.65); background: #001529; }
-.sidebar-menu :deep(.el-menu-item:hover), .sidebar-menu :deep(.el-sub-menu__title:hover) { color: white; background: rgba(255,255,255,0.1); }
-.sidebar-menu :deep(.el-menu-item.is-active) { color: white; background: #1890ff; }
+.layout-container {
+  height: 100vh;
+  overflow: hidden;
+  min-height: 0;
+}
+.sidebar {
+  background: #001529;
+  color: white;
+}
+.logo {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.logo h2 {
+  font-size: 20px;
+  color: white;
+  margin: 0;
+}
+.sidebar-menu {
+  border: none;
+  background: #001529;
+}
+.sidebar-menu :deep(.el-menu),
+.sidebar-menu :deep(.el-sub-menu .el-menu) {
+  background: #001529;
+}
+.sidebar-menu :deep(.el-menu-item),
+.sidebar-menu :deep(.el-sub-menu__title) {
+  color: rgba(255, 255, 255, 0.65);
+  background: #001529;
+}
+.sidebar-menu :deep(.el-menu-item:hover),
+.sidebar-menu :deep(.el-sub-menu__title:hover) {
+  color: white;
+  background: rgba(255, 255, 255, 0.1);
+}
+.sidebar-menu :deep(.el-menu-item.is-active) {
+  color: white;
+  background: #1890ff;
+}
 .sidebar-menu :deep(.el-sub-menu.is-opened > .el-sub-menu__title),
-.sidebar-menu :deep(.el-sub-menu.is-active > .el-sub-menu__title) { color: white; background: #1890ff; }
-.header { background: white; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; }
-.header-left h3 { margin: 0; font-size: 18px; color: #333; }
-.header-right { display: flex; align-items: center; }
-.user-info { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 8px 12px; border-radius: 4px; transition: background 0.3s; }
-.user-info:hover { background: #f5f5f5; }
-.main-content { background: #f0f2f5; padding: 20px 20px 36px; overflow-x: hidden; overflow-y: auto; min-height: 0; }
-.mobile-tabbar { display: none; }
+.sidebar-menu :deep(.el-sub-menu.is-active > .el-sub-menu__title) {
+  color: white;
+  background: #1890ff;
+}
+.header {
+  background: white;
+  border-bottom: 1px solid #f0f0f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+}
+.header-left h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #333;
+}
+.header-right {
+  display: flex;
+  align-items: center;
+}
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 8px 12px;
+  border-radius: 4px;
+  transition: background 0.3s;
+}
+.user-info:hover {
+  background: #f5f5f5;
+}
+.main-content {
+  background: #f0f2f5;
+  padding: 20px 20px 36px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-height: 0;
+}
+.mobile-tabbar {
+  display: none;
+}
 
 @media (max-width: 768px) {
   .layout-container {
@@ -432,5 +539,4 @@ const handleCommand = async (command) => {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-
 </style>

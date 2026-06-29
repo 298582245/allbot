@@ -42,6 +42,22 @@ type fakeKeywordPluginAdminStore struct {
 	plugins []*plugincore.PluginProcess
 }
 
+type fakeUpdateHandler struct {
+	current updater.UpgradeState
+	start   updater.UpgradeState
+	err     error
+	calls   int
+}
+
+func (h *fakeUpdateHandler) StartUpgrade(ctx context.Context) (updater.UpgradeState, error) {
+	h.calls++
+	return h.start, h.err
+}
+
+func (h *fakeUpdateHandler) CurrentState() updater.UpgradeState {
+	return h.current
+}
+
 func (s *fakeKeywordPluginAdminStore) GetAllPlugins() []*plugincore.PluginProcess {
 	return append([]*plugincore.PluginProcess(nil), s.plugins...)
 }
@@ -166,9 +182,14 @@ func TestKeywordReplyRegisterExistingUserRepliesAlreadyRegistered(t *testing.T) 
 }
 
 func TestKeywordReplyVersionShowsLatestRelease(t *testing.T) {
-	original := version.Version
+	originalVersion := version.Version
+	originalChannel := version.BuildChannel
 	version.Version = "v1.0.0"
-	defer func() { version.Version = original }()
+	version.BuildChannel = "local"
+	defer func() {
+		version.Version = originalVersion
+		version.BuildChannel = originalChannel
+	}()
 
 	fake := &keywordReplyFakeAdapter{}
 	db, manager := newKeywordReplyTestManager(t, fake, true)
@@ -182,7 +203,7 @@ func TestKeywordReplyVersionShowsLatestRelease(t *testing.T) {
 	if len(messages) != 1 {
 		t.Fatalf("messages len = %d", len(messages))
 	}
-	for _, expected := range []string{"AllBot v1.0.0", "当前版本：v1.0.0", "最新版本：v1.0.1", "更新内容：", "1. 修复问题", "发送「更新」可升级到最新版本。"} {
+	for _, expected := range []string{"AllBot v1.0.0 (local)", "当前版本：v1.0.0", "最新版本：v1.0.1", "更新内容：", "1. 修复问题", "发送「更新」可升级到最新版本。"} {
 		if !strings.Contains(messages[0].text, expected) {
 			t.Fatalf("version message missing %q: %s", expected, messages[0].text)
 		}
@@ -223,6 +244,76 @@ func TestKeywordReplyVersionReleaseFailure(t *testing.T) {
 	}
 	messages := fake.sentMessages()
 	if len(messages) != 1 || !strings.Contains(messages[0].text, "最新版本：获取失败") || !strings.Contains(messages[0].text, "网络失败") {
+		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestKeywordReplyUpdateAdminTriggersUpgrade(t *testing.T) {
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+	handler := &fakeUpdateHandler{current: updater.UpgradeState{Status: updater.UpgradeStatusIdle}, start: updater.UpgradeState{Status: updater.UpgradeStatusDownloading, Message: "正在下载升级包", Version: "v1.0.2", AssetName: "allbot-windows-amd64.exe"}}
+	manager.SetUpdateHandler(handler)
+
+	if !manager.Handle(&types.Message{Platform: "qq", UserID: "admin", Content: "更新"}) {
+		t.Fatal("Handle returned false")
+	}
+	if handler.calls != 1 {
+		t.Fatalf("upgrade calls = %d, expected 1", handler.calls)
+	}
+	messages := fake.sentMessages()
+	if len(messages) != 1 || !strings.Contains(messages[0].text, "已开始更新到 v1.0.2") || !strings.Contains(messages[0].text, "allbot-windows-amd64.exe") {
+		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestKeywordReplyUpdateWithoutHandlerRepliesNotInitialized(t *testing.T) {
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+
+	if !manager.Handle(&types.Message{Platform: "qq", UserID: "admin", Content: "更新"}) {
+		t.Fatal("Handle returned false")
+	}
+	messages := fake.sentMessages()
+	if len(messages) != 1 || !strings.Contains(messages[0].text, "更新功能未初始化") {
+		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestKeywordReplyUpdateNonAdminIsConsumedWithoutHandler(t *testing.T) {
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, false)
+	defer db.Close()
+	handler := &fakeUpdateHandler{current: updater.UpgradeState{Status: updater.UpgradeStatusDownloading}}
+	manager.SetUpdateHandler(handler)
+
+	if !manager.Handle(&types.Message{Platform: "qq", UserID: "user", Content: "更新"}) {
+		t.Fatal("Handle returned false")
+	}
+	if handler.calls != 0 {
+		t.Fatal("update handler should not be called for non-admin user")
+	}
+	if messages := fake.sentMessages(); len(messages) != 0 {
+		t.Fatalf("messages len = %d, expected 0", len(messages))
+	}
+}
+
+func TestKeywordReplyUpdateDuplicateRequest(t *testing.T) {
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+	handler := &fakeUpdateHandler{current: updater.UpgradeState{Status: updater.UpgradeStatusDownloading, Message: "正在下载升级包"}}
+	manager.SetUpdateHandler(handler)
+
+	if !manager.Handle(&types.Message{Platform: "qq", UserID: "admin", Content: "更新"}) {
+		t.Fatal("Handle returned false")
+	}
+	if handler.calls != 0 {
+		t.Fatal("update handler should not be called when upgrade is already running")
+	}
+	messages := fake.sentMessages()
+	if len(messages) != 1 || !strings.Contains(messages[0].text, "更新已在执行") {
 		t.Fatalf("messages = %#v", messages)
 	}
 }

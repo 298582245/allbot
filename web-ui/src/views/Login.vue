@@ -110,7 +110,7 @@ const handleLogin = async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #7dd3fc 0%, #e0f2fe 52%, #ffffff 100%);
 }
 
 .login-box {

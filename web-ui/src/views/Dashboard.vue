@@ -19,9 +19,9 @@
       </el-col>
     </el-row>
 
-    <el-row :gutter="20" style="margin-top: 20px">
-      <el-col :span="24">
-        <el-card>
+    <el-row :gutter="20" class="chart-row">
+      <el-col :xs="24" :lg="12">
+        <el-card class="dashboard-card">
           <template #header>
             <div class="card-header chart-header">
               <span>消息分布图</span>
@@ -59,6 +59,30 @@
           </div>
         </el-card>
       </el-col>
+      <el-col :xs="24" :lg="12">
+        <el-card class="dashboard-card">
+          <template #header>
+            <div class="card-header">
+              <span>系统资源占用</span>
+              <span class="resource-hint">CPU / 内存实时概览</span>
+            </div>
+          </template>
+          <div class="resource-grid">
+            <div class="resource-panel">
+              <div class="resource-title">CPU 占用</div>
+              <div ref="cpuChartRef" class="resource-chart"></div>
+              <div class="resource-value">{{ formatPercent(resourceStatus.allBotCpuUsagePercent) }}</div>
+              <div class="resource-detail">系统 CPU：{{ formatPercent(resourceStatus.cpuUsagePercent) }}</div>
+            </div>
+            <div class="resource-panel">
+              <div class="resource-title">内存占用</div>
+              <div ref="memoryChartRef" class="resource-chart"></div>
+              <div class="resource-value">{{ formatUsageWithPercent(resourceStatus.allBotMemoryUsedBytes, resourceStatus.allBotMemoryTotalBytes) }}</div>
+              <div class="resource-detail">系统内存：{{ formatBytes(resourceStatus.memoryUsedBytes) }} / {{ formatBytes(resourceStatus.memoryTotalBytes) }}</div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
     </el-row>
 
   </div>
@@ -67,7 +91,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import * as echarts from 'echarts/core'
-import { LineChart } from 'echarts/charts'
+import { LineChart, PieChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import {
@@ -78,13 +102,13 @@ import {
 } from '@element-plus/icons-vue'
 import { getSystemStatus, getMessageStats } from '@/api'
 
-echarts.use([LineChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
+echarts.use([LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
 
 const stats = ref([
-  { title: '运行时间', value: '--', icon: TrendCharts, color: 'linear-gradient(135deg, #6d7dfc 0%, #8b5cf6 100%)' },
-  { title: '插件总数', value: 0, subtext: '运行中: 0', icon: GridIcon, color: 'linear-gradient(135deg, #ff8fc7 0%, #ff6b88 100%)' },
-  { title: '平台机器人', value: 0, subtext: '运行中: 0', icon: ConnectionIcon, color: 'linear-gradient(135deg, #38bdf8 0%, #22d3ee 100%)' },
-  { title: '消息数', value: 0, icon: ChatLineRound, color: 'linear-gradient(135deg, #34d399 0%, #2dd4bf 100%)' }
+  { title: '当前运行', value: '--', subtext: '', icon: TrendCharts, color: 'linear-gradient(135deg, #6d7dfc 0%, #8b5cf6 100%)' },
+  { title: '运行插件', value: 0, subtext: '共 0 个插件', icon: GridIcon, color: 'linear-gradient(135deg, #ff8fc7 0%, #ff6b88 100%)' },
+  { title: '在线机器人', value: 0, subtext: '共 0 个机器人', icon: ConnectionIcon, color: 'linear-gradient(135deg, #38bdf8 0%, #22d3ee 100%)' },
+  { title: '今日消息', value: 0, subtext: '累计 0 条', icon: ChatLineRound, color: 'linear-gradient(135deg, #34d399 0%, #2dd4bf 100%)' }
 ])
 
 const statsMode = ref('date')
@@ -93,11 +117,26 @@ const chartDimension = ref('platform')
 const selectedSeriesName = ref('')
 const messageStatsLoading = ref(false)
 const messageStats = ref({ hours: [], by_platform: [], by_adapter: [] })
+const resourceStatus = ref({
+  cpuUsagePercent: 0,
+  memoryUsagePercent: 0,
+  memoryUsedBytes: 0,
+  memoryTotalBytes: 0,
+  allBotCpuUsagePercent: 0,
+  allBotMemoryUsagePercent: 0,
+  allBotMemoryUsedBytes: 0,
+  allBotMemoryTotalBytes: 0
+})
 const messageChartRef = ref(null)
+const cpuChartRef = ref(null)
+const memoryChartRef = ref(null)
 let messageChart = null
+let cpuChart = null
+let memoryChart = null
 let refreshTimer = null
 let uptimeTimer = null
-let uptimeBaseSeconds = null
+let totalUptimeBaseSeconds = null
+let currentUptimeBaseSeconds = null
 let uptimeBaseAt = 0
 let uptimeLastSyncedAt = 0
 const uptimeSyncInterval = 60 * 1000
@@ -109,11 +148,13 @@ const currentSeries = computed(() => chartDimension.value === 'platform' ? platf
 const loadData = async () => {
   try {
     const status = await getSystemStatus()
-    syncUptime(status.uptime)
-    stats.value[1].value = status.pluginCount || 0
-    stats.value[1].subtext = `运行中: ${status.enabledPluginCount || 0}`
+    syncUptime(status)
+    setPluginCountStat(status.pluginCount || 0, status.enabledPluginCount || 0)
     setAdapterCountStat(status.adapterCount || 0, status.runningAdapterCount || 0)
     setMessageCountStat(status.messageCount || 0, status.todayMessageCount || 0)
+    setResourceStatus(status)
+    await nextTick()
+    renderResourceCharts()
     await loadMessageStats()
   } catch (error) {
     console.error('加载数据失败:', error)
@@ -181,6 +222,130 @@ const renderMessageChart = () => {
   }, true)
 }
 
+function renderResourceCharts() {
+  renderUsagePie(cpuChartRef, cpuChart, chart => { cpuChart = chart }, 'CPU', resourceStatus.value.allBotCpuUsagePercent, resourceStatus.value.cpuUsagePercent, '#38bdf8', '#f59e0b')
+  renderUsagePie(memoryChartRef, memoryChart, chart => { memoryChart = chart }, '内存', resourceStatus.value.allBotMemoryUsagePercent, resourceStatus.value.memoryUsagePercent, '#34d399', '#8b5cf6')
+}
+
+function renderUsagePie(chartRef, chartInstance, setChart, name, allBotPercent, systemPercent, allBotColor, systemColor) {
+  if (!chartRef.value) return
+  let chart = chartInstance
+  if (!chart) {
+    chart = echarts.init(chartRef.value)
+    setChart(chart)
+  }
+  const allBotUsed = clampPercent(allBotPercent)
+  const systemUsed = clampPercent(systemPercent)
+  const realOtherSystemUsed = Math.max(0, systemUsed - allBotUsed)
+  const visualAllBotUsed = visualResourcePercent(allBotUsed)
+  const visualOtherSystemUsed = Math.min(visualResourcePercent(realOtherSystemUsed), 100 - visualAllBotUsed)
+  const unused = Math.max(0, 100 - visualAllBotUsed - visualOtherSystemUsed)
+  const realValues = {
+    'allBot 占用': allBotUsed,
+    '系统其他占用': realOtherSystemUsed,
+    '未使用': Math.max(0, 100 - systemUsed)
+  }
+  chart.setOption({
+    color: [allBotColor, systemColor, '#e5e7eb'],
+    tooltip: {
+      trigger: 'item',
+      formatter: item => `${item.name}: ${formatPercent(realValues[item.name] ?? item.value)}`
+    },
+    series: [{
+      name,
+      type: 'pie',
+      radius: ['62%', '82%'],
+      center: ['50%', '50%'],
+      avoidLabelOverlap: false,
+      label: { show: false },
+      labelLine: { show: false },
+      data: [
+        { name: 'allBot 占用', value: visualAllBotUsed },
+        { name: '系统其他占用', value: visualOtherSystemUsed },
+        { name: '未使用', value: unused }
+      ]
+    }]
+  }, true)
+}
+
+function setResourceStatus(status) {
+  resourceStatus.value = {
+    cpuUsagePercent: clampPercent(status?.cpuUsagePercent),
+    memoryUsagePercent: clampPercent(status?.memoryUsagePercent),
+    memoryUsedBytes: normalizeBytes(status?.memoryUsedBytes),
+    memoryTotalBytes: normalizeBytes(status?.memoryTotalBytes),
+    allBotCpuUsagePercent: clampPercent(status?.allBotCpuUsagePercent),
+    allBotMemoryUsagePercent: clampPercent(status?.allBotMemoryUsagePercent),
+    allBotMemoryUsedBytes: normalizeBytes(status?.allBotMemoryUsedBytes),
+    allBotMemoryTotalBytes: normalizeBytes(status?.allBotMemoryTotalBytes)
+  }
+}
+
+function clampPercent(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number) || number < 0) return 0
+  return Math.min(100, number)
+}
+
+function visualResourcePercent(value) {
+  const percent = clampPercent(value)
+  if (percent < 10) return 10
+  return percent
+}
+
+function normalizeBytes(value) {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? number : 0
+}
+
+function formatPercent(value) {
+  return `${clampPercent(value).toFixed(2)}%`
+}
+
+function formatBytes(value) {
+  const bytes = normalizeBytes(value)
+  if (bytes === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let size = bytes
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+  return `${size.toFixed(unitIndex === 0 ? 0 : 2)} ${units[unitIndex]}`
+}
+
+function formatCompactBytes(value) {
+  const bytes = normalizeBytes(value)
+  if (bytes === 0) return '0B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let size = bytes
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+  return `${size.toFixed(unitIndex === 0 ? 0 : 1)}${units[unitIndex]}`
+}
+
+function formatUsageWithPercent(used, total) {
+  const totalBytes = normalizeBytes(total)
+  if (totalBytes === 0) return formatCompactBytes(used)
+  return `${formatCompactBytes(used)}(${formatPercent(percentOfBytes(used, totalBytes))})`
+}
+
+function percentOfBytes(used, total) {
+  const usedBytes = normalizeBytes(used)
+  const totalBytes = normalizeBytes(total)
+  if (totalBytes === 0 || usedBytes > totalBytes) return 0
+  return (usedBytes / totalBytes) * 100
+}
+
+function resizeCharts() {
+  renderMessageChart()
+  renderResourceCharts()
+}
+
 function ensureSelectedSeries() {
   if (selectedSeriesName.value && !currentSeries.value.some(item => item.name === selectedSeriesName.value)) {
     selectedSeriesName.value = ''
@@ -195,64 +360,115 @@ function normalizeSeries(items) {
   })) : []
 }
 
-function syncUptime(uptime) {
+function syncUptime(status) {
   const now = Date.now()
-  if (uptimeBaseSeconds !== null && now - uptimeLastSyncedAt < uptimeSyncInterval) return
+  if (totalUptimeBaseSeconds !== null && now - uptimeLastSyncedAt < uptimeSyncInterval) return
 
-  const seconds = parseUptimeSeconds(uptime)
-  if (seconds === null) {
-    if (uptimeBaseSeconds === null) stats.value[0].value = uptime || '--'
+  const totalSeconds = normalizeSeconds(status?.totalUptimeSeconds)
+  const currentSeconds = normalizeSeconds(status?.currentUptimeSeconds)
+  if (totalSeconds === null || currentSeconds === null) {
+    syncLegacyUptime(status?.uptime)
     return
   }
-  uptimeBaseSeconds = seconds
+  totalUptimeBaseSeconds = totalSeconds
+  currentUptimeBaseSeconds = currentSeconds
   uptimeBaseAt = now
   uptimeLastSyncedAt = now
   updateUptimeDisplay()
 }
 
+function syncLegacyUptime(uptime) {
+  const seconds = parseUptimeSeconds(uptime)
+  if (seconds === null) {
+    if (totalUptimeBaseSeconds === null) {
+      stats.value[0].value = uptime || '--'
+      stats.value[0].subtext = uptime ? `累计 ${uptime}` : ''
+    }
+    return
+  }
+  totalUptimeBaseSeconds = seconds
+  currentUptimeBaseSeconds = seconds
+  uptimeBaseAt = Date.now()
+  uptimeLastSyncedAt = uptimeBaseAt
+  updateUptimeDisplay()
+}
+
 function updateUptimeDisplay() {
-  if (uptimeBaseSeconds === null) return
+  if (totalUptimeBaseSeconds === null || currentUptimeBaseSeconds === null) return
   const elapsed = Math.floor((Date.now() - uptimeBaseAt) / 1000)
-  stats.value[0].value = formatUptimeSeconds(uptimeBaseSeconds + Math.max(0, elapsed))
+  const totalSeconds = totalUptimeBaseSeconds + Math.max(0, elapsed)
+  const currentSeconds = currentUptimeBaseSeconds + Math.max(0, elapsed)
+  const totalText = formatDurationSeconds(totalSeconds, 3, true)
+  const currentText = formatDurationSeconds(currentSeconds, Infinity, true)
+  const totalFullText = formatDurationSeconds(totalSeconds, 3)
+  const currentFullText = formatDurationSeconds(currentSeconds)
+  stats.value[0].value = currentText
+  stats.value[0].tooltip = `当前运行时间: ${currentFullText}`
+  stats.value[0].subtext = `累计 ${totalText}`
+  stats.value[0].subtextTooltip = `总运行时间: ${totalFullText}`
+}
+
+function normalizeSeconds(value) {
+  const seconds = Number(value)
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.floor(seconds) : null
 }
 
 function parseUptimeSeconds(uptime) {
   if (typeof uptime !== 'string') return null
-  const matches = [...uptime.matchAll(/(\d+)\s*([hms])/g)]
+  const units = { y: 365 * 24 * 3600, M: 30 * 24 * 3600, d: 24 * 3600, h: 3600, m: 60, s: 1 }
+  const matches = [...uptime.matchAll(/(\d+)\s*([yMdhms])/g)]
   if (matches.length === 0) return null
-  return matches.reduce((total, match) => {
-    const value = Number(match[1])
-    if (match[2] === 'h') return total + value * 3600
-    if (match[2] === 'm') return total + value * 60
-    return total + value
-  }, 0)
+  return matches.reduce((total, match) => total + Number(match[1]) * units[match[2]], 0)
 }
 
-function formatUptimeSeconds(totalSeconds) {
-  const seconds = totalSeconds % 60
-  const minutes = Math.floor(totalSeconds / 60) % 60
-  const hours = Math.floor(totalSeconds / 3600)
-  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`
-  if (minutes > 0) return `${minutes}m ${seconds}s`
-  return `${seconds}s`
+function formatDurationSeconds(totalSeconds, maxParts = Infinity, compact = false) {
+  const units = [
+    { label: '年', shortLabel: 'Y', seconds: 365 * 24 * 3600 },
+    { label: '月', shortLabel: 'M', seconds: 30 * 24 * 3600 },
+    { label: '天', shortLabel: 'd', seconds: 24 * 3600 },
+    { label: '小时', shortLabel: 'h', seconds: 3600 },
+    { label: '分钟', shortLabel: 'm', seconds: 60 },
+    { label: '秒', shortLabel: 's', seconds: 1 }
+  ]
+  let remaining = Math.max(0, Math.floor(totalSeconds))
+  const parts = []
+  for (const unit of units) {
+    const value = Math.floor(remaining / unit.seconds)
+    if (value <= 0 && parts.length === 0 && unit.label !== '秒') continue
+    if (value > 0 || unit.label === '秒') {
+      parts.push(`${value}${compact ? unit.shortLabel : unit.label}`)
+      remaining -= value * unit.seconds
+    }
+    if (parts.length >= maxParts) break
+  }
+  return parts.join(' ')
+}
+
+function setPluginCountStat(total, enabled) {
+  const totalCount = Number(total || 0)
+  const enabledCount = Number(enabled || 0)
+  stats.value[1].value = formatCompactCount(enabledCount)
+  stats.value[1].tooltip = `运行中插件: ${formatExactCount(enabledCount)}`
+  stats.value[1].subtext = `共 ${formatCompactCount(totalCount)} 个插件`
+  stats.value[1].subtextTooltip = `插件总数: ${formatExactCount(totalCount)}`
 }
 
 function setAdapterCountStat(total, running) {
   const totalCount = Number(total || 0)
   const runningCount = Number(running || 0)
-  stats.value[2].value = formatCompactCount(totalCount)
-  stats.value[2].tooltip = `机器人总数: ${formatExactCount(totalCount)}`
-  stats.value[2].subtext = `运行中: ${formatCompactCount(runningCount)}`
-  stats.value[2].subtextTooltip = `运行中机器人: ${formatExactCount(runningCount)}`
+  stats.value[2].value = formatCompactCount(runningCount)
+  stats.value[2].tooltip = `运行中机器人: ${formatExactCount(runningCount)}`
+  stats.value[2].subtext = `共 ${formatCompactCount(totalCount)} 个机器人`
+  stats.value[2].subtextTooltip = `机器人总数: ${formatExactCount(totalCount)}`
 }
 
 function setMessageCountStat(total, today) {
   const totalCount = Number(total || 0)
   const todayCount = Number(today || 0)
-  stats.value[3].value = formatCompactCount(totalCount)
-  stats.value[3].tooltip = `总消息数: ${formatExactCount(totalCount)}`
-  stats.value[3].subtext = `今日: ${formatCompactCount(todayCount)}`
-  stats.value[3].subtextTooltip = `今日消息数: ${formatExactCount(todayCount)}`
+  stats.value[3].value = formatCompactCount(todayCount)
+  stats.value[3].tooltip = `今日消息数: ${formatExactCount(todayCount)}`
+  stats.value[3].subtext = `累计 ${formatCompactCount(totalCount)} 条`
+  stats.value[3].subtextTooltip = `总消息数: ${formatExactCount(totalCount)}`
 }
 
 function formatCompactCount(value) {
@@ -282,7 +498,7 @@ onMounted(() => {
   loadData()
   refreshTimer = setInterval(loadData, 5000)
   uptimeTimer = setInterval(updateUptimeDisplay, 1000)
-  window.addEventListener('resize', renderMessageChart)
+  window.addEventListener('resize', resizeCharts)
 })
 
 onUnmounted(() => {
@@ -292,10 +508,18 @@ onUnmounted(() => {
   if (uptimeTimer) {
     clearInterval(uptimeTimer)
   }
-  window.removeEventListener('resize', renderMessageChart)
+  window.removeEventListener('resize', resizeCharts)
   if (messageChart) {
     messageChart.dispose()
     messageChart = null
+  }
+  if (cpuChart) {
+    cpuChart.dispose()
+    cpuChart = null
+  }
+  if (memoryChart) {
+    memoryChart.dispose()
+    memoryChart = null
   }
 })
 </script>
@@ -384,6 +608,9 @@ onUnmounted(() => {
   font-weight: bold;
   color: #333;
   margin-bottom: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .stat-title {
@@ -420,6 +647,15 @@ onUnmounted(() => {
   width: 160px;
 }
 
+.chart-row {
+  margin-top: 20px;
+  row-gap: 20px;
+}
+
+.dashboard-card {
+  height: 100%;
+}
+
 .chart-wrap {
   min-height: 420px;
 }
@@ -427,6 +663,76 @@ onUnmounted(() => {
 .message-chart {
   width: 100%;
   height: 420px;
+}
+
+.resource-hint {
+  color: #8b97a8;
+  font-size: 13px;
+}
+
+.resource-grid {
+  min-height: 420px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.resource-panel {
+  position: relative;
+  border-radius: 22px;
+  padding: 20px 14px 16px;
+  background:
+    radial-gradient(circle at 22% 18%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0) 34%),
+    linear-gradient(145deg, #f8fbff 0%, #eef6ff 100%);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
+  overflow: hidden;
+}
+
+.resource-panel::after {
+  content: '';
+  position: absolute;
+  right: -36px;
+  bottom: -42px;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: rgba(64, 158, 255, 0.08);
+}
+
+.resource-title {
+  position: relative;
+  z-index: 1;
+  color: #4b5563;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.resource-chart {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 260px;
+}
+
+.resource-value {
+  position: relative;
+  z-index: 1;
+  margin-top: -18px;
+  color: #111827;
+  font-size: 28px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.resource-detail {
+  position: relative;
+  z-index: 1;
+  margin-top: 8px;
+  color: #6b7280;
+  font-size: 13px;
+  text-align: center;
+  word-break: break-all;
 }
 
 @media (max-width: 768px) {
@@ -491,6 +797,15 @@ onUnmounted(() => {
 
   .message-chart {
     height: 360px;
+  }
+
+  .resource-grid {
+    min-height: auto;
+    grid-template-columns: 1fr;
+  }
+
+  .resource-chart {
+    height: 220px;
   }
 
 }

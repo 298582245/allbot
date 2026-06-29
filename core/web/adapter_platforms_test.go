@@ -32,11 +32,32 @@ func TestHandleAdapterPlatforms(t *testing.T) {
 			byPlatform[platform] = item
 		}
 	}
-	for _, platform := range []string{"qq", "telegram", "qq_office"} {
+	for _, platform := range []string{"dingtalk", "qq", "telegram", "qq_office", "wechat_official"} {
 		if byPlatform[platform] == nil {
 			t.Fatalf("missing platform %s in %#v", platform, items)
 		}
 	}
+	dingTalk := byPlatform["dingtalk"]
+	if dingTalk["display_name"] != "钉钉机器人（Stream）" {
+		t.Fatalf("dingtalk display_name = %#v", dingTalk["display_name"])
+	}
+	dingTalkSchema, ok := dingTalk["config_schema"].([]interface{})
+	if !ok || len(dingTalkSchema) == 0 {
+		t.Fatalf("dingtalk config_schema = %#v", dingTalk["config_schema"])
+	}
+	dingTalkKeys := make(map[string]bool)
+	for _, field := range dingTalkSchema {
+		fieldMap, ok := field.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		key, _ := fieldMap["key"].(string)
+		dingTalkKeys[key] = true
+	}
+	if !dingTalkKeys["client_id"] || !dingTalkKeys["client_secret"] || !dingTalkKeys["robot_code"] || !dingTalkKeys["open_api_host"] || !dingTalkKeys["proxy_url"] {
+		t.Fatalf("dingtalk schema keys = %#v", dingTalkKeys)
+	}
+
 	qqOffice := byPlatform["qq_office"]
 	if qqOffice["display_name"] != "QQ 官方机器人" {
 		t.Fatalf("qq_office display_name = %#v", qqOffice["display_name"])
@@ -56,6 +77,27 @@ func TestHandleAdapterPlatforms(t *testing.T) {
 	}
 	if !keys["app_id"] || !keys["client_secret"] {
 		t.Fatalf("qq_office schema keys = %#v", keys)
+	}
+
+	wechatOfficial := byPlatform["wechat_official"]
+	if wechatOfficial["display_name"] != "微信公众号" {
+		t.Fatalf("wechat_official display_name = %#v", wechatOfficial["display_name"])
+	}
+	wechatSchema, ok := wechatOfficial["config_schema"].([]interface{})
+	if !ok || len(wechatSchema) == 0 {
+		t.Fatalf("wechat_official config_schema = %#v", wechatOfficial["config_schema"])
+	}
+	wechatKeys := make(map[string]bool)
+	for _, field := range wechatSchema {
+		fieldMap, ok := field.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		key, _ := fieldMap["key"].(string)
+		wechatKeys[key] = true
+	}
+	if !wechatKeys["app_id"] || !wechatKeys["app_secret"] || !wechatKeys["token"] || !wechatKeys["callback_path"] {
+		t.Fatalf("wechat_official schema keys = %#v", wechatKeys)
 	}
 }
 

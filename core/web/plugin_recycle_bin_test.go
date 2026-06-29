@@ -21,6 +21,7 @@ func TestHandlePluginRecycleBinListsBackupFiles(t *testing.T) {
 		t.Fatalf("write ignored file returned error: %v", err)
 	}
 	server := NewServer("0", nil, nil, nil, nil)
+	defer server.logManager.Stop()
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/plugins/recycle-bin", nil)
 	server.handlePluginRecycleBin(recorder, request)
@@ -50,6 +51,7 @@ func TestHandlePluginRecycleBinDeletesBackupFile(t *testing.T) {
 		t.Fatalf("write backup returned error: %v", err)
 	}
 	server := NewServer("0", nil, nil, nil, nil)
+	defer server.logManager.Stop()
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodDelete, "/api/plugins/recycle-bin?name=demo.backup.zip", nil)
 	server.handlePluginRecycleBin(recorder, request)
@@ -64,6 +66,7 @@ func TestHandlePluginRecycleBinDeletesBackupFile(t *testing.T) {
 func TestHandlePluginRecycleBinRejectsInvalidName(t *testing.T) {
 	withPluginRecycleBinTempDir(t)
 	server := NewServer("0", nil, nil, nil, nil)
+	defer server.logManager.Stop()
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodDelete, "/api/plugins/recycle-bin?name=../demo.backup.zip", nil)
 	server.handlePluginRecycleBin(recorder, request)

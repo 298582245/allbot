@@ -32,6 +32,7 @@ type Plugin struct {
 	Platforms         []string
 	AllowedAdapterIDs []string
 	Priority          int
+	Pinned            bool
 	Trigger           string
 	TriggerRegex      *regexp.Regexp
 	Order             int
@@ -39,6 +40,7 @@ type Plugin struct {
 	UserConfig        map[string]interface{}
 	AccessControl     AccessControlConfig
 	OpenAPI           OpenAPIConfig
+	ScriptEnv         ScriptEnvConfig
 	Template          string
 	TemplateVersion   string
 	TemplateMetadata  map[string]interface{}
@@ -51,6 +53,11 @@ type OpenAPIConfig struct {
 	Token          string `json:"token"`
 	Runtime        string `json:"runtime,omitempty"`
 	RuntimeProfile string `json:"runtime_profile,omitempty"`
+}
+
+type ScriptEnvConfig struct {
+	Enabled bool     `json:"enabled"`
+	Names   []string `json:"names"`
 }
 
 type OpenAPIEndpoint struct {
@@ -107,6 +114,7 @@ type PluginConfig struct {
 	Platforms         []string                `json:"platforms"`
 	AllowedAdapterIDs []string                `json:"allowed_adapter_ids,omitempty"`
 	Priority          int                     `json:"priority"`
+	Pinned            bool                    `json:"pinned"`
 	Trigger           string                  `json:"trigger"`
 	Enabled           bool                    `json:"enabled"`
 	Dependencies      map[string]string       `json:"dependencies"`
@@ -114,6 +122,7 @@ type PluginConfig struct {
 	UserConfig        map[string]interface{}  `json:"user_config,omitempty"`
 	AccessControl     *AccessControlConfig    `json:"access_control,omitempty"`
 	OpenAPI           OpenAPIConfig           `json:"open_api,omitempty"`
+	ScriptEnv         ScriptEnvConfig         `json:"script_env,omitempty"`
 	Template          string                  `json:"template,omitempty"`
 	TemplateVersion   string                  `json:"template_version,omitempty"`
 	TemplateMetadata  map[string]interface{}  `json:"template_metadata,omitempty"`

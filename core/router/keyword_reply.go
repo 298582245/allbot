@@ -38,6 +38,11 @@ type RestartRequest struct {
 	StartedAt  time.Time
 }
 
+type UpdateHandler interface {
+	StartUpgrade(ctx context.Context) (updater.UpgradeState, error)
+	CurrentState() updater.UpgradeState
+}
+
 type keywordPluginAdminStore interface {
 	GetAllPlugins() []*plugincore.PluginProcess
 	TogglePlugin(pluginID string, enabled bool) error
@@ -57,6 +62,7 @@ type KeywordReplyManager struct {
 	listenUntil      keywordListenUntilFunc
 	startTime        time.Time
 	releaseClient    updater.ReleaseClient
+	updateHandler   UpdateHandler
 	restartHandler   func(RestartRequest) error
 	restartMu        sync.Mutex
 	restartRequested bool
@@ -71,6 +77,10 @@ func (m *KeywordReplyManager) SetReleaseClient(client updater.ReleaseClient) {
 		client = updater.NewGitHubClient()
 	}
 	m.releaseClient = client
+}
+
+func (m *KeywordReplyManager) SetUpdateHandler(handler UpdateHandler) {
+	m.updateHandler = handler
 }
 
 func (m *KeywordReplyManager) SetPluginAdminStore(store keywordPluginAdminStore) {
@@ -203,11 +213,33 @@ func (m *KeywordReplyManager) replyBuiltin(keyword string, msg *types.Message) e
 		return m.sendText(adp, target, msg, m.systemInfo())
 	case "version":
 		return m.sendText(adp, target, msg, m.versionInfo())
+	case "更新":
+		return m.replyUpdate(adp, target, msg)
 	case "重启":
 		return m.replyRestart(adp, target, msg)
 	default:
 		return nil
 	}
+}
+
+func (m *KeywordReplyManager) replyUpdate(adp adapter.Adapter, target string, msg *types.Message) error {
+	if m.adminCheck == nil || !m.adminCheck(msg.Platform, msg.UserID) {
+		return m.sendText(adp, target, msg, "仅平台管理员可使用更新")
+	}
+	if m.updateHandler == nil {
+		return m.sendText(adp, target, msg, "更新功能未初始化")
+	}
+	state := m.updateHandler.CurrentState()
+	if state.Status == updater.UpgradeStatusDownloading || state.Status == updater.UpgradeStatusRestarting {
+		return m.sendText(adp, target, msg, "更新已在执行："+state.Message)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	state, err := m.updateHandler.StartUpgrade(ctx)
+	if err != nil {
+		return m.sendText(adp, target, msg, err.Error())
+	}
+	return m.sendText(adp, target, msg, fmt.Sprintf("已开始更新到 %s，资产：%s\n%s", state.Version, state.AssetName, state.Message))
 }
 
 func (m *KeywordReplyManager) replyRestart(adp adapter.Adapter, target string, msg *types.Message) error {

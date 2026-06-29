@@ -48,7 +48,7 @@ jobs:
           BUILD_TIME: ${{ steps.meta.outputs.build_time }}
         run: |
           mkdir -p dist
-          LDFLAGS="-s -w -X github.com/allbot/allbot/core/version.Version=${TAG} -X github.com/allbot/allbot/core/version.Commit=${COMMIT} -X github.com/allbot/allbot/core/version.BuildTime=${BUILD_TIME}"
+          LDFLAGS="-s -w -X github.com/allbot/allbot/core/version.Version=${TAG} -X github.com/allbot/allbot/core/version.Commit=${COMMIT} -X github.com/allbot/allbot/core/version.BuildTime=${BUILD_TIME} -X github.com/allbot/allbot/core/version.BuildChannel=release"
 
           GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o "dist/allbot-${TAG}-windows-amd64.exe" .
           GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o "dist/allbot-${TAG}-linux-amd64" .

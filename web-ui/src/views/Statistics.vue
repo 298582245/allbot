@@ -222,7 +222,7 @@ const scriptTasks = computed(() => overview.value.script_tasks || {})
 const backups = computed(() => overview.value.backups || {})
 
 const overviewItems = computed(() => [
-  { title: '脚本运行', value: formatCompact(scriptTasks.value.total), desc: `今日 ${formatCompact(scriptTasks.value.today)} 次` },
+  { title: '脚本运行', value: formatCompact(scriptTasks.value.total), desc: `失败 ${formatCompact(scriptTasks.value.failed)} 次，今日 ${formatCompact(scriptTasks.value.today)} 次` },
   { title: '图床资产', value: formatCompact(images.value.total_assets), desc: formatSize(images.value.total_size_bytes) },
   { title: '备份文件', value: formatCompact(backups.value.file_count), desc: formatSize(backups.value.total_size_bytes) },
   { title: '插件启用率', value: `${formatPercent(system.value.enabled_plugin_count, system.value.plugin_count)}%`, desc: `${system.value.enabled_plugin_count || 0}/${system.value.plugin_count || 0} 已启用` }
@@ -338,7 +338,7 @@ function renderTaskChart() {
   if (!taskChart) taskChart = echarts.init(taskChartRef.value)
   const successRate = formatPercent(scriptTasks.value.success, scriptTasks.value.total)
   taskChart.setOption({
-    tooltip: { formatter: `脚本成功率<br/>${successRate}%` },
+    tooltip: { formatter: `脚本成功率<br/>${successRate}%<br/>失败 ${formatCompact(scriptTasks.value.failed)} / 总计 ${formatCompact(scriptTasks.value.total)}` },
     series: [
       { type: 'gauge', radius: '88%', center: ['50%', '55%'], startAngle: 210, endAngle: -30, min: 0, max: 100, progress: { show: true, width: 18, itemStyle: { color: barGradient('#22d3ee', '#2563eb') } }, axisLine: { lineStyle: { width: 18, color: [[1, '#e2e8f0']] } }, pointer: { icon: 'roundRect', length: '58%', width: 8, itemStyle: { color: '#1f2937' } }, axisTick: { distance: -28, splitNumber: 2, lineStyle: { color: '#94a3b8', width: 1 } }, splitLine: { distance: -32, length: 12, lineStyle: { color: '#64748b', width: 2 } }, axisLabel: { distance: -10, color: '#64748b', fontSize: 11 }, detail: { valueAnimation: true, formatter: '{value}%', color: '#111827', fontSize: 34, fontWeight: 800, offsetCenter: [0, '34%'] }, title: { offsetCenter: [0, '58%'], color: '#64748b', fontSize: 13 }, data: [{ value: successRate, name: `成功 ${formatCompact(scriptTasks.value.success)} / 总计 ${formatCompact(scriptTasks.value.total)}` }] }
     ]

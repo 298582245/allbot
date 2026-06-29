@@ -16,6 +16,8 @@ type ScriptRunLog struct {
 	RuntimeProfile string    `json:"runtime_profile"`
 	RunMode        string    `json:"run_mode"`
 	Status         string    `json:"status"`
+	RunTotal       int64     `json:"run_total"`
+	FailedTotal    int64     `json:"failed_total"`
 	Output         string    `json:"output"`
 	Error          string    `json:"error"`
 	StartedAt      time.Time `json:"started_at"`
@@ -82,9 +84,9 @@ func (filter ScriptRunLogFilter) buildWhere() (string, []interface{}) {
 func (d *Database) SaveScriptRunLog(item ScriptRunLog) (int64, error) {
 	item.RuntimeProfile = strings.TrimSpace(item.RuntimeProfile)
 	result, err := d.db.Exec(`
-		INSERT INTO script_run_logs (plugin_id, union_id, script_path, runtime, runtime_profile, run_mode, status, output, error, started_at, finished_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, item.PluginID, item.UnionID, item.ScriptPath, item.Runtime, item.RuntimeProfile, item.RunMode, item.Status, item.Output, item.Error, item.StartedAt, item.FinishedAt, time.Now())
+		INSERT INTO script_run_logs (plugin_id, union_id, script_path, runtime, runtime_profile, run_mode, status, run_total, failed_total, output, error, started_at, finished_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, item.PluginID, item.UnionID, item.ScriptPath, item.Runtime, item.RuntimeProfile, item.RunMode, item.Status, 1, 0, item.Output, item.Error, item.StartedAt, item.FinishedAt, time.Now())
 	if err != nil {
 		return 0, err
 	}
@@ -103,7 +105,7 @@ func (d *Database) UpsertScriptRunLog(item ScriptRunLog) (int64, bool, error) {
 	}
 	_, err = d.db.Exec(`
 		UPDATE script_run_logs
-		SET union_id = ?, runtime = ?, runtime_profile = ?, status = ?, output = '', error = '', started_at = ?, finished_at = ?, created_at = ?
+		SET union_id = ?, runtime = ?, runtime_profile = ?, status = ?, run_total = COALESCE(run_total, 0) + 1, output = '', error = '', started_at = ?, finished_at = ?, created_at = ?
 		WHERE id = ?
 	`, item.UnionID, item.Runtime, item.RuntimeProfile, item.Status, item.StartedAt, item.FinishedAt, time.Now(), existing.ID)
 	return existing.ID, true, err
@@ -112,7 +114,7 @@ func (d *Database) UpsertScriptRunLog(item ScriptRunLog) (int64, bool, error) {
 func (d *Database) FindLatestScriptRunLog(pluginID, scriptPath, runMode, unionID, runtimeProfile string) (*ScriptRunLog, error) {
 	runtimeProfile = strings.TrimSpace(runtimeProfile)
 	query := `
-		SELECT id, plugin_id, union_id, script_path, runtime, runtime_profile, run_mode, status, output, error, started_at, finished_at, created_at
+		SELECT id, plugin_id, union_id, script_path, runtime, runtime_profile, run_mode, status, run_total, failed_total, output, error, started_at, finished_at, created_at
 		FROM script_run_logs
 		WHERE plugin_id = ? AND script_path = ? AND run_mode = ? AND runtime_profile = ?
 	`
@@ -132,7 +134,7 @@ func (d *Database) FindLatestScriptRunLog(pluginID, scriptPath, runMode, unionID
 func (d *Database) FindRunningScriptRunLog(pluginID, scriptPath, runMode, unionID, runtimeProfile string) (*ScriptRunLog, error) {
 	runtimeProfile = strings.TrimSpace(runtimeProfile)
 	query := `
-		SELECT id, plugin_id, union_id, script_path, runtime, runtime_profile, run_mode, status, output, error, started_at, finished_at, created_at
+		SELECT id, plugin_id, union_id, script_path, runtime, runtime_profile, run_mode, status, run_total, failed_total, output, error, started_at, finished_at, created_at
 		FROM script_run_logs
 		WHERE plugin_id = ? AND script_path = ? AND run_mode = ? AND runtime_profile = ? AND status IN ('running', 'pausing')
 	`
@@ -157,7 +159,11 @@ func (d *Database) UpdateScriptRunLog(id int64, status, output, errorText string
 		_, err := d.db.Exec(`UPDATE script_run_logs SET status = ?, output = ?, error = ? WHERE id = ?`, status, output, errorText, id)
 		return err
 	}
-	_, err := d.db.Exec(`UPDATE script_run_logs SET status = ?, output = ?, error = ?, finished_at = ? WHERE id = ?`, status, output, errorText, finishedAt, id)
+	failedIncrement := 0
+	if status == "failed" || status == "error" {
+		failedIncrement = 1
+	}
+	_, err := d.db.Exec(`UPDATE script_run_logs SET status = ?, output = ?, error = ?, finished_at = ?, failed_total = COALESCE(failed_total, 0) + ? WHERE id = ?`, status, output, errorText, finishedAt, failedIncrement, id)
 	return err
 }
 
@@ -173,7 +179,7 @@ func (d *Database) ListScriptRunLogs(filter ScriptRunLogFilter) ([]*ScriptRunLog
 	}
 	args = append(args, limit, offset)
 	rows, err := d.db.Query(`
-		SELECT id, plugin_id, union_id, script_path, runtime, runtime_profile, run_mode, status, '', error, started_at, finished_at, created_at
+		SELECT id, plugin_id, union_id, script_path, runtime, runtime_profile, run_mode, status, run_total, failed_total, '', error, started_at, finished_at, created_at
 		FROM script_run_logs
 		WHERE `+where+`
 		ORDER BY started_at DESC, finished_at DESC, id DESC
@@ -208,12 +214,12 @@ func (d *Database) GetScriptRunStatsSummary() (ScriptRunStatsSummary, error) {
 	today := time.Now().Format("2006-01-02")
 	err := d.db.QueryRow(`
 		SELECT
-			COUNT(*),
+			COALESCE(SUM(CASE WHEN run_total > 0 THEN run_total ELSE 1 END), 0),
 			COALESCE(SUM(CASE WHEN substr(started_at, 1, 10) = ? THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'pausing' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status IN ('failed', 'error') THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN run_total > failed_total + CASE WHEN status IN ('running', 'pausing', 'paused') THEN 1 ELSE 0 END THEN run_total - failed_total - CASE WHEN status IN ('running', 'pausing', 'paused') THEN 1 ELSE 0 END ELSE 0 END), 0),
+			COALESCE(SUM(failed_total), 0)
 		FROM script_run_logs
 	`, today).Scan(&summary.Total, &summary.Today, &summary.Running, &summary.Pausing, &summary.Success, &summary.Failed)
 	return summary, err
@@ -221,7 +227,7 @@ func (d *Database) GetScriptRunStatsSummary() (ScriptRunStatsSummary, error) {
 
 func (d *Database) GetScriptRunLog(id int64) (*ScriptRunLog, error) {
 	item, err := scanScriptRunLog(d.db.QueryRow(`
-		SELECT id, plugin_id, union_id, script_path, runtime, runtime_profile, run_mode, status, output, error, started_at, finished_at, created_at
+		SELECT id, plugin_id, union_id, script_path, runtime, runtime_profile, run_mode, status, run_total, failed_total, output, error, started_at, finished_at, created_at
 		FROM script_run_logs
 		WHERE id = ?
 	`, id))
@@ -257,7 +263,7 @@ type scriptRunLogScanner interface {
 
 func scanScriptRunLog(scanner scriptRunLogScanner) (*ScriptRunLog, error) {
 	var item ScriptRunLog
-	if err := scanner.Scan(&item.ID, &item.PluginID, &item.UnionID, &item.ScriptPath, &item.Runtime, &item.RuntimeProfile, &item.RunMode, &item.Status, &item.Output, &item.Error, &item.StartedAt, &item.FinishedAt, &item.CreatedAt); err != nil {
+	if err := scanner.Scan(&item.ID, &item.PluginID, &item.UnionID, &item.ScriptPath, &item.Runtime, &item.RuntimeProfile, &item.RunMode, &item.Status, &item.RunTotal, &item.FailedTotal, &item.Output, &item.Error, &item.StartedAt, &item.FinishedAt, &item.CreatedAt); err != nil {
 		return nil, err
 	}
 	return &item, nil

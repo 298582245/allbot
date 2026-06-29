@@ -22,10 +22,14 @@
         </div>
       </template>
 
-      <div v-loading="loading" class="editor-layout">
+      <div v-loading="loading" class="editor-layout" :class="{ 'file-panel-collapsed': isFilePanelCollapsed }">
         <aside class="file-panel">
           <div class="file-panel-header">
             <div class="file-panel-title">插件目录</div>
+            <el-button size="small" text class="mobile-collapse-button" @click="toggleFilePanel">
+              <el-icon><component :is="isFilePanelCollapsed ? ArrowDown : ArrowUp" /></el-icon>
+              {{ isFilePanelCollapsed ? '展开' : '收起' }}
+            </el-button>
             <el-dropdown trigger="click" @command="openCreateDialog">
               <el-button size="small" type="primary" plain>新建</el-button>
               <template #dropdown>
@@ -87,7 +91,7 @@
 import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, Document, Folder } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowLeft, ArrowUp, Document, Folder } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 import { EditorView, basicSetup } from 'codemirror'
 import { python } from '@codemirror/lang-python'
@@ -109,6 +113,7 @@ const saving = ref(false)
 const creating = ref(false)
 const deleting = ref(false)
 const canEdit = ref(false)
+const isFilePanelCollapsed = ref(false)
 const editorContainer = ref(null)
 const createDialogVisible = ref(false)
 const createForm = ref({ type: 'file', path: '' })
@@ -137,6 +142,12 @@ const loadFiles = async (preferredPath = '') => {
 const openCreateDialog = (type) => {
   createForm.value = { type, path: defaultCreatePath(type) }
   createDialogVisible.value = true
+}
+
+const toggleFilePanel = async () => {
+  isFilePanelCollapsed.value = !isFilePanelCollapsed.value
+  await nextTick()
+  editorView?.requestMeasure?.()
 }
 
 const createEntry = async () => {
@@ -312,10 +323,13 @@ onBeforeUnmount(destroyEditor)
 .plugin-editor {
   width: 100%;
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .editor-card {
-  height: calc(100vh - 40px);
+  height: 100%;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -381,6 +395,10 @@ onBeforeUnmount(destroyEditor)
   margin-bottom: 12px;
 }
 
+.mobile-collapse-button {
+  display: none;
+}
+
 .tree-node {
   display: inline-flex;
   align-items: center;
@@ -424,8 +442,12 @@ onBeforeUnmount(destroyEditor)
 }
 
 @media (max-width: 768px) {
+  .plugin-editor {
+    height: 100%;
+  }
+
   .editor-card {
-    height: calc(100dvh - 140px);
+    height: 100%;
   }
 
   .card-header {
@@ -439,18 +461,37 @@ onBeforeUnmount(destroyEditor)
     flex-wrap: wrap;
   }
 
+  .mobile-collapse-button {
+    display: inline-flex;
+  }
+
   .current-file {
     max-width: 100%;
   }
 
   .editor-layout {
     grid-template-columns: 1fr;
-    grid-template-rows: 220px 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .editor-layout.file-panel-collapsed {
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .file-panel {
     border-right: none;
     border-bottom: 1px solid #ebeef5;
+    max-height: 42vh;
+  }
+
+  .editor-layout.file-panel-collapsed .file-panel {
+    max-height: 52px;
+    overflow: hidden;
+  }
+
+  .editor-layout.file-panel-collapsed .file-panel :deep(.el-tree),
+  .editor-layout.file-panel-collapsed .file-panel .el-tree {
+    display: none;
   }
 }
 </style>

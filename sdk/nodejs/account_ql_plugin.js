@@ -242,24 +242,41 @@ class AccountQLPlugin {
   async queryMine(ctx, helpers) {
     const accounts = await helpers.listMine({ status: 'active' });
     if (!accounts.length) return ctx.reply(`暂无账号，请发送【${this.prefix}登录】添加。`);
+    if (accounts.length === 1) return this.replyAccountQueries(ctx, accounts, `${this.prefix}账号查询结果：`, { separate: false });
     const selected = await this.selectAccountsForQuery(ctx, accounts);
     if (!selected) return ctx.reply('已取消查询');
     return this.replyAccountQueries(ctx, selected.accounts, `${this.prefix}账号查询结果：`, { separate: selected.all });
   }
 
   async selectAccountsForQuery(ctx, accounts) {
-    const lines = ['请输入要查询的账号：', '[0] 全部查询', '--------------------'];
-    accounts.forEach((account, index) => lines.push(`[${index + 1}] ${this.accountName(account)}`));
-    await ctx.reply(lines.join('\n'));
-    const choice = String(await ctx.listen(60)).trim().toLowerCase();
-    if (!choice || choice === 'q') return null;
-    if (choice === '0') return { all: true, accounts };
-    const account = accounts[Number(choice) - 1];
-    if (!account) {
-      await ctx.reply('❌账号序号错误');
-      return null;
+    const pageSize = 20;
+    const totalPages = Math.ceil(accounts.length / pageSize);
+    let page = 0;
+    while (true) {
+      const start = page * pageSize;
+      const pageAccounts = accounts.slice(start, start + pageSize);
+      const lines = ['请输入要查询的账号：', '[0] 全部查询', '--------------------'];
+      pageAccounts.forEach((account, index) => lines.push(`[${start + index + 1}] ${this.accountName(account)}`));
+      if (totalPages > 1) lines.push('--------------------', `第 ${page + 1}/${totalPages} 页，回复 n 下一页，p 上一页，q 退出`);
+      await ctx.reply(lines.join('\n'));
+      const choice = String(await ctx.listen(60)).trim().toLowerCase();
+      if (!choice || choice === 'q') return null;
+      if (choice === '0') return { all: true, accounts };
+      if (totalPages > 1 && choice === 'n') {
+        page = (page + 1) % totalPages;
+        continue;
+      }
+      if (totalPages > 1 && choice === 'p') {
+        page = (page - 1 + totalPages) % totalPages;
+        continue;
+      }
+      const account = accounts[Number(choice) - 1];
+      if (!account) {
+        await ctx.reply('❌账号序号错误');
+        return null;
+      }
+      return { all: false, accounts: [account] };
     }
-    return { all: false, accounts: [account] };
   }
 
   async replyAccountQueries(ctx, accounts, title, options = {}) {
@@ -305,8 +322,11 @@ class AccountQLPlugin {
   async runAccounts(ctx, accounts, runMode, title) {
     const timeoutConfig = this.ql.timeoutConfig || this.ql.timeout_config || 'run_wait_timeout';
     const timeout = Number(ctx.config(timeoutConfig, this.ql.timeout || 7200) || this.ql.timeout || 7200);
-    const wait = ctx.meta('fake') !== 'true';
+    const isScheduled = ctx.meta('fake') === 'true';
+    const waitScheduled = this.ql.waitScheduled ?? this.ql.wait_scheduled;
+    const wait = isScheduled ? waitScheduled === true : true;
     if (wait) await ctx.reply(`🚀开始执行${title}，共 ${accounts.length} 个账号。`);
+    const startedAt = Date.now();
     const runtimeConfig = this.ql.runtimeConfig || this.ql.runtime_config || 'script_runtime';
     const scriptConfig = this.ql.scriptConfig || this.ql.script_config || 'task_script';
     const result = await ctx.runQLScript({
@@ -322,9 +342,32 @@ class AccountQLPlugin {
     if (!wait) return ctx.reply(scriptTaskMessage(result, `${title}任务已提交`));
     if (result?.already_running && result?.status === 'running') return ctx.reply(scriptTaskMessage(result, `${title}任务正在运行`));
     if (result?.timeout) return ctx.reply(scriptTaskMessage(result, `${title}仍在运行`));
+    if (runMode === 'all_authorized') await this.callAfterRun(ctx, accounts, result, runMode, title, isScheduled);
     if (result?.status === 'success') await this.checkCkAfterRun(ctx, accounts);
-    if (typeof this.account.query === 'function') return this.replyAccountQueries(ctx, accounts, '运行后账号信息：', { separate: true });
+    if (runMode !== 'all_authorized' && typeof this.account.query === 'function') return this.replyAccountQueries(ctx, accounts, '运行后账号信息：', { separate: true });
+    if (runMode === 'all_authorized') return ctx.reply(this.runSummaryMessage(result, accounts.length, Date.now() - startedAt));
     return ctx.reply(`${result?.status === 'success' ? '✅执行完成' : '❌执行失败'}：${title}`);
+  }
+
+  runSummaryMessage(result, accountCount, elapsedMs) {
+    if (result?.status !== 'success') return `❌${this.prefix}生活运行失败！共运行${accountCount}个账号，耗时${formatDurationSeconds(elapsedMs)}${result?.error ? `，错误：${result.error}` : ''}`;
+    return `✅${this.prefix}生活运行完成！共运行${accountCount}个账号，耗时${formatDurationSeconds(elapsedMs)}`;
+  }
+
+  async callAfterRun(ctx, accounts, result, runMode, title, isScheduled) {
+    const afterRun = this.ql.afterRun || this.ql.after_run;
+    if (typeof afterRun !== 'function') return;
+    const helpers = this.helpers(ctx);
+    helpers.runMode = runMode;
+    helpers.run_mode = runMode;
+    helpers.title = title;
+    helpers.isScheduled = isScheduled;
+    helpers.is_scheduled = isScheduled;
+    try {
+      await afterRun(ctx, accounts, result, helpers);
+    } catch (error) {
+      console.log(`${this.prefix} afterRun 执行失败：${error?.message || error}`);
+    }
   }
 
   async checkCk(ctx, helpers) {
@@ -381,7 +424,9 @@ class AccountQLPlugin {
       console.log(`声明${this.prefix}定时任务失败：没有已启动平台的管理员身份`);
       return;
     }
-    for (const schedule of normalizeSchedules(this.prefix, this.schedules)) {
+    const normalizedSchedules = normalizeSchedules(this.prefix, this.schedules);
+    const defaultMaxCount = Math.max(3, normalizedSchedules.length);
+    for (const schedule of normalizedSchedules) {
       try {
         await ctx.setScheduledTask({
           taskKey: schedule.taskKey,
@@ -393,7 +438,7 @@ class AccountQLPlugin {
           userId: admin.user_id,
           groupId: '',
           content: schedule.content,
-          maxCount: schedule.maxCount || 3
+          maxCount: Math.max(schedule.maxCount || 0, defaultMaxCount)
         });
       } catch (error) {
         console.log(`声明${schedule.name}失败：${error.message}`);
@@ -614,7 +659,13 @@ function normalizeSchedules(prefix, schedules) {
     content: item.content || defaults.content,
     maxCount: item.maxCount || item.max_count || defaults.maxCount
   });
-  if (schedules.run) list.push(normalizeItem(schedules.run, { taskKey: `${prefix}-default-run`, name: `${prefix}自动运行`, description: '插件触发一次后自动声明默认运行任务', cronConfig: 'cron', cron: '0 8 * * *', content: `${prefix}一键运行`, maxCount: 3 }));
+  const runItems = [];
+  if (schedules.run) runItems.push(schedules.run);
+  const extraRuns = schedules.runs || schedules.runList || schedules.run_list || [];
+  if (Array.isArray(extraRuns)) runItems.push(...extraRuns);
+  for (const item of runItems) {
+    list.push(normalizeItem(item, { taskKey: `${prefix}-default-run`, name: `${prefix}自动运行`, description: '插件触发一次后自动声明默认运行任务', cronConfig: 'cron', cron: '0 8 * * *', content: `${prefix}一键运行`, maxCount: 3 }));
+  }
   const expireCheck = schedules.expireCheck || schedules.expire_check;
   if (expireCheck) list.push(normalizeItem(expireCheck, { taskKey: `${prefix}-expiration-check`, name: `${prefix}过期检测`, description: '检测账号授权到期并提醒续费', cronConfig: 'expire_check_cron', cron: '15 9 * * *', content: `${prefix}过期检测`, maxCount: 3 }));
   const ckCheck = schedules.ckCheck || schedules.ck_check;
@@ -633,6 +684,7 @@ function accountExpiresAt(account) { return account?.expires_at || account?.expi
 function isAccountAuthorized(expiresAt) { const time = new Date(expiresAt || '').getTime(); return Number.isFinite(time) && time > Date.now(); }
 function formatAuthStatus(expiresAt) { if (!expiresAt) return '未授权'; return isAccountAuthorized(expiresAt) ? `授权至 ${formatTime(expiresAt)}` : `已过期 ${formatTime(expiresAt)}`; }
 function formatTime(value) { const date = value instanceof Date ? value : new Date(value); return Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', { hour12: false }) : String(value || '无'); }
+function formatDurationSeconds(ms) { const seconds = Math.max(0, Number(ms) || 0) / 1000; return `${seconds.toFixed(3)}秒`; }
 function maskValue(value) { const text = String(value || ''); return text.length <= 12 ? (text ? `${text.slice(0, 4)}****` : '空') : `${text.slice(0, 6)}****${text.slice(-4)}`; }
 function parseDays(value) { return (Array.isArray(value) ? value : String(value || '').split(',')).map((item) => Number(String(item).trim())).filter((item) => Number.isFinite(item)); }
 function normalizeDateTime(value) { if (!value) return ''; const date = value instanceof Date ? value : new Date(value); return Number.isFinite(date.getTime()) ? date.toISOString() : String(value); }
@@ -641,4 +693,4 @@ function validateEnvValue(value, allowMultiline) { if (value.includes('\0')) thr
 function expirationMessage(prefix, name, state) { if (state.daysLeft > 0) return `【${prefix}账号授权提醒】${name} 将在 ${state.daysLeft} 天后过期，请发送【${prefix}账号】续费。`; if (state.daysLeft === 0) return `【${prefix}账号授权提醒】${name} 今天到期，请发送【${prefix}账号】续费。`; return `【${prefix}账号授权提醒】${name} 已过期，请发送【${prefix}账号】续费后继续使用。`; }
 function scriptTaskMessage(result, fallback) { const id = result?.task_id || result?.log_id || result?.id || ''; const status = result?.already_running ? '任务已在运行' : '任务已创建'; return `✅${fallback || status}${id ? `\n任务ID：${id}` : ''}\n请到后台【脚本任务】查看运行状态和日志。`; }
 
-module.exports = { createAccountQLPlugin, builtinPointsAuth, builtinPaymentAuth, AccountStore };
+module.exports = { createAccountQLPlugin, builtinPointsAuth, builtinPaymentAuth, AccountQLPlugin, AccountStore, normalizeSchedules };

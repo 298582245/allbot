@@ -160,7 +160,7 @@ func (a *QQOfficeAdapter) SendTarget(userID string, groupID string) string {
 	if hasQQOfficeTargetPrefix(userID) {
 		return userID
 	}
-	return userID
+	return "user_" + userID
 }
 
 func hasQQOfficeTargetPrefix(value string) bool {

@@ -97,10 +97,11 @@ class Context {
     }
 
     async sendMessage(options = {}) {
+        const targetPlatform = String(options.platform || this.platform || '');
         return this._request({
             action: 'send_message',
-            platform: String(options.platform || this.platform || ''),
-            adapter_id: this._adapterIdFor(options),
+            platform: targetPlatform,
+            adapter_id: this._adapterIdFor(options, targetPlatform),
             user_id: String(options.userId || options.user_id || this.userId || ''),
             group_id: String(options.groupId || options.group_id || ''),
             union_id: String(options.unionId || options.union_id || ''),
@@ -342,8 +343,11 @@ class Context {
         return this.runQLScript(options);
     }
 
-    _adapterIdFor(options = {}) {
-        return String(options.adapterId || options.adapter_id || this.adapterId || '');
+    _adapterIdFor(options = {}, targetPlatform = '') {
+        if (Object.prototype.hasOwnProperty.call(options, 'adapterId')) return String(options.adapterId || '');
+        if (Object.prototype.hasOwnProperty.call(options, 'adapter_id')) return String(options.adapter_id || '');
+        if (!targetPlatform || targetPlatform === this.platform) return String(this.adapterId || '');
+        return '';
     }
 
 
