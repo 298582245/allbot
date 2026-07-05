@@ -1,15 +1,5 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-bookworm-slim AS web-builder
-
-WORKDIR /src/web-ui
-
-COPY web-ui/package.json web-ui/package-lock.json ./
-RUN npm ci
-
-COPY web-ui/ ./
-RUN npm run build
-
 FROM golang:1.26-bookworm AS go-builder
 
 WORKDIR /src
@@ -18,7 +8,6 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . ./
-COPY --from=web-builder /src/web ./web
 
 ARG VERSION=dev
 ARG COMMIT=unknown

@@ -98,7 +98,7 @@ $env:ALLBOT_WEB_MODE = "external"
 
 ## Docker Compose 部署
 
-Linux 服务器可直接使用 Docker Compose 构建和运行。Dockerfile 会自动构建 `web-ui/`，再把前端产物嵌入 Go 二进制，不需要手动执行前端构建。
+Linux 服务器可直接使用 Docker Compose 构建和运行。Dockerfile 会复用根目录已有的 `web/` 前端产物并嵌入 Go 二进制；如果改动了 `web-ui/`，需要先在本地或 CI 构建前端并提交更新后的 `web/`。
 
 ### 1. 准备环境
 
