@@ -30,10 +30,13 @@ runtime/image_assets/
 runtime/interpreters/
 runtime/runtime_profiles.json
 
-# 本地编译产物（保留 allbot-linux-amd64）
+# 本地编译产物与 Release 产物
 allbot
 allbot.exe
 allbot-*.exe
+allbot-v*-linux-*
+checksums-v*.txt
+dist/
 
 # 日志与覆盖率
 logs/
@@ -80,5 +83,7 @@ openapis/*
 # 忽略 docs 下的所有内容
 docs/*
 
-# 恢复 docs 根目录下的所有文件（不包括子目录）
+# 恢复 docs 根目录下的所有文件和发布流程文档
 !docs/*.*
+!docs/plan/
+!docs/plan/UPDATE.md
