@@ -32,6 +32,27 @@ var BuildChannel = "release"
 - `Version` 改为目标版本号。
 - 正式发布时 `BuildChannel` 必须是 `release`，不要保留 `local` 或 `docker`。
 
+### `Dockerfile`
+
+Docker 构建不要用 `-X github.com/allbot/allbot/core/version.Version=dev` 覆盖版本号。Dockerfile 应复用 `core/version/version.go` 中的 `Version`，只覆盖构建元信息和 Docker 渠道标识：
+
+```dockerfile
+ARG COMMIT=unknown
+ARG BUILD_TIME=unknown
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w \
+    -X github.com/allbot/allbot/core/version.Commit=${COMMIT} \
+    -X github.com/allbot/allbot/core/version.BuildTime=${BUILD_TIME} \
+    -X github.com/allbot/allbot/core/version.BuildChannel=docker" \
+    -o /out/allbot .
+```
+
+要求：
+
+- Docker 镜像内显示的版本必须跟 `core/version/version.go` 保持一致。
+- `BuildChannel=docker` 只用于标识运行渠道，不应改变版本号。
+
 ### `build.bat`
 
 ```bat
@@ -72,7 +93,7 @@ git diff --check
 cd "D:/Desktop/program/java/AITest/allbot/web-ui" && npm run build
 ```
 
-然后再回到项目根目录执行 Go 测试或构建。
+然后再回到项目根目录执行 Go 测试或构建。Dockerfile 会复用仓库根目录已有的 `web/`，不会在镜像构建时重新执行 `npm run build`，因此发布前必须确认 `web/` 已包含最新前端构建产物。
 
 ## 5. 提交代码
 

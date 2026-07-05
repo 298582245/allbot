@@ -30,6 +30,7 @@
           </el-form-item>
           <el-form-item label="访问码">
             <el-input v-model="form.access_code" placeholder="请输入安全访问码" :disabled="!form.access_code_enabled" show-password />
+            <div class="hint access-code-hint">开启后访问路径为 <code>/login/{{ form.access_code || '你的访问码' }}</code>，直接访问 <code>/login</code> 会返回 404。</div>
           </el-form-item>
           <el-form-item label="管理端口">
             <el-alert title="管理后台端口由启动环境变量 ALLBOT_WEB_PORT 控制，修改后需要重启服务。" type="info" :closable="false" show-icon />
@@ -579,6 +580,8 @@ function normalizeAccessControl(value) {
 }
 
 .hint { margin-left: 10px; color: #999; }
+.access-code-hint { margin-left: 0; width: 100%; line-height: 1.6; }
+.access-code-hint code { color: #409eff; background: #ecf5ff; border-radius: 4px; padding: 2px 5px; }
 
 .info-grid {
   display: grid;

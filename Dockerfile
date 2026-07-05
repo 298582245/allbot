@@ -9,13 +9,11 @@ RUN go mod download
 
 COPY . ./
 
-ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w \
-    -X github.com/allbot/allbot/core/version.Version=${VERSION} \
     -X github.com/allbot/allbot/core/version.Commit=${COMMIT} \
     -X github.com/allbot/allbot/core/version.BuildTime=${BUILD_TIME} \
     -X github.com/allbot/allbot/core/version.BuildChannel=docker" \
