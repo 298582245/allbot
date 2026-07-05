@@ -5,12 +5,12 @@
         <div class="page-header">
           <div>
             <div class="title-row">
-              <h2>关键字回复</h2>
+              <span class="title">关键字回复</span>
               <el-button class="mobile-info-button" type="primary" link aria-label="查看关键字回复说明" @click="showPageDescription">
                 <el-icon><InfoFilled /></el-icon>
               </el-button>
             </div>
-            <p>{{ pageDescription }}</p>
+            <div class="subtitle">{{ pageDescription }}</div>
           </div>
           <div class="header-actions">
             <el-input v-model="searchKeyword" class="header-search" clearable placeholder="搜索关键字、回复内容、备注或类型" />
@@ -23,13 +23,19 @@
         <el-table :data="pagedItems" border stripe height="100%">
           <el-table-column label="ID" width="90">
             <template #default="{ row }">
-              <span class="id-with-pin">{{ row.id }}<span v-if="row.pinned" class="pin-icon">📌</span></span>
+              <span class="id-with-pin"><span class="pin-id">{{ row.id }}</span><svg v-if="row.pinned" class="pin-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M16 9V4l1-1V2H7v1l1 1v5l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z" fill="currentColor"/></svg></span>
             </template>
           </el-table-column>
           <el-table-column label="关键字" min-width="180">
             <template #default="{ row }">
               <div class="keyword">{{ row.keyword }}</div>
-              <div class="description">{{ row.description || typeName(row.reply_type) }}</div>
+              <el-tooltip
+                :disabled="!remarkText(row)"
+                :content="remarkText(row)"
+                placement="top"
+              >
+                <div class="description">{{ remarkText(row) }}</div>
+              </el-tooltip>
             </template>
           </el-table-column>
           <el-table-column label="匹配" width="100">
@@ -65,7 +71,7 @@
               <div class="mobile-table-row-title">{{ row.keyword }}</div>
               <div class="mobile-table-row-desc">{{ row.description || typeName(row.reply_type) }}</div>
               <div class="mobile-table-fields">
-                <div><span>ID</span><strong class="id-with-pin">{{ row.id }}<span v-if="row.pinned" class="pin-icon">📌</span></strong></div>
+                <div><span>ID</span><strong class="id-with-pin"><span class="pin-id">{{ row.id }}</span><svg v-if="row.pinned" class="pin-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M16 9V4l1-1V2H7v1l1 1v5l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z" fill="currentColor"/></svg></strong></div>
                 <div><span>匹配</span><strong>{{ row.match_type === 'exact' ? '精确' : '正则' }}</strong></div>
                 <div><span>类型</span><strong>{{ typeName(row.reply_type) }}</strong></div>
                 <div><span>权限</span><strong>{{ row.admin_only ? '仅管理员' : '所有人' }}</strong></div>
@@ -88,15 +94,12 @@
         <el-empty v-else-if="filteredItems.length === 0" description="没有匹配的关键字回复" />
       </div>
 
-      <div class="pagination-bar">
-        <el-pagination
-          v-model:current-page="page"
-          v-model:page-size="pageSize"
-          :total="filteredItems.length"
-          :page-sizes="[10, 20, 50, 100]"
-          layout="total, sizes, prev, pager, next, jumper"
-        />
-      </div>
+      <StdPagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :total="filteredItems.length"
+        :page-sizes="[10, 20, 50, 100]"
+      />
     </el-card>
 
     <el-dialog v-model="dialogVisible" :title="form.id ? '编辑回复' : '新增回复'" width="640px">
@@ -131,7 +134,7 @@
           <el-switch v-model="form.pinned" />
         </el-form-item>
         <el-form-item label="备注">
-          <el-input v-model="form.description" />
+          <el-input v-model="form.description" type="textarea" :rows="3" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -143,10 +146,12 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'KeywordReplies' })
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/utils/request'
+import StdPagination from '@/components/StdPagination.vue'
 
 const items = ref([])
 const searchKeyword = ref('')
@@ -230,6 +235,10 @@ function typeName(type) {
   return '文本'
 }
 
+function remarkText(item) {
+  return item.description || typeName(item.reply_type)
+}
+
 function getKeywordReplySearchText(item) {
   return [
     item.id,
@@ -256,19 +265,26 @@ onMounted(loadItems)
 .page-card :deep(.el-card__body) { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
 .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .title-row { display: flex; align-items: center; gap: 6px; }
-.page-header h2 { margin: 0 0 6px; }
-.title-row h2 { margin: 0 0 6px; }
+.title { font-size: 18px; font-weight: 600; }
 .mobile-info-button { display: none; padding: 0; font-size: 16px; }
-.page-header p { margin: 0; color: #909399; }
+.subtitle { margin-top: 6px; color: #909399; font-size: 13px; line-height: 1.5; }
 .header-actions { display: flex; align-items: center; gap: 10px; }
 .header-search { width: 280px; }
 .table-area { flex: 1; min-height: 0; overflow: hidden; }
 .mobile-keyword-table { display: none; }
-.pagination-bar { display: flex; justify-content: flex-end; flex-shrink: 0; }
 .keyword { font-weight: 600; }
 .id-with-pin { display: inline-flex; align-items: center; gap: 2px; }
-.pin-icon { font-size: 14px; line-height: 1; }
-.description { margin-top: 4px; color: #909399; font-size: 12px; }
+.pin-id { min-width: 2em; text-align: right; }
+.pin-icon { color: #6366f1; flex-shrink: 0; }
+.description {
+  margin-top: 4px;
+  overflow: hidden;
+  color: #909399;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tags { display: flex; gap: 6px; flex-wrap: wrap; }
 .hint { margin-left: 12px; color: #909399; font-size: 12px; }
 
@@ -277,7 +293,8 @@ onMounted(loadItems)
   .page-card { height: 100%; }
   .page-header { align-items: flex-start; flex-direction: column; }
   .mobile-info-button { display: inline-flex; }
-  .page-header p { display: none; }
+  .subtitle { display: none; }
+  .title { font-size: 16px; }
   .header-actions { width: 100%; align-items: stretch; flex-direction: column; }
   .header-search,
   .header-actions .el-button { width: 100%; margin-left: 0; }
@@ -311,8 +328,6 @@ onMounted(loadItems)
   .keyword-replies :deep(.el-form-item) { display: block; }
   .keyword-replies :deep(.el-form-item__label) { width: 100% !important; justify-content: flex-start; padding: 0 0 6px; }
   .keyword-replies :deep(.el-form-item__content) { margin-left: 0 !important; }
-  .pagination-bar { justify-content: flex-start; overflow-x: auto; flex-shrink: 0; }
-  .mobile-keyword-table::-webkit-scrollbar,
-  .pagination-bar::-webkit-scrollbar { display: none; }
+  .mobile-keyword-table::-webkit-scrollbar { display: none; }
 }
 </style>

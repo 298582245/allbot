@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/allbot/allbot/core/config"
+	"github.com/allbot/allbot/core/types"
 )
 
 func TestParseRMBToCents(t *testing.T) {
@@ -124,6 +125,41 @@ func TestWaitPayPointsSuccess(t *testing.T) {
 	}
 }
 
+func TestWaitPaySendsMethodButtons(t *testing.T) {
+	db := newServiceTestDatabase(t)
+	if _, err := db.AddUserPoints("union-buttons", 200); err != nil {
+		t.Fatal(err)
+	}
+	prompts := []string{}
+	var buttonRows [][]types.ButtonOption
+	result, err := NewService(db).WaitPay(WaitPayRequest{PluginID: "plugin-pay", UnionID: "union-buttons", Platform: "test", UserID: "user-buttons", Subject: "按钮支付", AmountRaw: json.RawMessage(`"1.00"`), Timeout: 30, PointsUnit: "积分", Methods: []string{"points"}}, Interaction{Reply: func(text string) error {
+		t.Fatalf("Reply should not be called when ReplyButtons is available: %s", text)
+		return nil
+	}, ReplyButtons: func(text string, buttons [][]types.ButtonOption) error {
+		prompts = append(prompts, text)
+		buttonRows = buttons
+		return nil
+	}, Listen: func(timeout int) string { return "1" }})
+	if err != nil {
+		t.Fatalf("WaitPay returned error: %v", err)
+	}
+	if result.Status != "paid" || result.PointsBalance != 100 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if len(prompts) != 1 || !strings.Contains(prompts[0], "请选择支付方式") {
+		t.Fatalf("unexpected prompts: %#v", prompts)
+	}
+	if len(buttonRows) != 2 {
+		t.Fatalf("unexpected buttons: %#v", buttonRows)
+	}
+	if buttonRows[0][0].Value != "1" || buttonRows[0][0].UserID != "user-buttons" || !strings.Contains(buttonRows[0][0].Text, "积分支付") {
+		t.Fatalf("unexpected payment button: %#v", buttonRows[0][0])
+	}
+	if buttonRows[1][0] != (types.ButtonOption{Text: "取消", Value: "q", UserID: "user-buttons"}) {
+		t.Fatalf("unexpected cancel button: %#v", buttonRows[1][0])
+	}
+}
+
 func TestWaitPayCancelBeforeSelectingMethod(t *testing.T) {
 	db := newServiceTestDatabase(t)
 	replies := []string{}
@@ -231,6 +267,59 @@ func TestWaitPayEpayCreatesOrderAndExpires(t *testing.T) {
 	}
 	if order.Status != "expired" || order.ProviderOrderNo != "TEPAY" || order.PayURL == "" || order.Subject != "第三方支付" {
 		t.Fatalf("unexpected order: %#v", order)
+	}
+}
+
+func TestWaitPayEpaySendsRichMessageWithQRCode(t *testing.T) {
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":1,"trade_no":"TEPAY_RICH","payurl":"https://pay.example.com/pay-rich","qrcode":"QR-RICH"}`))
+	}))
+	defer providerServer.Close()
+	db := newServiceTestDatabase(t)
+	settings, err := db.GetPaymentSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Epay.APIURL = providerServer.URL + "/"
+	settings.Epay.ReturnURL = "https://app.example.com/api/open/payments/return/epay"
+	settings.QRCodeBaseURL = "https://qr.example.com/base"
+	if err := db.SavePaymentSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	replies := []string{}
+	images := []string{}
+	richMessages := []types.RichMessage{}
+	result, err := NewService(db).WaitPay(WaitPayRequest{UnionID: "union-epay-rich", Subject: "富消息支付", AmountRaw: json.RawMessage(`"1.00"`), Timeout: 1, Methods: []string{"alipay"}}, Interaction{Reply: func(text string) error {
+		replies = append(replies, text)
+		return nil
+	}, SendImage: func(imageURL string) error {
+		images = append(images, imageURL)
+		return nil
+	}, SendRich: func(message types.RichMessage) error {
+		richMessages = append(richMessages, message)
+		return nil
+	}, Listen: func(timeout int) string { return "alipay" }})
+	if err != nil {
+		t.Fatalf("WaitPay epay should expire without error: %v", err)
+	}
+	if result.Status != "expired" || result.OrderNo == "" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if len(replies) != 1 || !strings.Contains(replies[0], "支付宝") {
+		t.Fatalf("payment method prompt should remain separate: %#v", replies)
+	}
+	if len(images) != 0 {
+		t.Fatalf("rich message should avoid separate image send: %#v", images)
+	}
+	if len(richMessages) != 1 || len(richMessages[0].Parts) != 2 {
+		t.Fatalf("unexpected rich messages: %#v", richMessages)
+	}
+	if richMessages[0].Parts[0].Type != "text" || !strings.Contains(richMessages[0].Parts[0].Text, "支付链接") {
+		t.Fatalf("unexpected rich text part: %#v", richMessages[0].Parts[0])
+	}
+	expectedImage := PaymentQRCodeURL(settings.QRCodeBaseURL, result.OrderNo, "QR-RICH")
+	if richMessages[0].Parts[1].Type != "image" || richMessages[0].Parts[1].URL != expectedImage {
+		t.Fatalf("unexpected rich image part: %#v", richMessages[0].Parts[1])
 	}
 }
 

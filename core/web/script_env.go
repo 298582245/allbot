@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,8 +33,58 @@ func (s *Server) handleScriptEnvs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.jsonResponse(w, saved)
+	case http.MethodPatch:
+		var request struct {
+			Action string  `json:"action"`
+			IDs    []int64 `json:"ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			s.jsonError(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		affected, err := runScriptEnvBatchAction(database, request.Action, request.IDs)
+		if err != nil {
+			s.jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.jsonResponse(w, map[string]interface{}{"message": "批量操作已完成", "affected": affected})
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleScriptEnvImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var items []config.ScriptEnvImportItem
+	if err := json.NewDecoder(r.Body).Decode(&items); err != nil {
+		s.jsonError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	affected, err := s.adapterManager.GetDatabase().ImportScriptEnvVars(items)
+	if err != nil {
+		s.jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.jsonResponse(w, map[string]interface{}{"message": "脚本环境变量已导入", "affected": affected})
+}
+
+func runScriptEnvBatchAction(database *config.Database, action string, ids []int64) (int64, error) {
+	switch strings.TrimSpace(action) {
+	case "delete":
+		return database.DeleteScriptEnvVars(ids)
+	case "enable":
+		return database.UpdateScriptEnvVarsEnabled(ids, true)
+	case "disable":
+		return database.UpdateScriptEnvVarsEnabled(ids, false)
+	case "pin":
+		return database.UpdateScriptEnvVarsPinned(ids, true)
+	case "unpin":
+		return database.UpdateScriptEnvVarsPinned(ids, false)
+	default:
+		return 0, fmt.Errorf("不支持的批量操作")
 	}
 }
 

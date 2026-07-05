@@ -346,6 +346,26 @@ func TestSaveRestartContext(t *testing.T) {
 	}
 }
 
+func TestRestartNotifyTargetDropsReplyMessageID(t *testing.T) {
+	cases := []struct {
+		name     string
+		target   string
+		expected string
+	}{
+		{name: "plain", target: "group_group-openid", expected: "group_group-openid"},
+		{name: "drop msg", target: "group_group-openid|msg_msg-group", expected: "group_group-openid"},
+		{name: "keep at", target: "group_group-openid|msg_msg-group|at_member-openid", expected: "group_group-openid|at_member-openid"},
+		{name: "trim", target: " group_group-openid | msg_msg-group | at_member-openid ", expected: "group_group-openid|at_member-openid"},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			if got := restartNotifyTarget(item.target); got != item.expected {
+				t.Fatalf("restartNotifyTarget() = %q, expected %q", got, item.expected)
+			}
+		})
+	}
+}
+
 func TestFormatRestartDuration(t *testing.T) {
 	if got := formatRestartDuration(250 * time.Millisecond); got != "250ms" {
 		t.Fatalf("formatRestartDuration returned %q", got)

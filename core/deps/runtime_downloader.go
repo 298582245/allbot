@@ -35,12 +35,11 @@ type RuntimeDownloadResult struct {
 }
 
 type RuntimeDownloader interface {
-	EnsureRuntime(runtimeName, version, architecture string, force bool, progress RuntimeProfileInitProgressFunc) (RuntimeDownloadResult, error)
+	EnsureRuntime(runtimeName, version, architecture string, force bool, options RuntimeDownloadOptions, progress RuntimeProfileInitProgressFunc) (RuntimeDownloadResult, error)
 }
 
 type HTTPRuntimeDownloader struct {
 	rootDir string
-	client  *http.Client
 	mu      sync.Mutex
 }
 
@@ -60,10 +59,10 @@ type runtimeDownloadSpec struct {
 }
 
 func NewHTTPRuntimeDownloader(rootDir string) *HTTPRuntimeDownloader {
-	return &HTTPRuntimeDownloader{rootDir: rootDir, client: &http.Client{Timeout: 15 * time.Minute}}
+	return &HTTPRuntimeDownloader{rootDir: rootDir}
 }
 
-func (d *HTTPRuntimeDownloader) EnsureRuntime(runtimeName, version, architecture string, force bool, progress RuntimeProfileInitProgressFunc) (RuntimeDownloadResult, error) {
+func (d *HTTPRuntimeDownloader) EnsureRuntime(runtimeName, version, architecture string, force bool, options RuntimeDownloadOptions, progress RuntimeProfileInitProgressFunc) (RuntimeDownloadResult, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	runtimeName = normalizeRuntimeName(runtimeName)
@@ -79,7 +78,11 @@ func (d *HTTPRuntimeDownloader) EnsureRuntime(runtimeName, version, architecture
 		return RuntimeDownloadResult{}, fmt.Errorf("运行环境架构不支持: %s", architecture)
 	}
 
-	spec, err := d.downloadSpec(runtimeName, version, architecture)
+	client, err := runtimeHTTPClient(options)
+	if err != nil {
+		return RuntimeDownloadResult{}, err
+	}
+	spec, err := d.downloadSpec(runtimeName, version, architecture, options)
 	if err != nil {
 		return RuntimeDownloadResult{}, err
 	}
@@ -105,11 +108,11 @@ func (d *HTTPRuntimeDownloader) EnsureRuntime(runtimeName, version, architecture
 	defer os.RemoveAll(stagingDir)
 
 	archivePath := filepath.Join(stagingDir, spec.ArchiveName)
-	if err := d.downloadFile(spec.URL, archivePath, spec.TrustedHosts, progress); err != nil {
+	if err := downloadFile(client, spec.URL, archivePath, spec.TrustedHosts, progress); err != nil {
 		return RuntimeDownloadResult{}, err
 	}
 	reportRuntimeInitProgress(progress, "hash", "正在校验下载文件", 55)
-	expectedHash, err := d.fetchExpectedHash(spec)
+	expectedHash, err := d.fetchExpectedHash(client, spec)
 	if err != nil && !spec.AllowMissingHash {
 		return RuntimeDownloadResult{}, err
 	}
@@ -168,14 +171,57 @@ func (d *HTTPRuntimeDownloader) EnsureRuntime(runtimeName, version, architecture
 	return RuntimeDownloadResult{Runtime: runtimeName, Version: version, Architecture: architecture, Executable: spec.Executable, RootDir: spec.RootDir, SourceURL: spec.URL, SHA256: actualHash}, nil
 }
 
-func (d *HTTPRuntimeDownloader) downloadSpec(runtimeName, version, architecture string) (runtimeDownloadSpec, error) {
+func (d *HTTPRuntimeDownloader) downloadSpec(runtimeName, version, architecture string, options RuntimeDownloadOptions) (runtimeDownloadSpec, error) {
 	if runtimeName == "nodejs" {
-		return d.nodeDownloadSpec(version, architecture)
+		return d.nodeDownloadSpec(version, architecture, options)
 	}
-	return d.pythonDownloadSpec(version, architecture)
+	return d.pythonDownloadSpec(version, architecture, options)
 }
 
-func (d *HTTPRuntimeDownloader) downloadFile(sourceURL, targetPath string, trustedHosts []string, progress RuntimeProfileInitProgressFunc) error {
+func runtimeHTTPClient(options RuntimeDownloadOptions) (*http.Client, error) {
+	client := &http.Client{Timeout: 15 * time.Minute}
+	proxyURL := strings.TrimSpace(options.ProxyURL)
+	if proxyURL == "" {
+		return client, nil
+	}
+	parsed, err := url.Parse(proxyURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, fmt.Errorf("代理地址必须是 HTTP/HTTPS URL 且包含 host")
+	}
+	client.Transport = &http.Transport{Proxy: http.ProxyURL(parsed)}
+	return client, nil
+}
+
+func runtimeOptionOrDefault(value, fallback string) string {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func runtimeURLHost(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
+}
+
+func appendTrustedHost(hosts []string, rawURL string) []string {
+	host := runtimeURLHost(rawURL)
+	if host == "" {
+		return hosts
+	}
+	for _, item := range hosts {
+		if strings.EqualFold(item, host) {
+			return hosts
+		}
+	}
+	return append(hosts, host)
+}
+
+func downloadFile(client *http.Client, sourceURL, targetPath string, trustedHosts []string, progress RuntimeProfileInitProgressFunc) error {
 	if err := validateTrustedURL(sourceURL, trustedHosts); err != nil {
 		return err
 	}
@@ -183,7 +229,7 @@ func (d *HTTPRuntimeDownloader) downloadFile(sourceURL, targetPath string, trust
 	if err != nil {
 		return err
 	}
-	response, err := d.client.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return err
 	}
@@ -258,7 +304,7 @@ func copyDownloadWithProgress(writer io.Writer, reader io.Reader, totalBytes int
 	return nil
 }
 
-func (d *HTTPRuntimeDownloader) fetchExpectedHash(spec runtimeDownloadSpec) (string, error) {
+func (d *HTTPRuntimeDownloader) fetchExpectedHash(client *http.Client, spec runtimeDownloadSpec) (string, error) {
 	if spec.SHA256URL != "" {
 		if err := validateTrustedURL(spec.SHA256URL, spec.HashTrustedHosts); err != nil {
 			return "", err
@@ -267,7 +313,7 @@ func (d *HTTPRuntimeDownloader) fetchExpectedHash(spec runtimeDownloadSpec) (str
 		if err != nil {
 			return "", err
 		}
-		response, err := d.client.Do(request)
+		response, err := client.Do(request)
 		if err != nil {
 			return "", err
 		}
@@ -285,21 +331,21 @@ func (d *HTTPRuntimeDownloader) fetchExpectedHash(spec runtimeDownloadSpec) (str
 		return extractSHA256(string(data), spec.ArchiveName), nil
 	}
 	if spec.NuGetIndexURL != "" {
-		return d.fetchNuGetPackageHash(spec)
+		return d.fetchNuGetPackageHash(client, spec)
 	}
 	return "", nil
 }
 
-func (d *HTTPRuntimeDownloader) fetchNuGetPackageHash(spec runtimeDownloadSpec) (string, error) {
-	data, err := d.fetchTrustedText(spec.NuGetIndexURL, spec.HashTrustedHosts, "读取 NuGet 元数据失败")
+func (d *HTTPRuntimeDownloader) fetchNuGetPackageHash(client *http.Client, spec runtimeDownloadSpec) (string, error) {
+	data, err := d.fetchTrustedText(client, spec.NuGetIndexURL, spec.HashTrustedHosts, "读取 NuGet 元数据失败")
 	if err != nil {
 		return "", err
 	}
-	catalogURL, err := d.findNuGetCatalogEntryURL(data, spec)
+	catalogURL, err := d.findNuGetCatalogEntryURL(client, data, spec)
 	if err != nil {
 		return "", err
 	}
-	catalogData, err := d.fetchTrustedText(catalogURL, spec.HashTrustedHosts, "读取 NuGet Catalog 元数据失败")
+	catalogData, err := d.fetchTrustedText(client, catalogURL, spec.HashTrustedHosts, "读取 NuGet Catalog 元数据失败")
 	if err != nil {
 		return "", err
 	}
@@ -320,7 +366,7 @@ func (d *HTTPRuntimeDownloader) fetchNuGetPackageHash(spec runtimeDownloadSpec) 
 	return hex.EncodeToString(decoded), nil
 }
 
-func (d *HTTPRuntimeDownloader) fetchTrustedText(sourceURL string, trustedHosts []string, message string) ([]byte, error) {
+func (d *HTTPRuntimeDownloader) fetchTrustedText(client *http.Client, sourceURL string, trustedHosts []string, message string) ([]byte, error) {
 	if err := validateTrustedURL(sourceURL, trustedHosts); err != nil {
 		return nil, err
 	}
@@ -328,7 +374,7 @@ func (d *HTTPRuntimeDownloader) fetchTrustedText(sourceURL string, trustedHosts 
 	if err != nil {
 		return nil, err
 	}
-	response, err := d.client.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -342,7 +388,7 @@ func (d *HTTPRuntimeDownloader) fetchTrustedText(sourceURL string, trustedHosts 
 	return io.ReadAll(io.LimitReader(response.Body, 4*1024*1024))
 }
 
-func (d *HTTPRuntimeDownloader) findNuGetCatalogEntryURL(data []byte, spec runtimeDownloadSpec) (string, error) {
+func (d *HTTPRuntimeDownloader) findNuGetCatalogEntryURL(client *http.Client, data []byte, spec runtimeDownloadSpec) (string, error) {
 	var root struct {
 		Items []struct {
 			Items []nugetRegistrationItem `json:"items"`
@@ -359,7 +405,7 @@ func (d *HTTPRuntimeDownloader) findNuGetCatalogEntryURL(data []byte, spec runti
 		if page.URL == "" {
 			continue
 		}
-		pageData, err := d.fetchTrustedText(page.URL, spec.HashTrustedHosts, "读取 NuGet 版本页失败")
+		pageData, err := d.fetchTrustedText(client, page.URL, spec.HashTrustedHosts, "读取 NuGet 版本页失败")
 		if err != nil {
 			return "", err
 		}

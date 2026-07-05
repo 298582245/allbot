@@ -3,6 +3,8 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,6 +107,131 @@ func TestLogManagerWritesPeriodicRepeatSummaryForLongRuns(t *testing.T) {
 	})
 }
 
+func TestLogManagerQueryLogFileReadsHistoryByDate(t *testing.T) {
+	withTempWorkdirForLogTests(t, func() {
+		lm := newTestLogManager(t, 10)
+		writeTestLogFile(t, "2026-06-25", "10:00:00 INFO first\n10:00:01 ERROR second\n10:00:02 WARN keyword third\n")
+
+		result, err := lm.QueryLogFile("2026-06-25", 1, 2, "keyword", "warn")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Total != 1 || len(result.Items) != 1 {
+			t.Fatalf("expected one filtered log, got total=%d items=%#v", result.Total, result.Items)
+		}
+		if result.Items[0].Time != "10:00:02" || result.Items[0].Level != "warn" || result.Items[0].Message != "keyword third" {
+			t.Fatalf("unexpected log entry: %#v", result.Items[0])
+		}
+	})
+}
+
+func TestLogManagerListLogFilesOnlyWhitelist(t *testing.T) {
+	withTempWorkdirForLogTests(t, func() {
+		lm := newTestLogManager(t, 10)
+		writeTestLogFile(t, "2026-06-25", "10:00:00 INFO ok\n")
+		if err := os.WriteFile(filepath.Join("logs", "latest.log"), []byte("skip"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join("logs", "2026-06-25.log.bak"), []byte("skip"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		items, err := lm.ListLogFiles()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 1 || items[0].Date != "2026-06-25" {
+			t.Fatalf("unexpected log file list: %#v", items)
+		}
+	})
+}
+
+func TestLogManagerDeleteCurrentDateClosesFileHandle(t *testing.T) {
+	withTempWorkdirForLogTests(t, func() {
+		lm := newTestLogManager(t, 10)
+		lm.appendLog(LogEntry{Time: "10:00:00", Level: "info", Message: "today"})
+		date := time.Now().Format(logDateLayout)
+
+		if err := lm.DeleteLogDate(date); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(logFilePath(date)); !os.IsNotExist(err) {
+			t.Fatalf("expected current log file deleted, err=%v", err)
+		}
+		if lm.logFile != nil || lm.logDate != "" {
+			t.Fatal("expected log file handle reset")
+		}
+	})
+}
+
+func TestLogManagerDeleteAllLogFilesOnlyWhitelist(t *testing.T) {
+	withTempWorkdirForLogTests(t, func() {
+		lm := newTestLogManager(t, 10)
+		writeTestLogFile(t, "2026-06-24", "10:00:00 INFO old\n")
+		writeTestLogFile(t, "2026-06-25", "10:00:00 INFO new\n")
+		other := filepath.Join("logs", "keep.txt")
+		if err := os.WriteFile(other, []byte("keep"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		deleted, err := lm.DeleteAllLogFiles()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if deleted != 2 {
+			t.Fatalf("expected 2 deleted files, got %d", deleted)
+		}
+		if _, err := os.Stat(other); err != nil {
+			t.Fatalf("non-log file should remain: %v", err)
+		}
+	})
+}
+
+func TestLogManagerCleanupExpiredLogs(t *testing.T) {
+	withTempWorkdirForLogTests(t, func() {
+		lm := newTestLogManager(t, 10)
+		oldDate := time.Now().AddDate(0, 0, -10).Format(logDateLayout)
+		newDate := time.Now().Format(logDateLayout)
+		writeTestLogFile(t, oldDate, "10:00:00 INFO old\n")
+		writeTestLogFile(t, newDate, "10:00:00 INFO new\n")
+
+		deleted, err := lm.CleanupExpiredLogs(7)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if deleted != 1 {
+			t.Fatalf("expected one expired file deleted, got %d", deleted)
+		}
+		if _, err := os.Stat(logFilePath(oldDate)); !os.IsNotExist(err) {
+			t.Fatalf("old file should be deleted, err=%v", err)
+		}
+		if _, err := os.Stat(logFilePath(newDate)); err != nil {
+			t.Fatalf("new file should remain: %v", err)
+		}
+	})
+}
+
+func TestHandleLogsQueryPaginationAndFilter(t *testing.T) {
+	withTempWorkdirForLogTests(t, func() {
+		server := &Server{logManager: newTestLogManager(t, 10)}
+		writeTestLogFile(t, "2026-06-25", "10:00:00 INFO first\n10:00:01 ERROR keyword second\n10:00:02 ERROR keyword third\n")
+		req := httptest.NewRequest(http.MethodGet, "/api/logs?date=2026-06-25&page=2&page_size=1&keyword=keyword&level=error", nil)
+		recorder := httptest.NewRecorder()
+
+		server.handleLogs(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+		}
+		var result LogQueryResult
+		if err := json.NewDecoder(recorder.Body).Decode(&result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Total != 2 || len(result.Items) != 1 || result.Items[0].Message != "keyword second" {
+			t.Fatalf("unexpected response: %#v", result)
+		}
+	})
+}
+
 func newTestLogManager(t *testing.T, maxLogs int) *LogManager {
 	t.Helper()
 	lm := &LogManager{
@@ -115,6 +242,16 @@ func newTestLogManager(t *testing.T, maxLogs int) *LogManager {
 		closeLogFileForTest(t, lm)
 	})
 	return lm
+}
+
+func writeTestLogFile(t *testing.T, date, content string) {
+	t.Helper()
+	if err := os.MkdirAll("logs", 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logFilePath(date), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func closeLogFileForTest(t *testing.T, lm *LogManager) {

@@ -29,16 +29,18 @@ function makePlugin(ql = {}, account = {}) {
 }
 
 function makeCtx(options = {}) {
-  const calls = { replies: [], runQLScripts: [], listens: [], scheduledTasks: [] };
+  const calls = { replies: [], buttons: [], runQLScripts: [], listens: [], scheduledTasks: [] };
   const listens = [...(options.listens || [])];
   return {
     content: '测试一键运行',
     unionId: 'union-1',
     platform: 'test',
     userId: 'user-1',
+    accounts: options.accounts || [],
     meta: (key) => (key === 'fake' && options.fake ? 'true' : ''),
     config: (_key, defaultValue) => defaultValue,
     reply: async (text) => calls.replies.push(text),
+    sendButtons: async (text, buttons) => { calls.buttons.push({ text, buttons }); calls.replies.push(text); },
     listen: async (timeout) => {
       calls.listens.push(timeout);
       if (!listens.length) throw new Error('unexpected listen');
@@ -187,11 +189,58 @@ test('query account selection paginates every 20 accounts', async () => {
   const manyAccounts = Array.from({ length: 21 }, (_, index) => ({ id: index + 1, account_name: `账号${index + 1}` }));
   const plugin = makePlugin({}, { query: async (account) => `详情：${account.account_name}` });
   const ctx = makeCtx({ accounts: manyAccounts, listens: ['n', '21'] });
+  ctx.platform = 'telegram';
   await plugin.queryMine(ctx, plugin.helpers(ctx));
 
-  assert.match(ctx.calls.replies[0], /\[20\] 账号20/);
-  assert.doesNotMatch(ctx.calls.replies[0], /\[21\] 账号21/);
-  assert.match(ctx.calls.replies[0], /第 1\/2 页/);
-  assert.match(ctx.calls.replies[1], /\[21\] 账号21/);
+  assert.match(ctx.calls.buttons[0].text, /\[20\] 账号20/);
+  assert.doesNotMatch(ctx.calls.buttons[0].text, /\[21\] 账号21/);
+  assert.match(ctx.calls.buttons[0].text, /第 1\/2 页/);
+  assert.match(ctx.calls.buttons[1].text, /\[21\] 账号21/);
   assert.match(ctx.calls.replies.at(-1), /详情：账号21/);
+});
+
+test('Telegram query selection prompt sends buttons when supported', async () => {
+  const plugin = makePlugin({}, { query: async () => '详情' });
+  const ctx = makeCtx({ accounts: [{ id: 1, account_name: '账号1' }, { id: 2, account_name: '账号2' }], listens: ['0'] });
+  ctx.platform = 'telegram';
+  const sent = [];
+  ctx.sendButtons = async (text, buttons) => {
+    sent.push({ text, buttons });
+  };
+  await plugin.selectAccountsForQuery(ctx, ctx.accounts);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /请输入要查询的账号/);
+  assert.deepEqual(sent[0].buttons[0][0], { text: '[0] 全部查询', value: '0', user_id: 'user-1' });
+});
+
+test('QQ official query selection prompt sends restricted buttons when supported', async () => {
+  const plugin = makePlugin({}, { query: async () => '详情' });
+  const ctx = makeCtx({ accounts: [{ id: 1, account_name: '账号1' }, { id: 2, account_name: '账号2' }], listens: ['1'] });
+  ctx.platform = 'qq_office';
+  const sent = [];
+  ctx.sendButtons = async (text, buttons) => {
+    sent.push({ text, buttons });
+  };
+  await plugin.selectAccountsForQuery(ctx, ctx.accounts);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].buttons[1][0], { text: '[1] 账号1', value: '1', user_id: 'user-1' });
+});
+
+test('account management menu sends buttons with text fallback', async () => {
+  const plugin = makePlugin();
+  const ctx = makeCtx({ accounts, listens: ['q'] });
+  await plugin.listAccounts(ctx, plugin.helpers(ctx));
+  assert.equal(ctx.calls.buttons.length, 1);
+  assert.match(ctx.calls.buttons[0].text, /回复序号可操作账号/);
+  assert.deepEqual(ctx.calls.buttons[0].buttons[0][0], { text: '1. 账号1', value: '1' });
+});
+
+test('delete confirmation sends y cancel buttons', async () => {
+  const plugin = makePlugin();
+  const ctx = makeCtx({ accounts, listens: ['q'] });
+  await plugin.deleteAccount(ctx, accounts[0]);
+  assert.equal(ctx.calls.buttons.length, 1);
+  assert.match(ctx.calls.buttons[0].text, /回复 y 确认/);
+  assert.equal(ctx.calls.buttons[0].buttons[0][0].value, 'y');
+  assert.match(ctx.calls.replies.at(-1), /已取消删除/);
 });

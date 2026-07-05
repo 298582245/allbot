@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-set VERSION=v1.0.1
+set VERSION=v1.0.2
 set APP_NAME=allbot
 set CHECKSUM_FILE=checksums-%VERSION%.txt
 for /f %%i in ('git rev-parse HEAD 2^>nul') do set COMMIT=%%i

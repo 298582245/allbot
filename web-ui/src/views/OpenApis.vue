@@ -116,15 +116,12 @@
         <el-empty v-else-if="!loading && filteredItems.length === 0" description="没有匹配的开放接口" />
       </div>
 
-      <div v-if="items.length > 0" class="pagination-wrapper">
-        <el-pagination
-          v-model:current-page="currentPage"
-          :page-size="pageSize"
-          :total="filteredItems.length"
-          layout="total, prev, pager, next"
-          background
-        />
-      </div>
+      <StdPagination
+        v-if="items.length > 0"
+        v-model:current-page="currentPage"
+        :page-size="pageSize"
+        :total="filteredItems.length"
+      />
     </el-card>
 
     <el-dialog
@@ -197,11 +194,13 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'OpenApis' })
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled, Plus } from '@element-plus/icons-vue'
 import { createOpenApi, deleteOpenApi, getOpenApis, updateOpenApi, getRuntimeProfiles } from '@/api'
+import StdPagination from '@/components/StdPagination.vue'
 
 const router = useRouter()
 const loading = ref(false)
@@ -688,19 +687,6 @@ onMounted(() => {
   margin-left: 0;
 }
 
-.pagination-wrapper {
-  position: relative;
-  z-index: 2;
-  flex-shrink: 0;
-  min-height: 49px;
-  margin-top: 16px;
-  padding-top: 16px;
-  display: flex;
-  justify-content: center;
-  border-top: 1px solid #ebeef5;
-  background: #fff;
-}
-
 .dialog-form {
   padding: 2px 4px 0;
 }
@@ -806,15 +792,6 @@ onMounted(() => {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .pagination-wrapper {
-    flex-shrink: 0;
-    justify-content: flex-start;
-    overflow-x: auto;
-    margin-top: 12px;
-    padding-top: 12px;
-    min-height: 45px;
-  }
-
   .api-dialog :deep(.el-dialog) {
     width: 94vw !important;
   }
@@ -837,8 +814,7 @@ onMounted(() => {
     padding: 0 10px;
   }
 
-  .api-content::-webkit-scrollbar,
-  .pagination-wrapper::-webkit-scrollbar {
+  .api-content::-webkit-scrollbar {
     display: none;
   }
 }

@@ -41,10 +41,12 @@
             </el-dropdown>
           </div>
           <el-tree
+            ref="fileTreeRef"
             :data="fileTree"
             node-key="path"
             :props="treeProps"
             :default-expanded-keys="expandedKeys"
+            :current-node-key="selectedPath"
             highlight-current
             @node-click="handleNodeClick"
           >
@@ -88,6 +90,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'PluginEditor' })
 import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -115,6 +118,7 @@ const deleting = ref(false)
 const canEdit = ref(false)
 const isFilePanelCollapsed = ref(false)
 const editorContainer = ref(null)
+const fileTreeRef = ref(null)
 const createDialogVisible = ref(false)
 const createForm = ref({ type: 'file', path: '' })
 const treeProps = { children: 'children', label: 'name' }
@@ -177,6 +181,8 @@ const openFile = async (path) => {
   try {
     const data = await request.get(`/plugins/files/${pluginId.value}`, { params: { path } })
     selectedPath.value = data.path || path
+    fileTreeRef.value?.setCurrentKey(selectedPath.value)
+    selectedDirectory.value = parentPath(selectedPath.value)
     canEdit.value = Boolean(data.editable)
     destroyEditor()
     if (canEdit.value) {

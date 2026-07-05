@@ -4,6 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -13,10 +16,19 @@ import (
 
 type Database struct {
 	db       *sql.DB
+	path     string
 	pointsMu sync.Mutex
 }
 
 func NewDatabase(dbPath string) (*Database, error) {
+	storedPath := dbPath
+	if strings.TrimSpace(dbPath) != ":memory:" {
+		absPath, err := filepath.Abs(dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("解析数据库路径失败: %w", err)
+		}
+		storedPath = absPath
+	}
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
@@ -32,7 +44,77 @@ func NewDatabase(dbPath string) (*Database, error) {
 		return nil, fmt.Errorf("创建表失败: %w", err)
 	}
 
-	return &Database{db: db}, nil
+	return &Database{db: db, path: storedPath}, nil
+}
+
+func (d *Database) Path() string {
+	if d == nil {
+		return ""
+	}
+	return d.path
+}
+
+func (d *Database) ReplaceWith(sourcePath string) error {
+	if d == nil || d.db == nil {
+		return fmt.Errorf("数据库未初始化")
+	}
+	if d.path == "" || d.path == ":memory:" {
+		return fmt.Errorf("当前数据库路径不支持恢复")
+	}
+	if err := d.db.Close(); err != nil {
+		return err
+	}
+	if err := copyFile(sourcePath, d.path); err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite", d.path)
+	if err != nil {
+		return fmt.Errorf("打开恢复后的数据库失败: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;`); err != nil {
+		_ = db.Close()
+		return fmt.Errorf("初始化恢复后的数据库参数失败: %w", err)
+	}
+	d.db = db
+	return nil
+}
+
+func copyFile(sourcePath, targetPath string) error {
+	input, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return err
+	}
+	tmpPath := targetPath + ".restore-tmp"
+	output, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	closeErr := output.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmpPath)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return closeErr
+	}
+	for _, stalePath := range []string{targetPath, targetPath + "-wal", targetPath + "-shm"} {
+		if err := os.Remove(stalePath); err != nil && !os.IsNotExist(err) {
+			_ = os.Remove(tmpPath)
+			return err
+		}
+	}
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 func createTables(db *sql.DB) error {
@@ -45,7 +127,15 @@ func createTables(db *sql.DB) error {
 	if err := migrateScriptRunLogsTable(db); err != nil {
 		return err
 	}
-
+	if err := migrateScriptEnvVarsTable(db); err != nil {
+		return err
+	}
+	if err := migrateMessageStatsTable(db); err != nil {
+		return err
+	}
+	if err := migrateWebChatMessagesTable(db); err != nil {
+		return err
+	}
 	schema := `
 	CREATE TABLE IF NOT EXISTS adapters (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,15 +228,18 @@ func createTables(db *sql.DB) error {
 
 	CREATE TABLE IF NOT EXISTS script_env_vars (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT NOT NULL UNIQUE,
+		name TEXT NOT NULL,
 		value TEXT NOT NULL DEFAULT '',
 		remark TEXT NOT NULL DEFAULT '',
 		enabled INTEGER NOT NULL DEFAULT 1,
+		pinned INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_script_env_vars_enabled ON script_env_vars(enabled, name);
+	CREATE INDEX IF NOT EXISTS idx_script_env_vars_pinned ON script_env_vars(pinned DESC, name ASC, id ASC);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_script_env_vars_name_value_unique ON script_env_vars(name, value);
 
 	CREATE TABLE IF NOT EXISTS plugin_authorizations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -196,6 +289,27 @@ func createTables(db *sql.DB) error {
 
 	CREATE INDEX IF NOT EXISTS idx_script_run_logs_plugin_time ON script_run_logs(plugin_id, started_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_script_run_logs_union_time ON script_run_logs(union_id, started_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_script_run_logs_status_created_at ON script_run_logs(status, created_at, id);
+	CREATE INDEX IF NOT EXISTS idx_script_run_logs_queue ON script_run_logs(status, created_at, id) WHERE status = 'queued';
+
+	CREATE TABLE IF NOT EXISTS script_run_stats (
+		stat_date TEXT NOT NULL,
+		stat_hour INTEGER NOT NULL,
+		plugin_id TEXT NOT NULL,
+		script_path TEXT NOT NULL DEFAULT '',
+		runtime TEXT NOT NULL DEFAULT '',
+		runtime_profile TEXT NOT NULL DEFAULT '',
+		run_mode TEXT NOT NULL DEFAULT '',
+		run_total INTEGER NOT NULL DEFAULT 0,
+		success_total INTEGER NOT NULL DEFAULT 0,
+		failed_total INTEGER NOT NULL DEFAULT 0,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (stat_date, stat_hour, plugin_id, script_path, runtime, runtime_profile, run_mode)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_script_run_stats_date ON script_run_stats(stat_date);
+	CREATE INDEX IF NOT EXISTS idx_script_run_stats_plugin_date ON script_run_stats(plugin_id, stat_date);
 
 	CREATE TABLE IF NOT EXISTS user_points (
 		union_id TEXT PRIMARY KEY,
@@ -271,6 +385,76 @@ func createTables(db *sql.DB) error {
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS web_chat_users (
+		user_id TEXT PRIMARY KEY,
+		username TEXT NOT NULL UNIQUE,
+		email TEXT NOT NULL UNIQUE,
+		password_hash TEXT NOT NULL,
+		display_name TEXT NOT NULL DEFAULT '',
+		email_verified INTEGER NOT NULL DEFAULT 0,
+		disabled INTEGER NOT NULL DEFAULT 0,
+		last_login_at DATETIME,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS web_chat_email_codes (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		email TEXT NOT NULL,
+		code_hash TEXT NOT NULL,
+		purpose TEXT NOT NULL,
+		expires_at DATETIME NOT NULL,
+		attempts INTEGER NOT NULL DEFAULT 0,
+		sent_ip TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		used_at DATETIME
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_web_chat_email_codes_email ON web_chat_email_codes(email, purpose, created_at);
+	CREATE INDEX IF NOT EXISTS idx_web_chat_email_codes_ip ON web_chat_email_codes(sent_ip, created_at);
+
+	CREATE TABLE IF NOT EXISTS web_chat_sessions (
+		token_hash TEXT PRIMARY KEY,
+		user_id TEXT NOT NULL,
+		csrf_token TEXT NOT NULL,
+		expires_at DATETIME NOT NULL,
+		user_agent TEXT NOT NULL DEFAULT '',
+		client_ip TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY(user_id) REFERENCES web_chat_users(user_id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_web_chat_sessions_user ON web_chat_sessions(user_id, expires_at);
+
+	CREATE TABLE IF NOT EXISTS web_chat_messages (
+		message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id TEXT NOT NULL,
+		direction TEXT NOT NULL,
+		message_type TEXT NOT NULL,
+		content TEXT NOT NULL DEFAULT '',
+		image_url TEXT NOT NULL DEFAULT '',
+		rich_json TEXT NOT NULL DEFAULT '',
+		target TEXT NOT NULL DEFAULT '',
+		plugin_id TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY(user_id) REFERENCES web_chat_users(user_id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_web_chat_messages_user ON web_chat_messages(user_id, message_id);
+	CREATE INDEX IF NOT EXISTS idx_web_chat_messages_user_plugin_message ON web_chat_messages(user_id, plugin_id, message_id);
+
+	CREATE TABLE IF NOT EXISTS web_chat_read_states (
+		user_id TEXT NOT NULL,
+		plugin_id TEXT NOT NULL DEFAULT '',
+		last_read_message_id INTEGER NOT NULL DEFAULT 0,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (user_id, plugin_id),
+		FOREIGN KEY(user_id) REFERENCES web_chat_users(user_id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_web_chat_read_states_user ON web_chat_read_states(user_id, plugin_id);
+
 	CREATE TABLE IF NOT EXISTS scheduled_tasks (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		plugin_id TEXT NOT NULL DEFAULT '',
@@ -302,14 +486,16 @@ func createTables(db *sql.DB) error {
 		platform TEXT NOT NULL,
 		adapter_id TEXT NOT NULL DEFAULT '',
 		adapter_name TEXT NOT NULL DEFAULT '',
+		message_type TEXT NOT NULL DEFAULT 'private',
 		count INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		PRIMARY KEY (stat_date, stat_hour, platform, adapter_id)
+		PRIMARY KEY (stat_date, stat_hour, platform, adapter_id, message_type)
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_message_stats_date_platform ON message_stats(stat_date, platform);
 	CREATE INDEX IF NOT EXISTS idx_message_stats_date_adapter ON message_stats(stat_date, adapter_id);
+	CREATE INDEX IF NOT EXISTS idx_message_stats_date_type ON message_stats(stat_date, message_type);
 
 	CREATE TABLE IF NOT EXISTS plugin_trigger_stats (
 		stat_date TEXT NOT NULL,
@@ -359,6 +545,9 @@ func createTables(db *sql.DB) error {
 	if err := ensureDefaultSystemSettings(db); err != nil {
 		return err
 	}
+	if err := backfillScriptRunStats(db); err != nil {
+		return err
+	}
 	return ensureBuiltinKeywordReplies(db)
 }
 
@@ -387,35 +576,52 @@ func backfillUserPoints(db *sql.DB) error {
 
 func ensureBuiltinKeywordReplies(db *sql.DB) error {
 	items := []struct {
-		keyword     string
-		description string
-		adminOnly   bool
+		keyword       string
+		lookupKeyword string
+		content       string
+		matchType     string
+		description   string
+		adminOnly     bool
 	}{
-		{"myid", "返回当前用户身份信息", false},
-		{"注册", "注册当前平台用户身份", false},
-		{"积分充值", "用户自助充值积分；平台管理员可给指定用户加积分，格式：积分充值 <unionId或平台:userId> <数量>", false},
-		{"绑定码", "私聊获取跨平台绑定码", false},
-		{"绑定", "私聊使用绑定码绑定其他平台身份", false},
-		{"groupId", "返回当前群组 ID，私聊不响应", false},
-		{"插件列表", "平台管理员交互式管理插件启停和访问控制", true},
-		{"system", "返回系统运行信息", true},
-		{"version", "返回框架版本信息", false},
-		{"更新", "平台管理员触发 AllBot 一键升级", true},
-		{"重启", "平台管理员触发 AllBot 进程重启", true},
+		{keyword: "myid", content: "myid", matchType: "exact", description: "返回当前用户身份信息", adminOnly: false},
+		{keyword: "注册", content: "注册", matchType: "exact", description: "注册当前平台用户身份", adminOnly: false},
+		{keyword: "积分充值", content: "积分充值", matchType: "exact", description: "用户自助充值积分；平台管理员可给指定用户加积分，格式：积分充值 <unionId或平台:userId> <数量>", adminOnly: false},
+		{keyword: "用户搜索", content: "用户搜索", matchType: "exact", description: "平台管理员按 union_id 或平台用户号查询关联平台账号和积分，格式：用户搜索 <unionId> / 用户搜索 <平台>:<用户号> / 用户搜索 <平台> <用户号>", adminOnly: true},
+		{keyword: "绑定码", content: "绑定码", matchType: "exact", description: "私聊获取跨平台绑定码", adminOnly: false},
+		{keyword: "绑定", content: "绑定", matchType: "exact", description: "私聊使用绑定码绑定其他平台身份", adminOnly: false},
+		{keyword: "我的平台", content: "我的平台", matchType: "exact", description: "私聊查看当前 union_id 已绑定的平台和用户 ID", adminOnly: false},
+		{keyword: "groupId", content: "groupId", matchType: "exact", description: "返回当前群组 ID，私聊不响应", adminOnly: false},
+		{keyword: "插件列表", content: "插件列表", matchType: "exact", description: "平台管理员交互式管理插件启停和访问控制", adminOnly: true},
+		{keyword: "system", content: "system", matchType: "exact", description: "返回系统运行信息", adminOnly: true},
+		{keyword: `(?i)^v(ersion)?$`, lookupKeyword: "version", content: "version", matchType: "regex", description: "返回框架版本信息", adminOnly: false},
+		{keyword: "更新", content: "更新", matchType: "exact", description: "平台管理员触发 AllBot 一键升级", adminOnly: true},
+		{keyword: "重启", content: "重启", matchType: "exact", description: "平台管理员触发 AllBot 进程重启", adminOnly: true},
 	}
 	for _, item := range items {
+		lookupKeyword := item.lookupKeyword
+		if lookupKeyword == "" {
+			lookupKeyword = item.keyword
+		}
+		content := item.content
+		if content == "" {
+			content = item.keyword
+		}
+		matchType := item.matchType
+		if matchType == "" {
+			matchType = "exact"
+		}
 		if _, err := db.Exec(`
 			INSERT INTO keyword_replies (keyword, match_type, reply_type, content, enabled, admin_only, pinned, builtin, description, created_at, updated_at)
-			SELECT ?, 'exact', 'builtin', ?, 1, ?, 1, 1, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-			WHERE NOT EXISTS (SELECT 1 FROM keyword_replies WHERE builtin = 1 AND keyword = ?)
-		`, item.keyword, item.keyword, boolInt(item.adminOnly), item.description, item.keyword); err != nil {
+			SELECT ?, ?, 'builtin', ?, 1, ?, 1, 1, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+			WHERE NOT EXISTS (SELECT 1 FROM keyword_replies WHERE builtin = 1 AND (keyword = ? OR content = ?))
+		`, item.keyword, matchType, content, boolInt(item.adminOnly), item.description, lookupKeyword, lookupKeyword); err != nil {
 			return err
 		}
 		if _, err := db.Exec(`
 			UPDATE keyword_replies
-			SET admin_only = ?, description = ?, updated_at = CURRENT_TIMESTAMP
-			WHERE builtin = 1 AND keyword = ?
-		`, boolInt(item.adminOnly), item.description, item.keyword); err != nil {
+			SET keyword = ?, match_type = ?, content = ?, admin_only = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+			WHERE builtin = 1 AND (keyword = ? OR content = ?)
+		`, item.keyword, matchType, content, boolInt(item.adminOnly), item.description, lookupKeyword, lookupKeyword); err != nil {
 			return err
 		}
 	}
@@ -428,30 +634,32 @@ func ensureDefaultSystemSettings(db *sql.DB) error {
 	}
 
 	defaults := map[string]string{
-		"admin.username":         "admin",
-		"admin.platform_users":   "[]",
-		"web.auto_refresh":       "true",
-		"web.refresh_interval":   "5",
-		"plugin.dir":             "./plugins",
-		"plugin.auto_load":       "true",
-		"user.points_unit":       "积分",
-		"access_control":         "{}",
-		"payment.points_per_rmb": "100",
-		"payment.config":         defaultPaymentConfigJSON(),
-		"imagehost.config":       defaultImageHostConfigJSON(),
+		"admin.username":                "admin",
+		"admin.platform_users":          "[]",
+		"web.auto_refresh":              "true",
+		"web.refresh_interval":          "5",
+		"plugin.dir":                    "./plugins",
+		"plugin.auto_load":              "true",
+		"script_tasks.concurrent_limit": "1",
+		"user.points_unit":              "积分",
+		"access_control":                "{}",
+		"payment.points_per_rmb":        "100",
+		"payment.config":                defaultPaymentConfigJSON(),
+		"imagehost.config":              defaultImageHostConfigJSON(),
 	}
 	descriptions := map[string]string{
-		"admin.username":         "管理员用户名",
-		"admin.platform_users":   "平台管理员用户列表",
-		"web.auto_refresh":       "是否自动刷新",
-		"web.refresh_interval":   "刷新间隔秒数",
-		"plugin.dir":             "插件目录",
-		"plugin.auto_load":       "启动时自动加载插件",
-		"user.points_unit":       "用户积分单位",
-		"access_control":         "系统访问控制配置",
-		"payment.points_per_rmb": "积分兑换比例",
-		"payment.config":         "支付配置",
-		"imagehost.config":       "图床配置",
+		"admin.username":                "管理员用户名",
+		"admin.platform_users":          "平台管理员用户列表",
+		"web.auto_refresh":              "是否自动刷新",
+		"web.refresh_interval":          "刷新间隔秒数",
+		"plugin.dir":                    "插件目录",
+		"plugin.auto_load":              "启动时自动加载插件",
+		"script_tasks.concurrent_limit": "脚本任务全局并发上限",
+		"user.points_unit":              "用户积分单位",
+		"access_control":                "系统访问控制配置",
+		"payment.points_per_rmb":        "积分兑换比例",
+		"payment.config":                "支付配置",
+		"imagehost.config":              "图床配置",
 	}
 
 	for key, value := range defaults {
@@ -606,7 +814,239 @@ func migrateScriptRunLogsTable(db *sql.DB) error {
 			return err
 		}
 	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_script_run_logs_status_created_at ON script_run_logs(status, created_at, id)`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_script_run_logs_queue ON script_run_logs(status, created_at, id) WHERE status = 'queued'`); err != nil {
+		return err
+	}
 	return nil
+}
+
+func migrateWebChatMessagesTable(db *sql.DB) error {
+	var tableName string
+	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='web_chat_messages'`).Scan(&tableName)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err != sql.ErrNoRows {
+		if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_web_chat_messages_user_plugin_message ON web_chat_messages(user_id, plugin_id, message_id)`); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS web_chat_read_states (
+			user_id TEXT NOT NULL,
+			plugin_id TEXT NOT NULL DEFAULT '',
+			last_read_message_id INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (user_id, plugin_id),
+			FOREIGN KEY(user_id) REFERENCES web_chat_users(user_id) ON DELETE CASCADE
+		);
+		CREATE INDEX IF NOT EXISTS idx_web_chat_read_states_user ON web_chat_read_states(user_id, plugin_id);
+	`)
+	return err
+}
+
+func migrateScriptEnvVarsTable(db *sql.DB) error {
+	var tableName string
+	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='script_env_vars'`).Scan(&tableName)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	columns, err := tableColumns(db, "script_env_vars")
+	if err != nil {
+		return err
+	}
+	if !columns["pinned"] {
+		if _, err := db.Exec(`ALTER TABLE script_env_vars ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+		columns["pinned"] = true
+	}
+	if scriptEnvVarsHasNameOnlyUnique(db) {
+		if err := rebuildScriptEnvVarsTable(db, columns); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_script_env_vars_enabled ON script_env_vars(enabled, name);
+		CREATE INDEX IF NOT EXISTS idx_script_env_vars_pinned ON script_env_vars(pinned DESC, name ASC, id ASC);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_script_env_vars_name_value_unique ON script_env_vars(name, value);
+	`)
+	return err
+}
+
+func rebuildScriptEnvVarsTable(db *sql.DB, columns map[string]bool) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+		CREATE TABLE script_env_vars_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			value TEXT NOT NULL DEFAULT '',
+			remark TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			pinned INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)
+	`); err != nil {
+		return err
+	}
+	pinnedExpr := "0"
+	if columns["pinned"] {
+		pinnedExpr = "COALESCE(pinned, 0)"
+	}
+	copySQL := fmt.Sprintf(`
+		INSERT INTO script_env_vars_new (id, name, value, remark, enabled, pinned, created_at, updated_at)
+		SELECT id, name, COALESCE(value, ''), COALESCE(remark, ''), COALESCE(enabled, 1), %s, created_at, updated_at
+		FROM script_env_vars
+	`, pinnedExpr)
+	if _, err := tx.Exec(copySQL); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE script_env_vars`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE script_env_vars_new RENAME TO script_env_vars`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func scriptEnvVarsHasNameOnlyUnique(db *sql.DB) bool {
+	rows, err := db.Query(`PRAGMA index_list(script_env_vars)`)
+	if err != nil {
+		return false
+	}
+	uniqueIndexes := make([]string, 0)
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err == nil && unique == 1 {
+			uniqueIndexes = append(uniqueIndexes, name)
+		}
+	}
+	rows.Close()
+	for _, name := range uniqueIndexes {
+		indexRows, err := db.Query(`PRAGMA index_info(` + name + `)`)
+		if err != nil {
+			continue
+		}
+		columnCount := 0
+		nameOnly := false
+		for indexRows.Next() {
+			var seqno, cid int
+			var columnName string
+			if err := indexRows.Scan(&seqno, &cid, &columnName); err == nil {
+				columnCount++
+				nameOnly = columnName == "name"
+			}
+		}
+		indexRows.Close()
+		if columnCount == 1 && nameOnly {
+			return true
+		}
+	}
+	return false
+}
+
+func migrateMessageStatsTable(db *sql.DB) error {
+	var tableName string
+	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='message_stats'`).Scan(&tableName)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	columns, err := tableColumns(db, "message_stats")
+	if err != nil {
+		return err
+	}
+	if columns["message_type"] && messageStatsPrimaryKeyIncludesType(db) {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		CREATE TABLE message_stats_new (
+			stat_date TEXT NOT NULL,
+			stat_hour INTEGER NOT NULL,
+			platform TEXT NOT NULL,
+			adapter_id TEXT NOT NULL DEFAULT '',
+			adapter_name TEXT NOT NULL DEFAULT '',
+			message_type TEXT NOT NULL DEFAULT 'private',
+			count INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (stat_date, stat_hour, platform, adapter_id, message_type)
+		)
+	`); err != nil {
+		return err
+	}
+
+	messageTypeExpr := "'private'"
+	if columns["message_type"] {
+		messageTypeExpr = "COALESCE(NULLIF(message_type, ''), 'private')"
+	}
+	copySQL := fmt.Sprintf(`
+		INSERT INTO message_stats_new (stat_date, stat_hour, platform, adapter_id, adapter_name, message_type, count, created_at, updated_at)
+		SELECT stat_date, stat_hour, platform, COALESCE(adapter_id, ''), COALESCE(MAX(adapter_name), ''), %s, COALESCE(SUM(count), 0), MIN(created_at), MAX(updated_at)
+		FROM message_stats
+		GROUP BY stat_date, stat_hour, platform, COALESCE(adapter_id, ''), %s
+	`, messageTypeExpr, messageTypeExpr)
+	if _, err := tx.Exec(copySQL); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE message_stats`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE message_stats_new RENAME TO message_stats`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func messageStatsPrimaryKeyIncludesType(db *sql.DB) bool {
+	rows, err := db.Query(`PRAGMA table_info(message_stats)`)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+
+	primaryKeys := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return false
+		}
+		if pk > 0 {
+			primaryKeys[name] = true
+		}
+	}
+	return primaryKeys["stat_date"] && primaryKeys["stat_hour"] && primaryKeys["platform"] && primaryKeys["adapter_id"] && primaryKeys["message_type"]
 }
 
 func tableColumns(db *sql.DB, table string) (map[string]bool, error) {

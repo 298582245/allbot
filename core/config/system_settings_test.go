@@ -57,6 +57,56 @@ func TestEnsureDefaultSystemSettingsKeepsSavedPaymentSettings(t *testing.T) {
 	}
 }
 
+func TestLogRetentionDaysDefaultsToZero(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	days, err := db.GetLogRetentionDays()
+	if err != nil {
+		t.Fatalf("GetLogRetentionDays returned error: %v", err)
+	}
+	if days != 0 {
+		t.Fatalf("expected default retention 0, got %d", days)
+	}
+}
+
+func TestSaveLogRetentionDays(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.SaveLogRetentionDays(30); err != nil {
+		t.Fatalf("SaveLogRetentionDays returned error: %v", err)
+	}
+	days, err := db.GetLogRetentionDays()
+	if err != nil {
+		t.Fatalf("GetLogRetentionDays returned error: %v", err)
+	}
+	if days != 30 {
+		t.Fatalf("expected retention 30, got %d", days)
+	}
+}
+
+func TestSaveLogRetentionDaysRejectsInvalidValues(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.SaveLogRetentionDays(-1); err == nil {
+		t.Fatal("expected negative retention to fail")
+	}
+	if err := db.SaveLogRetentionDays(3651); err == nil {
+		t.Fatal("expected too large retention to fail")
+	}
+}
+
 func TestNormalizeAccessControlConfigKeepsUnionIDs(t *testing.T) {
 	config := NormalizeAccessControlConfig(types.AccessControlConfig{
 		WhitelistUnionIDs: []string{"union-1", "union-1", ""},

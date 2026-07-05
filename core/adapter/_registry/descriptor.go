@@ -15,12 +15,15 @@ type ConfigField struct {
 
 // Capabilities 描述适配器支持的消息能力。
 type Capabilities struct {
-	SendText       bool `json:"send_text"`
-	SendImage      bool `json:"send_image"`
-	SendFile       bool `json:"send_file"`
-	PrivateMessage bool `json:"private_message"`
-	GroupMessage   bool `json:"group_message"`
-	Mention        bool `json:"mention"`
+	SendText         bool `json:"send_text"`
+	SendImage        bool `json:"send_image"`
+	SendFile         bool `json:"send_file"`
+	SendMarkdown     bool `json:"send_markdown"`
+	SendRich         bool `json:"send_rich"`
+	SendMixedContent bool `json:"send_mixed_content"`
+	PrivateMessage   bool `json:"private_message"`
+	GroupMessage     bool `json:"group_message"`
+	Mention          bool `json:"mention"`
 }
 
 // Descriptor 描述一个可注册的平台适配器。

@@ -173,6 +173,8 @@ func main() {
 	})
 	backupService := backup.NewService(configDB, pluginManager.PluginDir())
 	backupService.Start()
+	logCleanupService := web.NewLogCleanupService(configDB, webServer.GetLogManager())
+	logCleanupService.Start()
 	webServer.SetBackupService(backupService)
 	webServer.SetImageHostService(imagehost.NewService(configDB))
 	if adminPasswordInit.Generated {
@@ -206,6 +208,7 @@ func main() {
 
 	shutdown := func() {
 		log.Println("AllBot 关闭中...")
+		logCleanupService.Stop()
 		backupService.Stop()
 		scheduledTaskRunner.Stop()
 		adapterManager.StopAll()
@@ -398,9 +401,24 @@ func notifyRestartCompleted(adapterManager *config.AdapterManager) {
 	if startedAt, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("ALLBOT_RESTART_STARTED_AT_NS")), 10, 64); err == nil && startedAt > 0 {
 		text = fmt.Sprintf("AllBot 重启完成，耗时：%s", formatRestartDuration(time.Since(time.Unix(0, startedAt))))
 	}
-	if err := adp.SendMessage(target, text); err != nil {
+	if err := adp.SendMessage(restartNotifyTarget(target), text); err != nil {
 		log.Printf("重启完成通知发送失败: %v", err)
 	}
+}
+
+func restartNotifyTarget(target string) string {
+	parts := strings.Split(strings.TrimSpace(target), "|")
+	if len(parts) <= 1 {
+		return strings.TrimSpace(target)
+	}
+	kept := []string{strings.TrimSpace(parts[0])}
+	for _, part := range parts[1:] {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "at_") {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, "|")
 }
 
 func formatRestartDuration(duration time.Duration) string {

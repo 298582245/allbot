@@ -38,7 +38,7 @@ func TestHandleSystemUpdateDetectsNewVersion(t *testing.T) {
 
 	response := performSystemUpdateRequest(t, server, http.MethodGet)
 
-	if response.CurrentVersion != "v1.0.0" || response.DisplayVersion != "AllBot v1.0.0 (local)" {
+	if response.CurrentVersion != "v1.0.0" || response.DisplayVersion != "AllBot v1.0.0" {
 		t.Fatalf("current version = %q, display = %q", response.CurrentVersion, response.DisplayVersion)
 	}
 	if response.Commit != "abc123" || response.BuildTime != "2026-06-03T10:00:00+08:00" || response.GoVersion == "" {
@@ -127,7 +127,7 @@ func TestHandleSystemUpdateKeepsCurrentInfoOnReleaseError(t *testing.T) {
 
 	response := performSystemUpdateRequest(t, server, http.MethodGet)
 
-	if response.CurrentVersion != "v1.0.0" || response.DisplayVersion != "AllBot v1.0.0 (local)" {
+	if response.CurrentVersion != "v1.0.0" || response.DisplayVersion != "AllBot v1.0.0" {
 		t.Fatalf("current info = %#v", response)
 	}
 	if response.HasUpdate || response.LatestVersion != "" {

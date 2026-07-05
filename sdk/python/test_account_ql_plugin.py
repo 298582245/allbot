@@ -19,6 +19,7 @@ class FakeContext:
         self.listens = list(listens or [])
         self.listen_timeouts = []
         self.replies = []
+        self.buttons = []
         self.run_ql_scripts = []
         self.scheduled_tasks = []
         self.union_id = "union-1"
@@ -32,6 +33,10 @@ class FakeContext:
         return default
 
     async def reply(self, text):
+        self.replies.append(text)
+
+    async def send_buttons(self, text, buttons):
+        self.buttons.append({"text": text, "buttons": buttons})
         self.replies.append(text)
 
     async def listen(self, timeout):
@@ -168,6 +173,18 @@ class AccountQLPluginRunHookTest(unittest.TestCase):
         asyncio.run(plugin.run_accounts(ctx, ACCOUNTS, "all_authorized", "测试一键运行"))
         self.assertIn("运行完成", ctx.replies[-1])
 
+    def test_failed_script_replies_summary_without_account_query(self):
+        async def query(_account, _ctx, _index):
+            raise AssertionError("失败脚本不应继续查询账号")
+
+        plugin = make_plugin(account={"query": query})
+        ctx = FakeContext(result={"status": "failed", "task_id": 9, "error": "exit status 1", "output": "line1\nline2"})
+        asyncio.run(plugin.run_accounts(ctx, ACCOUNTS, "current_user", "测试运行"))
+        self.assertIn("运行失败", ctx.replies[-1])
+        self.assertIn("任务ID：9", ctx.replies[-1])
+        self.assertIn("错误：exit status 1", ctx.replies[-1])
+        self.assertIn("line2", ctx.replies[-1])
+
     def test_all_authorized_run_skips_post_run_account_query_and_shows_summary(self):
         async def query(_account, _ctx, _index):
             return "账号详情"
@@ -218,13 +235,62 @@ class AccountQLPluginRunHookTest(unittest.TestCase):
 
         plugin = make_plugin(account={"query": query})
         ctx = FakeContext(accounts=many_accounts, listens=["n", "21"])
+        ctx.platform = "telegram"
         asyncio.run(plugin.query_mine(ctx))
 
-        self.assertIn("[20] 账号20", ctx.replies[0])
-        self.assertNotIn("[21] 账号21", ctx.replies[0])
-        self.assertIn("第 1/2 页", ctx.replies[0])
-        self.assertIn("[21] 账号21", ctx.replies[1])
+        self.assertIn("[20] 账号20", ctx.buttons[0]["text"])
+        self.assertNotIn("[21] 账号21", ctx.buttons[0]["text"])
+        self.assertIn("第 1/2 页", ctx.buttons[0]["text"])
+        self.assertIn("[21] 账号21", ctx.buttons[1]["text"])
         self.assertIn("详情：账号21", ctx.replies[-1])
+
+    def test_telegram_query_selection_prompt_sends_buttons_when_supported(self):
+        plugin = make_plugin(account={"query": lambda *_args: "详情"})
+        ctx = FakeContext(accounts=[{"id": 1, "account_name": "账号1"}, {"id": 2, "account_name": "账号2"}], listens=["0"])
+        ctx.platform = "telegram"
+        sent = []
+
+        async def send_buttons(text, buttons):
+            sent.append({"text": text, "buttons": buttons})
+
+        ctx.sendButtons = send_buttons
+        asyncio.run(plugin.select_accounts_for_query(ctx, ctx.accounts))
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("请输入要查询的账号", sent[0]["text"])
+        self.assertEqual(sent[0]["buttons"][0][0], {"text": "[0] 全部查询", "value": "0", "user_id": "user-1"})
+
+    def test_qq_office_query_selection_prompt_sends_buttons_when_supported(self):
+        plugin = make_plugin(account={"query": lambda *_args: "详情"})
+        ctx = FakeContext(accounts=[{"id": 1, "account_name": "账号1"}, {"id": 2, "account_name": "账号2"}], listens=["1"])
+        ctx.platform = "qq_office"
+        sent = []
+
+        async def send_buttons(text, buttons):
+            sent.append({"text": text, "buttons": buttons})
+
+        ctx.sendButtons = send_buttons
+        asyncio.run(plugin.select_accounts_for_query(ctx, ctx.accounts))
+
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["buttons"][1][0], {"text": "[1] 账号1", "value": "1", "user_id": "user-1"})
+
+    def test_account_management_menu_sends_buttons_with_text_fallback(self):
+        plugin = make_plugin()
+        ctx = FakeContext(accounts=ACCOUNTS, listens=["q"])
+        asyncio.run(plugin.list_accounts(ctx))
+        self.assertEqual(len(ctx.buttons), 1)
+        self.assertIn("回复序号可操作账号", ctx.buttons[0]["text"])
+        self.assertEqual(ctx.buttons[0]["buttons"][0][0], {"text": "1. 账号1", "value": "1"})
+
+    def test_delete_confirmation_sends_y_cancel_buttons(self):
+        plugin = make_plugin()
+        ctx = FakeContext(accounts=ACCOUNTS, listens=["q"])
+        asyncio.run(plugin.delete_account(ctx, ACCOUNTS[0]))
+        self.assertEqual(len(ctx.buttons), 1)
+        self.assertIn("回复 y 确认", ctx.buttons[0]["text"])
+        self.assertEqual(ctx.buttons[0]["buttons"][0][0]["value"], "y")
+        self.assertIn("已取消删除", ctx.replies[-1])
 
 
 if __name__ == "__main__":

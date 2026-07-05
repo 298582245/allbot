@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -41,11 +42,19 @@ type RuntimeProfileConfig struct {
 	Profiles []RuntimeProfile `json:"profiles"`
 }
 
+type RuntimeDownloadOptions struct {
+	ProxyURL               string
+	NodeMirrorURL          string
+	PythonPackageMirrorURL string
+	PythonMetadataURL      string
+}
+
 type RuntimeProfileInitOptions struct {
-	ProfileID    string
-	Force        bool
-	AutoDownload bool
-	Progress     RuntimeProfileInitProgressFunc `json:"-"`
+	ProfileID       string
+	Force           bool
+	AutoDownload    bool
+	DownloadOptions RuntimeDownloadOptions
+	Progress        RuntimeProfileInitProgressFunc `json:"-"`
 }
 
 type RuntimeProfileInitProgressFunc func(progress RuntimeProfileInitProgress)
@@ -185,7 +194,63 @@ type dependencyInstallOptions struct {
 	quietSkip   bool
 }
 
+var (
+	pythonPackageNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(\[[A-Za-z0-9][A-Za-z0-9_.-]*(,[A-Za-z0-9][A-Za-z0-9_.-]*)*\])?$`)
+	nodePackageNamePattern   = regexp.MustCompile(`^(?:@[A-Za-z0-9][A-Za-z0-9_.-]*/)?[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+	dependencyVersionPattern = regexp.MustCompile(`^[A-Za-z0-9^~=][A-Za-z0-9_.+~^=-]*$`)
+)
+
+func validatePythonDependencyName(name string) error {
+	name = strings.TrimSpace(name)
+	if !pythonPackageNamePattern.MatchString(name) {
+		return fmt.Errorf("Python 依赖包名无效")
+	}
+	return nil
+}
+
+func pythonPackageLookupName(name string) string {
+	name = strings.TrimSpace(name)
+	if index := strings.Index(name, "["); index >= 0 {
+		return strings.TrimSpace(name[:index])
+	}
+	return name
+}
+
+func validateNodeDependencyName(name string) error {
+	name = strings.TrimSpace(name)
+	if !nodePackageNamePattern.MatchString(name) {
+		return fmt.Errorf("Node.js 依赖包名无效")
+	}
+	return nil
+}
+
+func validateDependencyVersion(version string) error {
+	version = strings.TrimSpace(version)
+	if version == "" || version == "latest" {
+		return nil
+	}
+	if !dependencyVersionPattern.MatchString(version) {
+		return fmt.Errorf("依赖版本号无效")
+	}
+	return nil
+}
+
+func validateDependencyRequest(deps map[string]string, validateName func(string) error) error {
+	for name, version := range deps {
+		if err := validateName(name); err != nil {
+			return err
+		}
+		if err := validateDependencyVersion(version); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *Manager) installPythonDepsForProfile(profileID string, deps map[string]string, options dependencyInstallOptions) error {
+	if err := validateDependencyRequest(deps, validatePythonDependencyName); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -207,7 +272,14 @@ func (m *Manager) installPythonDepsForProfile(profileID string, deps map[string]
 	pipPath := profilePipPath(paths.pythonVenv)
 	pythonPath := profilePythonPath(paths.pythonVenv)
 	for pkg, version := range deps {
+		pkg = strings.TrimSpace(pkg)
+		if err := validatePythonDependencyName(pkg); err != nil {
+			return err
+		}
 		requestedVersion := strings.TrimSpace(version)
+		if err := validateDependencyVersion(requestedVersion); err != nil {
+			return err
+		}
 		latestRequested := requestedVersion == "" || requestedVersion == "latest"
 		packageSpec := pkg
 		forceUpgrade := false
@@ -296,6 +368,9 @@ func (m *Manager) EnsureNodeDepsForProfile(profileID string, deps map[string]str
 }
 
 func (m *Manager) installNodeDepsForProfile(profileID string, deps map[string]string, options dependencyInstallOptions) error {
+	if err := validateDependencyRequest(deps, validateNodeDependencyName); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -327,7 +402,14 @@ func (m *Manager) installNodeDepsForProfile(profileID string, deps map[string]st
 	}
 
 	for pkg, version := range deps {
+		pkg = strings.TrimSpace(pkg)
+		if err := validateNodeDependencyName(pkg); err != nil {
+			return err
+		}
 		requestedVersion := strings.TrimSpace(version)
+		if err := validateDependencyVersion(requestedVersion); err != nil {
+			return err
+		}
 		latestRequested := requestedVersion == "" || requestedVersion == "latest"
 		packageSpec := pkg
 		actualVersion, actualErr := getNodePackageVersionAt(paths.nodeModules, pkg)
@@ -687,7 +769,7 @@ func (m *Manager) InitializeRuntimeProfile(profileID string, options RuntimeProf
 			return result, fmt.Errorf("运行环境下载器不可用")
 		}
 		reportRuntimeInitProgress(options.Progress, "download", "正在下载托管解释器", 10)
-		downloaded, err := downloader.EnsureRuntime(profile.Runtime, profile.RequestedVersion, profile.Architecture, options.Force, options.Progress)
+		downloaded, err := downloader.EnsureRuntime(profile.Runtime, profile.RequestedVersion, profile.Architecture, options.Force, options.DownloadOptions, options.Progress)
 		if err != nil {
 			return result, err
 		}
@@ -1465,6 +1547,10 @@ func (m *Manager) UninstallPythonDep(name string) error {
 }
 
 func (m *Manager) UninstallPythonDepForProfile(profileID, name string) error {
+	name = strings.TrimSpace(name)
+	if err := validatePythonDependencyName(name); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	profile, err := m.resolveProfileLocked("python", profileID)
@@ -1499,6 +1585,10 @@ func (m *Manager) UninstallNodeDep(name string) error {
 }
 
 func (m *Manager) UninstallNodeDepForProfile(profileID, name string) error {
+	name = strings.TrimSpace(name)
+	if err := validateNodeDependencyName(name); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	profile, err := m.resolveProfileLocked("nodejs", profileID)
@@ -1540,7 +1630,8 @@ func (m *Manager) getPythonPackageVersion(pkg string) (string, error) {
 }
 
 func (m *Manager) getPythonPackageVersionWithPython(pythonPath, pkg string) (string, error) {
-	cmd := exec.Command(pythonPath, "-m", "pip", "show", pkg)
+	lookupName := pythonPackageLookupName(pkg)
+	cmd := exec.Command(pythonPath, "-m", "pip", "show", lookupName)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("获取 Python 包 %s 版本失败: %w", pkg, err)

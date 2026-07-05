@@ -160,6 +160,14 @@ class CustomReplyPlugin {
         else await this.ctx.reply(result.content || '');
     }
 
+    async sendButtons(text, buttons) {
+        if (typeof this.ctx.sendButtons === 'function') {
+            await this.ctx.sendButtons(text, buttons);
+            return;
+        }
+        await this.ctx.reply(text);
+    }
+
     async showReplyList() {
         if (this.replies.length === 0) {
             await this.ctx.reply('暂无自定义回复');
@@ -175,7 +183,7 @@ class CustomReplyPlugin {
         if (!keyword) return this.ctx.reply('输入超时，已取消添加回复');
         if (this.replies.some((item) => item.keyword === keyword)) return this.ctx.reply(`关键词 "${keyword}" 已存在，请重新输入`);
 
-        await this.ctx.reply('请选择回复类型：\n1. 文本回复\n2. 图片回复\n3. API回复\n4. JS代码回复\n请输入数字 1-4：');
+        await this.sendButtons('请选择回复类型：\n1. 文本回复\n2. 图片回复\n3. API回复\n4. JS代码回复\n请输入数字 1-4：', [[{ text: '文本回复', value: '1' }, { text: '图片回复', value: '2' }], [{ text: 'API回复', value: '3' }, { text: 'JS代码回复', value: '4' }]]);
         const typeInput = (await this.ctx.listen(30)).trim();
         const typeMap = { 1: ['text', '文本回复'], 2: ['img', '图片回复'], 3: ['api', 'API回复'], 4: ['js', 'JS代码回复'] };
         const selected = typeMap[typeInput];
@@ -204,7 +212,12 @@ class CustomReplyPlugin {
             message += `${index + 1}. ${item.keyword} → [${item.reply_type}] ${shortText(item.content, 30)}\n`;
         });
         message += '\n请输入要删除的回复序号（输入"取消"退出）：';
-        await this.ctx.reply(message);
+        const buttons = [];
+        for (let index = 0; index < this.replies.length; index += 4) {
+            buttons.push(this.replies.slice(index, index + 4).map((item, offset) => ({ text: `${index + offset + 1}. ${shortText(item.keyword, 10)}`, value: String(index + offset + 1) })));
+        }
+        buttons.push([{ text: '取消', value: '取消' }]);
+        await this.sendButtons(message, buttons);
 
         const input = (await this.ctx.listen(30)).trim();
         if (!input) return this.ctx.reply('输入超时，已取消删除');
@@ -214,7 +227,7 @@ class CustomReplyPlugin {
         if (Number.isNaN(index) || index < 0 || index >= this.replies.length) return this.ctx.reply('序号无效，请重新输入');
 
         const selected = this.replies[index];
-        await this.ctx.reply(`确定要删除以下回复吗？\n关键词：${selected.keyword}\n类型：${selected.reply_type}\n内容：${selected.content}\n\n请输入"确认"来确认删除，输入其他内容取消：`);
+        await this.sendButtons(`确定要删除以下回复吗？\n关键词：${selected.keyword}\n类型：${selected.reply_type}\n内容：${selected.content}\n\n请输入"确认"来确认删除，输入其他内容取消：`, [[{ text: '确认删除', value: '确认' }], [{ text: '取消', value: '取消' }]]);
         const confirm = (await this.ctx.listen(30)).trim();
         if (confirm !== '确认') return this.ctx.reply('已取消删除');
 
@@ -252,6 +265,14 @@ class CustomReplyPlugin {
             message += '"退出"';
         } else {
             message += '\n✅ 已显示所有内容';
+        }
+        if (totalPages > 1) {
+            const row = [];
+            if (currentPage > 0) row.push({ text: '上一页', value: '上一页' });
+            if (currentPage < totalPages - 1) row.push({ text: '下一页', value: '下一页' });
+            row.push({ text: '退出', value: '退出' });
+            await this.sendButtons(message, [row]);
+            return;
         }
         await this.ctx.reply(message);
     }

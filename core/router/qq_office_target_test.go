@@ -47,14 +47,14 @@ func TestAdapterReplyFormatters(t *testing.T) {
 	if got := resolveReplyTarget(telegram, tgMsg); got != "-1001" {
 		t.Fatalf("Telegram target = %q", got)
 	}
-	wantTelegram := `<a href="tg://user?id=7089240306">A&amp;B</a> 你好&lt;test&gt;`
+	wantTelegram := "<a href=\"tg://user?id=7089240306\">A&amp;B</a> \n你好&lt;test&gt;"
 	if got := formatReplyText(telegram, tgMsg, "你好<test>"); got != wantTelegram {
 		t.Fatalf("Telegram reply text = %q", got)
 	}
 
 	qqOffice := qqofficeadapter.NewQQOfficeAdapter("app123", "secret456", "", "")
-	qqOfficeMsg := &types.Message{Platform: "qq_office", UserID: "member-openid", GroupID: "group-openid"}
-	if got := resolveReplyTarget(qqOffice, qqOfficeMsg); got != "group_group-openid" {
+	qqOfficeMsg := &types.Message{Platform: "qq_office", UserID: "member-openid", GroupID: "group-openid", Metadata: map[string]string{"qq_office_group_openid": "group-openid", "qq_office_member_openid": "member-openid"}}
+	if got := resolveReplyTarget(qqOffice, qqOfficeMsg); got != "group_group-openid|at_member-openid" {
 		t.Fatalf("QQ 官方 target = %q", got)
 	}
 	if got := formatReplyText(qqOffice, qqOfficeMsg, "你好"); got != "你好" {

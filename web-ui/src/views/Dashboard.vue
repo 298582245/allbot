@@ -89,6 +89,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Dashboard' })
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import * as echarts from 'echarts/core'
 import { LineChart, PieChart } from 'echarts/charts'
@@ -105,10 +106,10 @@ import { getSystemStatus, getMessageStats } from '@/api'
 echarts.use([LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
 
 const stats = ref([
-  { title: '当前运行', value: '--', subtext: '', icon: TrendCharts, color: 'linear-gradient(135deg, #6d7dfc 0%, #8b5cf6 100%)' },
-  { title: '运行插件', value: 0, subtext: '共 0 个插件', icon: GridIcon, color: 'linear-gradient(135deg, #ff8fc7 0%, #ff6b88 100%)' },
-  { title: '在线机器人', value: 0, subtext: '共 0 个机器人', icon: ConnectionIcon, color: 'linear-gradient(135deg, #38bdf8 0%, #22d3ee 100%)' },
-  { title: '今日消息', value: 0, subtext: '累计 0 条', icon: ChatLineRound, color: 'linear-gradient(135deg, #34d399 0%, #2dd4bf 100%)' }
+  { title: '当前运行', value: '--', subtext: '', icon: TrendCharts, color: 'var(--brand-500)' },
+  { title: '运行插件', value: 0, subtext: '共 0 个插件', icon: GridIcon, color: 'var(--color-success)' },
+  { title: '在线机器人', value: 0, subtext: '共 0 个机器人', icon: ConnectionIcon, color: 'var(--brand-400)' },
+  { title: '今日消息', value: 0, subtext: '累计 0 条', icon: ChatLineRound, color: 'var(--color-warning)' }
 ])
 
 const statsMode = ref('date')
@@ -197,7 +198,7 @@ const renderMessageChart = () => {
   const title = chartDimension.value === 'platform' ? '不同平台消息分布' : '不同机器人消息分布'
   messageChart.setOption({
     title: { text: title, left: 0, top: 0, textStyle: { fontSize: 15, fontWeight: 600 } },
-    color: ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#909399', '#9c27b0', '#00bcd4', '#795548'],
+    color: ['#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#64748b', '#8b5cf6', '#06b6d4', '#ec4899'],
     tooltip: { trigger: 'axis' },
     legend: {
       top: 28,
@@ -223,8 +224,8 @@ const renderMessageChart = () => {
 }
 
 function renderResourceCharts() {
-  renderUsagePie(cpuChartRef, cpuChart, chart => { cpuChart = chart }, 'CPU', resourceStatus.value.allBotCpuUsagePercent, resourceStatus.value.cpuUsagePercent, '#38bdf8', '#f59e0b')
-  renderUsagePie(memoryChartRef, memoryChart, chart => { memoryChart = chart }, '内存', resourceStatus.value.allBotMemoryUsagePercent, resourceStatus.value.memoryUsagePercent, '#34d399', '#8b5cf6')
+  renderUsagePie(cpuChartRef, cpuChart, chart => { cpuChart = chart }, 'CPU', resourceStatus.value.allBotCpuUsagePercent, resourceStatus.value.cpuUsagePercent, '#6366f1', '#f59e0b')
+  renderUsagePie(memoryChartRef, memoryChart, chart => { memoryChart = chart }, '内存', resourceStatus.value.allBotMemoryUsagePercent, resourceStatus.value.memoryUsagePercent, '#22c55e', '#8b5cf6')
 }
 
 function renderUsagePie(chartRef, chartInstance, setChart, name, allBotPercent, systemPercent, allBotColor, systemColor) {
@@ -531,14 +532,14 @@ onUnmounted(() => {
 
 .stat-card {
   cursor: pointer;
-  transition: transform 0.3s, box-shadow 0.3s;
+  transition: transform var(--transition-normal), box-shadow var(--transition-normal);
   height: 100%;
   overflow: hidden;
 }
 
 .stat-card:hover {
-  transform: translateY(-5px);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-md);
 }
 
 .stat-card :deep(.el-card__body) {
@@ -554,7 +555,7 @@ onUnmounted(() => {
   position: relative;
   width: 46px;
   height: 46px;
-  border-radius: 14px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -565,7 +566,7 @@ onUnmounted(() => {
   background: color-mix(in srgb, white 88%, transparent);
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.72),
-    0 8px 22px rgba(31, 41, 55, 0.1);
+    0 4px 14px rgba(31, 41, 55, 0.08);
   overflow: hidden;
 }
 
@@ -573,9 +574,9 @@ onUnmounted(() => {
   content: '';
   position: absolute;
   inset: 4px;
-  border-radius: 11px;
+  border-radius: var(--radius-sm);
   background: var(--stat-gradient);
-  box-shadow: 0 6px 14px rgba(31, 41, 55, 0.14);
+  opacity: 0.9;
 }
 
 .stat-icon::after {
@@ -585,8 +586,8 @@ onUnmounted(() => {
   left: 9px;
   width: 18px;
   height: 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.28);
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.25);
   filter: blur(1px);
 }
 
@@ -605,17 +606,19 @@ onUnmounted(() => {
 
 .stat-value {
   font-size: 28px;
-  font-weight: bold;
-  color: #333;
+  font-weight: 800;
+  font-family: var(--font-heading);
+  color: var(--text-primary);
   margin-bottom: 5px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  letter-spacing: -0.02em;
 }
 
 .stat-title {
   font-size: 14px;
-  color: #666;
+  color: var(--text-secondary);
   line-height: 18px;
 }
 
@@ -623,7 +626,7 @@ onUnmounted(() => {
   margin-top: 0;
   font-size: 12px;
   line-height: 16px;
-  color: #67c23a;
+  color: var(--color-success);
 }
 
 .card-header {
@@ -666,7 +669,7 @@ onUnmounted(() => {
 }
 
 .resource-hint {
-  color: #8b97a8;
+  color: var(--text-tertiary);
   font-size: 13px;
 }
 
@@ -679,12 +682,12 @@ onUnmounted(() => {
 
 .resource-panel {
   position: relative;
-  border-radius: 22px;
+  border-radius: var(--radius-xl);
   padding: 20px 14px 16px;
   background:
-    radial-gradient(circle at 22% 18%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0) 34%),
-    linear-gradient(145deg, #f8fbff 0%, #eef6ff 100%);
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
+    radial-gradient(circle at 22% 18%, rgba(99, 102, 241, 0.04), transparent 40%),
+    linear-gradient(145deg, var(--bg-surface) 0%, var(--bg-surface-hover) 100%);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
   overflow: hidden;
 }
 
@@ -696,13 +699,13 @@ onUnmounted(() => {
   width: 120px;
   height: 120px;
   border-radius: 50%;
-  background: rgba(64, 158, 255, 0.08);
+  background: rgba(99, 102, 241, 0.05);
 }
 
 .resource-title {
   position: relative;
   z-index: 1;
-  color: #4b5563;
+  color: var(--text-secondary);
   font-size: 15px;
   font-weight: 600;
   text-align: center;
@@ -719,17 +722,19 @@ onUnmounted(() => {
   position: relative;
   z-index: 1;
   margin-top: -18px;
-  color: #111827;
+  color: var(--text-primary);
   font-size: 28px;
   font-weight: 700;
+  font-family: var(--font-heading);
   text-align: center;
+  letter-spacing: -0.02em;
 }
 
 .resource-detail {
   position: relative;
   z-index: 1;
   margin-top: 8px;
-  color: #6b7280;
+  color: var(--text-secondary);
   font-size: 13px;
   text-align: center;
   word-break: break-all;

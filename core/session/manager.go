@@ -74,6 +74,15 @@ func (m *Manager) CreateCancellableSession(pluginID, userID, groupID string, tim
 
 // HandleMessage 处理消息，如果有等待会话则拦截
 func (m *Manager) HandleMessage(userID, groupID, content string) bool {
+	return m.handleMessage(userID, groupID, "", content)
+}
+
+// HandleMessageForPlugin 只允许当前插件会话消费等待输入。
+func (m *Manager) HandleMessageForPlugin(userID, groupID, pluginID, content string) bool {
+	return m.handleMessage(userID, groupID, pluginID, content)
+}
+
+func (m *Manager) handleMessage(userID, groupID, pluginID, content string) bool {
 	key := m.makeKey(userID, groupID)
 
 	m.mu.Lock()
@@ -81,6 +90,9 @@ func (m *Manager) HandleMessage(userID, groupID, content string) bool {
 	session, exists := m.sessions[key]
 	if !exists {
 		return false // 没有等待会话
+	}
+	if pluginID != "" && session.PluginID != pluginID {
+		return false
 	}
 	delete(m.sessions, key) // 立即删除，防止重复触发
 

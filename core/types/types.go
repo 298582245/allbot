@@ -12,6 +12,26 @@ type Message struct {
 	Metadata  map[string]string
 }
 
+type ButtonOption struct {
+	Text   string `json:"text"`
+	Value  string `json:"value"`
+	UserID string `json:"user_id,omitempty"`
+}
+
+type RichMessagePart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Markdown string `json:"markdown,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Alt      string `json:"alt,omitempty"`
+}
+
+type RichMessage struct {
+	Parts        []RichMessagePart `json:"parts"`
+	FallbackText string            `json:"fallback_text,omitempty"`
+	Prefer       string            `json:"prefer,omitempty"`
+}
+
 type AccessControlConfig struct {
 	InheritSystem     bool     `json:"inherit_system"`
 	WhitelistGroups   []string `json:"whitelist_groups"`
@@ -41,6 +61,8 @@ type Plugin struct {
 	AccessControl     AccessControlConfig
 	OpenAPI           OpenAPIConfig
 	ScriptEnv         ScriptEnvConfig
+	WebUI             PluginWebUIConfig
+	WebChat           PluginWebChatConfig
 	Template          string
 	TemplateVersion   string
 	TemplateMetadata  map[string]interface{}
@@ -58,6 +80,29 @@ type OpenAPIConfig struct {
 type ScriptEnvConfig struct {
 	Enabled bool     `json:"enabled"`
 	Names   []string `json:"names"`
+}
+
+type PluginWebUIConfig struct {
+	Enabled bool   `json:"enabled"`
+	Title   string `json:"title"`
+	Entry   string `json:"entry"`
+	Icon    string `json:"icon,omitempty"`
+	Order   int    `json:"order,omitempty"`
+}
+
+type PluginWebChatQuickAction struct {
+	Label string `json:"label"`
+	Text  string `json:"text"`
+}
+
+type PluginWebChatConfig struct {
+	Enabled      *bool                      `json:"enabled,omitempty"`
+	Title        string                     `json:"title"`
+	Description  string                     `json:"description"`
+	Placeholder  string                     `json:"placeholder"`
+	EntryText    string                     `json:"entry_text"`
+	QuickActions []PluginWebChatQuickAction `json:"quick_actions"`
+	Keywords     []string                   `json:"keywords"`
 }
 
 type OpenAPIEndpoint struct {
@@ -123,6 +168,8 @@ type PluginConfig struct {
 	AccessControl     *AccessControlConfig    `json:"access_control,omitempty"`
 	OpenAPI           OpenAPIConfig           `json:"open_api,omitempty"`
 	ScriptEnv         ScriptEnvConfig         `json:"script_env,omitempty"`
+	WebUI             PluginWebUIConfig       `json:"web_ui,omitempty"`
+	WebChat           PluginWebChatConfig     `json:"web_chat,omitempty"`
 	Template          string                  `json:"template,omitempty"`
 	TemplateVersion   string                  `json:"template_version,omitempty"`
 	TemplateMetadata  map[string]interface{}  `json:"template_metadata,omitempty"`

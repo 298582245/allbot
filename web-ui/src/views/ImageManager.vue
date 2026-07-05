@@ -5,12 +5,12 @@
         <div class="page-header">
           <div>
             <div class="title-row">
-              <span>图床管理</span>
+              <span class="title">图床管理</span>
               <el-button class="mobile-info-button" type="primary" link aria-label="查看图床管理说明" @click="showPageDescription">
                 <el-icon><InfoFilled /></el-icon>
               </el-button>
             </div>
-            <p>{{ pageDescription }}</p>
+            <div class="subtitle">{{ pageDescription }}</div>
           </div>
           <div class="header-actions">
             <el-upload :show-file-list="false" :before-upload="handleUploadFile" :accept="uploadAccept">
@@ -88,7 +88,10 @@
             <div class="mobile-image-meta"><span>大小</span><strong>{{ formatSize(imageSize(row)) }}</strong></div>
             <div class="mobile-image-meta"><span>尺寸</span><strong>{{ imageDimensions(row) }}</strong></div>
             <div class="mobile-image-meta"><span>时间</span><strong>{{ formatTime(row.created_at || row.createdAt) }}</strong></div>
-            <code class="mobile-url">{{ imageUrl(row) }}</code>
+            <div class="mobile-url-row">
+              <span class="mobile-url-label">直链</span>
+              <code class="mobile-url" @click="copyDirectUrl(row)">{{ imageUrl(row) }}</code>
+            </div>
           </div>
           <div class="mobile-image-actions">
             <el-button size="small" type="primary" @click="copyDirectUrl(row)">复制</el-button>
@@ -99,16 +102,12 @@
         <el-empty v-if="!loading && images.length === 0" description="暂无图片" />
       </div>
 
-      <div class="pagination-row">
-        <el-pagination
-          v-model:current-page="currentPage"
-          :page-size="pageSize"
-          :total="total"
-          layout="total, prev, pager, next"
-          background
-          @current-change="loadImages"
-        />
-      </div>
+      <StdPagination
+        v-model:current-page="currentPage"
+        :page-size="pageSize"
+        :total="total"
+        @current-change="loadImages"
+      />
     </el-card>
 
     <el-dialog v-model="settingsVisible" title="图床配置" width="560px" class="settings-dialog" :close-on-click-modal="false">
@@ -149,10 +148,12 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'ImageManager' })
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled, Setting, Upload } from '@element-plus/icons-vue'
 import { deleteImage, getImageSettings, listImages, saveImageSettings, uploadImage } from '@/api'
+import StdPagination from '@/components/StdPagination.vue'
 
 const pageDescription = '管理内置图床图片、上传新图片、复制直链，并维护存储目录和上传限制。'
 const defaultAllowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
@@ -475,9 +476,10 @@ onMounted(async () => {
 .page-card { height: 100%; display: flex; flex-direction: column; }
 .page-card :deep(.el-card__body) { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.title-row { display: flex; align-items: center; gap: 6px; font-size: 18px; font-weight: 600; }
+.title-row { display: flex; align-items: center; gap: 6px; }
+.title { font-size: 18px; font-weight: 600; }
 .mobile-info-button { display: none; padding: 0; font-size: 16px; }
-.page-header p { margin: 6px 0 0; color: #909399; font-size: 13px; }
+.subtitle { margin-top: 6px; color: #909399; font-size: 13px; line-height: 1.5; }
 .header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .filter-panel { display: grid; grid-template-columns: minmax(0, 1fr) 220px auto; gap: 10px; margin-bottom: 12px; }
 .mobile-filter-panel { display: none; }
@@ -486,7 +488,6 @@ onMounted(async () => {
 .desktop-image-table code,
 .mobile-url { padding: 4px 8px; border-radius: 6px; color: #1d4ed8; background: #eff6ff; font-family: "JetBrains Mono", "Cascadia Code", monospace; word-break: break-all; }
 .mobile-image-grid { display: none; }
-.pagination-row { display: flex; justify-content: flex-end; flex-shrink: 0; padding-top: 12px; }
 .field-tip { margin-top: 6px; color: #909399; font-size: 12px; line-height: 1.5; }
 .preview-dialog :deep(.el-dialog__body) { text-align: center; background: #f8fafc; }
 .preview-image { max-width: 100%; max-height: 66vh; border-radius: 8px; object-fit: contain; }
@@ -496,9 +497,9 @@ onMounted(async () => {
   .page-card :deep(.el-card__header) { padding: 10px 12px; flex-shrink: 0; }
   .page-card :deep(.el-card__body) { min-height: 0; padding: 10px 12px; overflow: hidden; }
   .page-header { align-items: flex-start; flex-direction: column; gap: 10px; }
-  .title-row { font-size: 16px; }
+  .title { font-size: 16px; }
   .mobile-info-button { display: inline-flex; }
-  .page-header p { display: none; }
+  .subtitle { display: none; }
   .header-actions { width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
   .header-actions .el-button,
   .header-actions :deep(.el-upload) { width: 100%; margin-left: 0; }
@@ -515,16 +516,17 @@ onMounted(async () => {
   .mobile-image-meta { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; }
   .mobile-image-meta span { color: #909399; flex-shrink: 0; }
   .mobile-image-meta strong { min-width: 0; color: #303133; font-weight: 500; text-align: right; word-break: break-word; overflow-wrap: anywhere; }
-  .mobile-url { display: block; max-height: 45px; overflow: hidden; font-size: 12px; }
+  .mobile-url-row { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
+  .mobile-url-label { color: #909399; flex-shrink: 0; }
+  .mobile-url { flex: 1; min-width: 0; display: block; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: background 0.15s; }
+  .mobile-url:active { background: #dbeafe; }
   .mobile-image-actions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding-top: 10px; border-top: 1px solid #f0f2f5; }
   .mobile-image-actions .el-button { width: 100%; margin-left: 0; }
-  .pagination-row { justify-content: flex-start; overflow-x: auto; flex-shrink: 0; }
   .settings-dialog :deep(.el-dialog),
   .preview-dialog :deep(.el-dialog) { width: 94vw !important; }
   .settings-dialog :deep(.el-form-item) { display: block; }
   .settings-dialog :deep(.el-form-item__label) { width: 100% !important; justify-content: flex-start; padding: 0 0 6px; }
   .settings-dialog :deep(.el-form-item__content) { margin-left: 0 !important; }
-  .mobile-image-grid::-webkit-scrollbar,
-  .pagination-row::-webkit-scrollbar { display: none; }
+  .mobile-image-grid::-webkit-scrollbar { display: none; }
 }
 </style>

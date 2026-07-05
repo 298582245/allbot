@@ -160,6 +160,114 @@ rl.on('line', (line) => {
 	}
 }
 
+func TestExecutePluginSendButtonsUsesFallbacks(t *testing.T) {
+	manager, plugin, pluginPath := newManagerTestPlugin(t, `
+const readline = require('readline');
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+rl.on('line', () => {
+  process.stdout.write(JSON.stringify({ action: 'send_buttons', text: '请选择', buttons: [[{ text: 'A', value: '1', user_id: 'u1' }]] }) + '\n');
+  process.stdout.write(JSON.stringify({ action: 'send_buttons', content: '内容', buttons: [[{ text: 'B', value: '2' }]] }) + '\n');
+  process.stdout.write(JSON.stringify({ action: 'send_buttons', markdown: '标题', buttons: [[{ text: 'C', value: '3' }]] }) + '\n');
+  process.stdout.write(JSON.stringify({ action: 'done', success: true }) + '\n');
+});
+`)
+	received := make([]struct {
+		text    string
+		buttons [][]types.ButtonOption
+	}, 0, 3)
+	err := manager.ExecutePlugin(plugin, pluginPath, []byte(`{}`), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func(text string, buttons [][]types.ButtonOption) error {
+		received = append(received, struct {
+			text    string
+			buttons [][]types.ButtonOption
+		}{text: text, buttons: buttons})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ExecutePlugin returned error: %v", err)
+	}
+	if len(received) != 3 || received[0].text != "请选择" || received[1].text != "内容" || received[2].text != "标题" {
+		t.Fatalf("unexpected button replies: %#v", received)
+	}
+	if len(received[0].buttons) != 1 || received[0].buttons[0][0].Text != "A" || received[0].buttons[0][0].Value != "1" || received[0].buttons[0][0].UserID != "u1" {
+		t.Fatalf("unexpected first buttons: %#v", received[0].buttons)
+	}
+}
+
+func TestExecutePluginSendMarkdownUsesMarkdownFallbacks(t *testing.T) {
+	manager, plugin, pluginPath := newManagerTestPlugin(t, `
+const readline = require('readline');
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+rl.on('line', () => {
+  process.stdout.write(JSON.stringify({ action: 'send_markdown', markdown: '## 标题' }) + '\n');
+  process.stdout.write(JSON.stringify({ action: 'send_markdown', content: '**内容**' }) + '\n');
+  process.stdout.write(JSON.stringify({ action: 'send_markdown', text: '*文本*' }) + '\n');
+  process.stdout.write(JSON.stringify({ action: 'done', success: true }) + '\n');
+});
+`)
+	received := []string{}
+	err := manager.ExecutePlugin(plugin, pluginPath, []byte(`{}`), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func(markdown string) error {
+		received = append(received, markdown)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ExecutePlugin returned error: %v", err)
+	}
+	if len(received) != 3 || received[0] != "## 标题" || received[1] != "**内容**" || received[2] != "*文本*" {
+		t.Fatalf("unexpected markdown replies: %#v", received)
+	}
+}
+
+func TestExecutePluginSendRichUsesCallback(t *testing.T) {
+	manager, plugin, pluginPath := newManagerTestPlugin(t, `
+const readline = require('readline');
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+rl.on('line', () => {
+  process.stdout.write(JSON.stringify({ action: 'send_rich', parts: [{ type: 'text', text: '商品' }, { type: 'image', url: 'https://example.com/a.png', alt: '图' }], fallback_text: '商品 图', prefer: 'auto' }) + '\n');
+  process.stdout.write(JSON.stringify({ action: 'done', success: true }) + '\n');
+});
+`)
+	var received types.RichMessage
+	err := manager.ExecutePlugin(plugin, pluginPath, []byte(`{}`), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func(message types.RichMessage) error {
+		received = message
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ExecutePlugin returned error: %v", err)
+	}
+	if received.FallbackText != "商品 图" || received.Prefer != "auto" || len(received.Parts) != 2 || received.Parts[1].URL != "https://example.com/a.png" {
+		t.Fatalf("unexpected rich message: %#v", received)
+	}
+}
+
+func TestExecutePluginSendRichMessageWritesResponse(t *testing.T) {
+	manager, plugin, pluginPath := newManagerTestPlugin(t, `
+const readline = require('readline');
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+let step = 0;
+rl.on('line', (line) => {
+  if (step === 0) {
+    step = 1;
+    process.stdout.write(JSON.stringify({ action: 'send_rich_message', request_id: 'rich-1', platform: 'telegram', user_id: 'u1', parts: [{ type: 'markdown', markdown: '**中文**' }], prefer: 'markdown' }) + '\n');
+    return;
+  }
+  const response = JSON.parse(line);
+  const ok = response.action === 'send_rich_message_response' && response.request_id === 'rich-1' && response.success === true;
+  process.stdout.write(JSON.stringify({ action: 'done', success: ok, error: ok ? '' : JSON.stringify(response) }) + '\n');
+});
+`)
+	var received RichMessageAction
+	err := manager.ExecutePlugin(plugin, pluginPath, []byte(`{}`), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func(pluginID string, action RichMessageAction) PluginUserResult {
+		received = action
+		return PluginUserResult{Success: true, Data: true}
+	})
+	if err != nil {
+		t.Fatalf("ExecutePlugin returned error: %v", err)
+	}
+	if received.Platform != "telegram" || received.UserID != "u1" || received.Prefer != "markdown" || len(received.Parts) != 1 || received.Parts[0].Markdown != "**中文**" {
+		t.Fatalf("unexpected rich action: %#v", received)
+	}
+}
+
 func TestExecutePluginSendMessageUsesContentFallback(t *testing.T) {
 	manager, plugin, pluginPath := newManagerTestPlugin(t, `
 const readline = require('readline');
@@ -422,6 +530,43 @@ rl.on('line', (line) => {
 	}
 }
 
+func TestExecutePluginRunScriptDoesNotInheritDifferentRuntimeProfile(t *testing.T) {
+	if _, err := exec.LookPath("python"); err != nil {
+		t.Skip("python 不可用，跳过 Python Direct 插件协议测试")
+	}
+	pluginPath := t.TempDir()
+	script := `import json
+import sys
+
+step = 0
+for line in sys.stdin:
+    if step == 0:
+        step = 1
+        print(json.dumps({"action": "run_script", "request_id": "script-mixed", "runtime": "nodejs", "script": "task.js"}), flush=True)
+        continue
+    response = json.loads(line)
+    ok = response.get("action") == "script_response" and response.get("request_id") == "script-mixed" and response.get("success") is True
+    print(json.dumps({"action": "done", "success": ok, "error": "" if ok else json.dumps(response)}), flush=True)
+`
+	if err := os.WriteFile(filepath.Join(pluginPath, "entry.py"), []byte(script), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(pluginPath, deps.NewManager(t.TempDir()))
+	configureManagerTestProfiles(t, manager)
+	plugin := &types.Plugin{ID: "plugin-test", Name: "测试插件", Runtime: "python", RuntimeProfile: "python-default", Entry: "entry.py", Enabled: true}
+	var received ScriptRunAction
+	err := manager.ExecutePlugin(plugin, pluginPath, []byte(`{}`), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func(pluginID string, action ScriptRunAction) PluginUserResult {
+		received = action
+		return PluginUserResult{Success: true, Data: map[string]interface{}{"ok": true}}
+	}, nil)
+	if err != nil {
+		t.Fatalf("ExecutePlugin returned error: %v", err)
+	}
+	if received.Runtime != "nodejs" || received.RuntimeProfile != "" {
+		t.Fatalf("expected nodejs script without inherited python profile, got %#v", received)
+	}
+}
+
 func TestRunPluginScriptRecordsRuntimeProfileAndEnv(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node 不可用，跳过脚本执行测试")
@@ -464,6 +609,41 @@ func TestRunPluginScriptRecordsRuntimeProfileAndEnv(t *testing.T) {
 	}
 }
 
+func TestRunPluginScriptReusesSameScriptTaskRecord(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node 不可用，跳过脚本执行测试")
+	}
+	pluginPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pluginPath, "task.js"), []byte("console.log('ok')\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(pluginPath, deps.NewManager(t.TempDir()))
+	configureManagerTestProfiles(t, manager)
+	database, err := config.NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	manager.SetDatabase(database)
+
+	action := ScriptRunAction{PluginID: "plugin-test", Runtime: "nodejs", RuntimeProfile: "node18", Script: "task.js", RunMode: "current_user", UnionID: "union-a", Wait: true, Timeout: 10}
+	first := manager.RunPluginScript(pluginPath, action)
+	if !first.Success {
+		t.Fatalf("first RunPluginScript failed: %#v", first)
+	}
+	second := manager.RunPluginScript(pluginPath, action)
+	if !second.Success {
+		t.Fatalf("second RunPluginScript failed: %#v", second)
+	}
+	items, err := database.ListScriptRunLogs(config.ScriptRunLogFilter{PluginID: "plugin-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].RunTotal != 2 {
+		t.Fatalf("expected one reused script task with run_total=2, got %#v", items)
+	}
+}
+
 func TestRunPluginScriptInjectsEnabledScriptEnv(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node 不可用，跳过脚本执行测试")
@@ -484,6 +664,9 @@ func TestRunPluginScriptInjectsEnabledScriptEnv(t *testing.T) {
 	if _, err := database.SaveScriptEnvVar(&config.ScriptEnvVar{Name: "API_TOKEN", Value: "secret", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := database.SaveScriptEnvVar(&config.ScriptEnvVar{Name: "API_TOKEN", Value: "second", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.SaveScriptEnvVar(&config.ScriptEnvVar{Name: "DISABLED", Value: "skip", Enabled: false}); err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +684,7 @@ func TestRunPluginScriptInjectsEnabledScriptEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(detail.Output, `"token":"secret"`) || !strings.Contains(detail.Output, `"explicit":"value"`) || strings.Contains(detail.Output, "skip") {
+	if !strings.Contains(detail.Output, `"token":"second&secret"`) || !strings.Contains(detail.Output, `"explicit":"value"`) || strings.Contains(detail.Output, "skip") {
 		t.Fatalf("unexpected output: %q", detail.Output)
 	}
 }
@@ -568,6 +751,26 @@ func TestRunPluginScriptRejectsMissingRuntimeProfile(t *testing.T) {
 	result := manager.RunPluginScript(pluginPath, ScriptRunAction{PluginID: "plugin-test", Runtime: "nodejs", RuntimeProfile: "missing", Script: "task.js", Wait: true})
 	if result.Success || !strings.Contains(result.Error, "运行环境 Profile 不存在或未启用") {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestPauseScriptRunKeepsRunningCancelUntilFinish(t *testing.T) {
+	manager := NewManager(t.TempDir(), deps.NewManager(t.TempDir()))
+	logID := int64(35)
+	cancelCount := 0
+	manager.runningScripts[logID] = func() { cancelCount++ }
+
+	if !manager.PauseScriptRun(logID) {
+		t.Fatal("first pause should cancel running task")
+	}
+	if cancelCount != 1 {
+		t.Fatalf("expected one cancel call, got %d", cancelCount)
+	}
+	if !manager.PauseScriptRun(logID) {
+		t.Fatal("second pause should remain idempotent before task finish cleanup")
+	}
+	if cancelCount != 2 {
+		t.Fatalf("expected second cancel call before finish cleanup, got %d", cancelCount)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/allbot/allbot/core/config"
+	"github.com/allbot/allbot/core/types"
 )
 
 const accessCodeTestValue = "open-sesame"
@@ -226,19 +227,20 @@ func TestAccessCodeEnabledIgnoresExpiredSession(t *testing.T) {
 	assertAccessCodeStatus(t, response, http.StatusNotFound)
 }
 
-func TestSettingsPutPreservesPlatformAdminsWhenFieldMissing(t *testing.T) {
+func TestSettingsPutPreservesPermissionFieldsWhenMissing(t *testing.T) {
 	server := newAccessCodeTestServer(t, false, "")
 	database := server.adapterManager.GetDatabase()
 	settings, err := database.GetSystemSettings()
 	if err != nil {
 		t.Fatalf("GetSystemSettings returned error: %v", err)
 	}
-	settings.PlatformAdmins = []config.PlatformAdmin{{Platform: "qq", UserID: "10001"}}
+	settings.PlatformAdmins = []config.PlatformAdmin{{UnionID: "U_qq_3264695977"}}
+	settings.AccessControl = types.AccessControlConfig{WhitelistGroups: []string{"group-1"}, WhitelistUnionIDs: []string{"U_qq_3264695977"}}
 	if err := database.SaveSystemSettings(settings); err != nil {
 		t.Fatalf("SaveSystemSettings returned error: %v", err)
 	}
 
-	request := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(`{"admin_username":"admin","access_code_enabled":true,"access_code":"new-code"}`))
+	request := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(`{"admin_username":"admin","script_task_concurrent_limit":5,"access_code_enabled":true,"access_code":"new-code"}`))
 	response := httptest.NewRecorder()
 
 	server.handleSettings(response, request)
@@ -248,8 +250,14 @@ func TestSettingsPutPreservesPlatformAdminsWhenFieldMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSystemSettings returned error: %v", err)
 	}
-	if len(saved.PlatformAdmins) != 1 || saved.PlatformAdmins[0].Platform != "qq" || saved.PlatformAdmins[0].UserID != "10001" {
+	if len(saved.PlatformAdmins) != 1 || saved.PlatformAdmins[0].UnionID != "U_qq_3264695977" {
 		t.Fatalf("PlatformAdmins = %#v, expected original admin", saved.PlatformAdmins)
+	}
+	if len(saved.AccessControl.WhitelistGroups) != 1 || saved.AccessControl.WhitelistGroups[0] != "group-1" || len(saved.AccessControl.WhitelistUnionIDs) != 1 || saved.AccessControl.WhitelistUnionIDs[0] != "U_qq_3264695977" {
+		t.Fatalf("AccessControl = %#v, expected original whitelist", saved.AccessControl)
+	}
+	if saved.ScriptTaskConcurrentLimit != 5 {
+		t.Fatalf("ScriptTaskConcurrentLimit = %d, expected 5", saved.ScriptTaskConcurrentLimit)
 	}
 	if !saved.AccessCodeEnabled || saved.AccessCode != "new-code" {
 		t.Fatalf("access code settings = enabled %v code %q, expected enabled new-code", saved.AccessCodeEnabled, saved.AccessCode)

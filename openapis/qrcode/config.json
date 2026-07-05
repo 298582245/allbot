@@ -4,7 +4,7 @@
   "path": "qrcode",
   "method": "GET",
   "enabled": true,
-  "token": "test",
+  "token": "qrcode",
   "runtime": "builtin",
   "entry": "",
   "description": "根据 text 或 content 参数生成二维码 PNG。请先在后台修改 token 并启用后再对外使用。",

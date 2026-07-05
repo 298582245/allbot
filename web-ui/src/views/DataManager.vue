@@ -1,16 +1,16 @@
 <template>
   <div class="data-manager">
-    <el-card class="data-card">
+    <el-card class="page-card">
       <template #header>
-        <div class="card-header">
+        <div class="page-header">
           <div>
             <div class="title-row">
-              <span>数据管理</span>
+              <span class="title">数据管理</span>
               <el-button class="mobile-info-button" type="primary" link aria-label="查看数据管理说明" @click="showPageDescription">
                 <el-icon><InfoFilled /></el-icon>
               </el-button>
             </div>
-            <p>{{ pageDescription }}</p>
+            <div class="subtitle">{{ pageDescription }}</div>
           </div>
           <div class="header-actions">
             <el-button @click="loadTables">刷新</el-button>
@@ -195,6 +195,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'DataManager' })
 import { ref, computed, onMounted, watch } from 'vue'
 import { InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -429,31 +430,34 @@ onMounted(loadTables)
   height: 100%;
 }
 
-.data-card {
+.page-card {
   height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-.data-card :deep(.el-card__body) {
+.page-card :deep(.el-card__body) {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-.card-header {
+.page-header {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
-  align-items: center;
 }
 
 .title-row {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.title {
   font-size: 18px;
   font-weight: 600;
 }
@@ -464,10 +468,11 @@ onMounted(loadTables)
   font-size: 16px;
 }
 
-.card-header p {
-  margin: 6px 0 0;
-  color: #666;
+.subtitle {
+  margin-top: 6px;
+  color: #909399;
   font-size: 13px;
+  line-height: 1.5;
 }
 
 .header-actions,
@@ -579,25 +584,25 @@ onMounted(loadTables)
     padding-right: 2px;
   }
 
-  .data-card {
+  .page-card {
     height: auto;
     min-height: 100%;
     border-radius: 10px;
   }
 
-  .data-card :deep(.el-card__body) {
+  .page-card :deep(.el-card__body) {
     min-height: auto;
     gap: 12px;
     overflow: visible;
   }
 
-  .card-header {
+  .page-header {
     align-items: flex-start;
     flex-direction: column;
     gap: 10px;
   }
 
-  .title-row {
+  .title {
     font-size: 16px;
   }
 
@@ -605,7 +610,7 @@ onMounted(loadTables)
     display: inline-flex;
   }
 
-  .card-header p {
+  .subtitle {
     display: none;
     font-size: 12px;
     line-height: 1.5;

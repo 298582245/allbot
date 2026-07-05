@@ -30,6 +30,8 @@ const (
 	adminPasswordIterations           = 200000
 	adminPasswordSaltBytes            = 16
 	adminPasswordKeyBytes             = 32
+	logRetentionDaysKey               = "logs.retention_days"
+	logRetentionDaysDescription       = "系统日志保留天数，0 表示禁用自动清理"
 )
 
 type AdminPasswordInitResult struct {
@@ -40,15 +42,16 @@ type AdminPasswordInitResult struct {
 }
 
 type SystemSettings struct {
-	AdminUsername   string                    `json:"admin_username"`
-	AdminPassword   string                    `json:"admin_password,omitempty"`
-	PlatformAdmins  []PlatformAdmin           `json:"platform_admins"`
-	AutoRefresh     bool                      `json:"auto_refresh"`
-	RefreshInterval int                       `json:"refresh_interval"`
-	PluginDir       string                    `json:"plugin_dir"`
-	AutoLoadPlugins bool                      `json:"auto_load_plugins"`
-	PointsUnit      string                    `json:"points_unit"`
-	AccessControl   types.AccessControlConfig `json:"access_control"`
+	AdminUsername             string                    `json:"admin_username"`
+	AdminPassword             string                    `json:"admin_password,omitempty"`
+	PlatformAdmins            []PlatformAdmin           `json:"platform_admins"`
+	AutoRefresh               bool                      `json:"auto_refresh"`
+	RefreshInterval           int                       `json:"refresh_interval"`
+	PluginDir                 string                    `json:"plugin_dir"`
+	AutoLoadPlugins           bool                      `json:"auto_load_plugins"`
+	ScriptTaskConcurrentLimit int                       `json:"script_task_concurrent_limit"`
+	PointsUnit                string                    `json:"points_unit"`
+	AccessControl             types.AccessControlConfig `json:"access_control"`
 	// 安全访问码：开启后访问登录页需在 URL 携带访问码，否则返回 404
 	AccessCodeEnabled bool   `json:"access_code_enabled"`
 	AccessCode        string `json:"access_code"`
@@ -94,18 +97,41 @@ func (d *Database) GetSystemSettings() (*SystemSettings, error) {
 	}
 	platformAdmins := parsePlatformAdmins(items["admin.platform_users"])
 	return &SystemSettings{
-		AdminUsername:   valueOrDefault(items, "admin.username", "admin"),
-		PlatformAdmins:  platformAdmins,
-		AutoRefresh:     valueOrDefault(items, "web.auto_refresh", "true") == "true",
-		RefreshInterval: intValueOrDefault(items, "web.refresh_interval", 5),
-		PluginDir:       valueOrDefault(items, "plugin.dir", "./plugins"),
-		AutoLoadPlugins: valueOrDefault(items, "plugin.auto_load", "true") == "true",
-		PointsUnit:      valueOrDefault(items, "user.points_unit", "积分"),
-		AccessControl:   ParseAccessControlConfig(items["access_control"]),
+		AdminUsername:             valueOrDefault(items, "admin.username", "admin"),
+		PlatformAdmins:            platformAdmins,
+		AutoRefresh:               valueOrDefault(items, "web.auto_refresh", "true") == "true",
+		RefreshInterval:           intValueOrDefault(items, "web.refresh_interval", 5),
+		PluginDir:                 valueOrDefault(items, "plugin.dir", "./plugins"),
+		AutoLoadPlugins:           valueOrDefault(items, "plugin.auto_load", "true") == "true",
+		ScriptTaskConcurrentLimit: intValueOrDefault(items, "script_tasks.concurrent_limit", 1),
+		PointsUnit:                valueOrDefault(items, "user.points_unit", "积分"),
+		AccessControl:             ParseAccessControlConfig(items["access_control"]),
 
 		AccessCodeEnabled: valueOrDefault(items, "security.access_code_enabled", "false") == "true",
 		AccessCode:        items["security.access_code"],
 	}, nil
+}
+
+func (d *Database) GetLogRetentionDays() (int, error) {
+	value, err := d.GetSetting(logRetentionDaysKey)
+	if err == sql.ErrNoRows || strings.TrimSpace(value) == "" {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	days, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || days < 0 || days > 3650 {
+		return 0, fmt.Errorf("日志保留天数必须在 0 到 3650 之间")
+	}
+	return days, nil
+}
+
+func (d *Database) SaveLogRetentionDays(days int) error {
+	if days < 0 || days > 3650 {
+		return fmt.Errorf("日志保留天数必须在 0 到 3650 之间")
+	}
+	return d.SetSetting(logRetentionDaysKey, strconv.Itoa(days), logRetentionDaysDescription)
 }
 
 func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
@@ -118,6 +144,9 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 	if settings.PluginDir == "" {
 		settings.PluginDir = "./plugins"
 	}
+	if settings.ScriptTaskConcurrentLimit <= 0 {
+		settings.ScriptTaskConcurrentLimit = 1
+	}
 	if settings.PointsUnit == "" {
 		settings.PointsUnit = "积分"
 	}
@@ -126,14 +155,15 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 		value       string
 		description string
 	}{
-		"admin.username":       {settings.AdminUsername, "管理员用户名"},
-		"admin.platform_users": {marshalPlatformAdmins(settings.PlatformAdmins), "平台管理员用户列表"},
-		"web.auto_refresh":     {boolString(settings.AutoRefresh), "是否自动刷新"},
-		"web.refresh_interval": {fmt.Sprintf("%d", settings.RefreshInterval), "刷新间隔秒数"},
-		"plugin.dir":           {settings.PluginDir, "插件目录"},
-		"plugin.auto_load":     {boolString(settings.AutoLoadPlugins), "启动时自动加载插件"},
-		"user.points_unit":     {settings.PointsUnit, "用户积分单位"},
-		"access_control":       {MarshalAccessControlConfig(settings.AccessControl), "系统访问控制配置"},
+		"admin.username":                {settings.AdminUsername, "管理员用户名"},
+		"admin.platform_users":          {marshalPlatformAdmins(settings.PlatformAdmins), "平台管理员用户列表"},
+		"web.auto_refresh":              {boolString(settings.AutoRefresh), "是否自动刷新"},
+		"web.refresh_interval":          {fmt.Sprintf("%d", settings.RefreshInterval), "刷新间隔秒数"},
+		"plugin.dir":                    {settings.PluginDir, "插件目录"},
+		"plugin.auto_load":              {boolString(settings.AutoLoadPlugins), "启动时自动加载插件"},
+		"script_tasks.concurrent_limit": {fmt.Sprintf("%d", settings.ScriptTaskConcurrentLimit), "脚本任务全局并发上限"},
+		"user.points_unit":              {settings.PointsUnit, "用户积分单位"},
+		"access_control":                {MarshalAccessControlConfig(settings.AccessControl), "系统访问控制配置"},
 
 		"security.access_code_enabled": {boolString(settings.AccessCodeEnabled), "是否开启安全访问入口"},
 		"security.access_code":         {strings.TrimSpace(settings.AccessCode), "登录页安全访问码"},

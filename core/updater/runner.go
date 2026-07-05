@@ -7,9 +7,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 func DefaultUpgradeRunner(request ApplyUpdateRequest) error {
+	if DockerUpdateModeEnabled() {
+		return DockerUpgradeRunner(request)
+	}
 	currentExe, err := os.Executable()
 	if err != nil {
 		return err
@@ -28,6 +32,28 @@ func DefaultUpgradeRunner(request ApplyUpdateRequest) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Start()
+}
+
+func DockerUpdateModeEnabled() bool {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("ALLBOT_UPDATE_MODE")))
+	return mode == "docker"
+}
+
+func DockerUpgradeRunner(request ApplyUpdateRequest) error {
+	request.RestartDelay = ""
+	request.RestartedFlag = "1"
+	return SaveApplyUpdateRequest(DockerUpgradeRequestPath(request.WorkDir), request)
+}
+
+func DockerUpgradeRequestPath(workDir string) string {
+	base := strings.TrimSpace(os.Getenv("ALLBOT_DOCKER_UPGRADE_REQUEST"))
+	if base != "" {
+		return base
+	}
+	if strings.TrimSpace(workDir) == "" {
+		workDir = "."
+	}
+	return filepath.Join(workDir, "runtime", "update", "upgrade.json")
 }
 
 func updaterRunnerName() string {

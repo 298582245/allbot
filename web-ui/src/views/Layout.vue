@@ -1,12 +1,22 @@
 <template>
   <el-container class="layout-container">
-    <el-aside width="220px" class="sidebar">
-      <div class="logo"><h2>AllBot</h2></div>
+    <el-aside :width="collapsed ? '64px' : '220px'" class="sidebar">
+      <div class="logo">
+        <svg class="logo-icon" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="32" height="32" rx="8" fill="var(--brand-500)"/>
+          <path d="M10 12.5C10 11.1193 11.1193 10 12.5 10H19.5C20.8807 10 22 11.1193 22 12.5V16C22 17.3807 20.8807 18.5 19.5 18.5H17L14 21V18.5H12.5C11.1193 18.5 10 17.3807 10 16V12.5Z" fill="white" fill-opacity="0.9"/>
+          <circle cx="14" cy="14.5" r="1.2" fill="var(--brand-600)"/>
+          <circle cx="18" cy="14.5" r="1.2" fill="var(--brand-600)"/>
+        </svg>
+        <h2 v-show="!collapsed">AllBot</h2>
+      </div>
 
       <el-menu
         ref="menuRef"
         :default-active="sidebarActiveMenu"
-        :unique-opened="true"
+        :unique-opened="!collapsed"
+        :collapse="collapsed"
+        :collapse-transition="true"
         router
         class="sidebar-menu"
         @open="handleMenuOpen"
@@ -41,6 +51,15 @@
           <el-menu-item index="/sdk">
             <el-icon><Document /></el-icon>
             <span>SDK管理</span>
+          </el-menu-item>
+          <el-menu-item index="/plugin-panels">
+            <el-icon><Grid /></el-icon>
+            <span class="menu-label-with-count">
+              插件面板
+              <span v-if="pluginWebPanelsStore.panels.length > 0 && !collapsed" class="menu-count-badge">
+                {{ pluginWebPanelsStore.panels.length > 99 ? '99+' : pluginWebPanelsStore.panels.length }}
+              </span>
+            </span>
           </el-menu-item>
         </el-sub-menu>
 
@@ -91,6 +110,10 @@
             <el-icon><Connection /></el-icon>
             <span>对接管理</span>
           </el-menu-item>
+          <el-menu-item index="/chat">
+            <el-icon><ChatDotRound /></el-icon>
+            <span>Web 聊天</span>
+          </el-menu-item>
           <el-menu-item index="/permissions">
             <el-icon><Lock /></el-icon>
             <span>权限控制</span>
@@ -140,6 +163,9 @@
     <el-container>
       <el-header class="header">
         <div class="header-left">
+          <el-button class="sidebar-toggle" text @click="collapsed = !collapsed">
+            <el-icon><Fold v-if="!collapsed" /><Expand v-else /></el-icon>
+          </el-button>
           <h3>{{ currentTitle }}</h3>
         </div>
         <div class="header-right">
@@ -160,8 +186,16 @@
         </div>
       </el-header>
 
+      <TagsView />
+
       <el-main class="main-content">
-        <router-view />
+        <router-view v-slot="{ Component }">
+          <transition name="page" mode="out-in">
+            <keep-alive :include="tabsStore.cachedNames">
+              <component :is="Component" :key="route.fullPath" />
+            </keep-alive>
+          </transition>
+        </router-view>
       </el-main>
     </el-container>
 
@@ -212,7 +246,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from "vue";
+import { computed, ref, watch, onMounted } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessageBox } from "element-plus";
 import {
@@ -235,13 +269,37 @@ import {
   Tickets,
   FolderChecked,
   Picture,
+  Fold,
+  Expand,
 } from "@element-plus/icons-vue";
 import { useAuthStore } from "@/stores/auth";
+import { useTabsStore } from "@/stores/tabs";
+import { usePluginWebPanelsStore } from "@/stores/pluginWebPanels";
+import TagsView from "@/components/TagsView.vue";
 
 const route = useRoute();
 const authStore = useAuthStore();
+const tabsStore = useTabsStore();
+const pluginWebPanelsStore = usePluginWebPanelsStore();
 const moreDrawerVisible = ref(false);
 const menuRef = ref(null);
+const collapsed = ref(false);
+
+tabsStore.initAffixTabs();
+pluginWebPanelsStore.loadPanels();
+watch(
+  () => route.path,
+  () => {
+    if (route.meta.title) {
+      tabsStore.addTab({
+        path: route.path,
+        title: route.meta.title,
+        name: route.name,
+      });
+    }
+  },
+  { immediate: true }
+);
 const submenuKeys = [
   "pluginApis",
   "messageTasks",
@@ -253,24 +311,38 @@ const submenuKeys = [
 const topLevelMenuIndexes = ["/dashboard"];
 const activeMenu = computed(() => {
   if (route.path.startsWith("/open-apis")) return "/open-apis";
+  if (route.path.startsWith("/plugin-panels")) return "/plugin-panels";
   if (route.path === "/payments") return "/payments/config";
   return route.path;
 });
+const pluginPanelNavItems = computed(() =>
+  pluginWebPanelsStore.panels.map((panel) => ({
+    ...panel,
+    path: `/plugin-panels/${encodeURIComponent(panel.plugin_id)}`,
+    icon: Grid,
+  }))
+);
 const sidebarActiveMenu = computed(() => activeMenu.value);
-const currentTitle = computed(() => route.meta.title || "AllBot");
+const currentTitle = computed(() => {
+  if (route.name === "PluginPanel") {
+    return pluginPanelNavItems.value.find((item) => item.plugin_id === route.params.pluginId)?.title || "插件面板";
+  }
+  return route.meta.title || "AllBot";
+});
 const primaryMobileNavItems = [
   { path: "/dashboard", title: "仪表盘", icon: DataAnalysis },
   { path: "/plugins", title: "插件", icon: Cpu },
   { path: "/adapters", title: "平台", icon: Connection },
   { path: "/settings", title: "设置", icon: Setting },
 ];
-const moreMobileNavItems = [
+const baseMoreMobileNavItems = [
   { path: "/open-apis", title: "开放接口", icon: Link },
   { path: "/sdk", title: "SDK管理", icon: Document },
   { path: "/replies/keywords", title: "关键字回复", icon: ChatDotRound },
   { path: "/scheduled-tasks", title: "定时任务", icon: Timer },
   { path: "/script-tasks", title: "脚本任务", icon: Document },
   { path: "/script-envs", title: "脚本变量", icon: Setting },
+  { path: "/plugin-panels", title: "插件面板", icon: Grid },
   { path: "/data", title: "数据管理", icon: Coin },
   { path: "/statistics", title: "数据统计", icon: DataAnalysis },
   { path: "/images", title: "图床管理", icon: Picture },
@@ -282,8 +354,9 @@ const moreMobileNavItems = [
   { path: "/runtime-profiles", title: "运行环境", icon: Setting },
   { path: "/logs", title: "日志查看", icon: Document },
 ];
+const moreMobileNavItems = computed(() => baseMoreMobileNavItems);
 const isMoreActive = computed(() =>
-  moreMobileNavItems.some((item) => activeMenu.value === item.path)
+  moreMobileNavItems.value.some((item) => activeMenu.value === item.path)
 );
 
 const handleMenuOpen = (index) => {
@@ -317,60 +390,128 @@ const handleCommand = async (command) => {
   min-height: 0;
 }
 .sidebar {
-  background: #001529;
-  color: white;
+  background: var(--bg-sidebar-gradient);
+  color: var(--text-on-dark);
+  border-right: 1px solid var(--border-on-dark);
+  transition: width 0.3s ease;
+  overflow-x: hidden;
 }
 .logo {
   height: 60px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  gap: 10px;
+  border-bottom: 1px solid var(--border-on-dark);
+}
+.logo-icon {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  filter: drop-shadow(0 2px 8px rgba(99, 102, 241, 0.3));
 }
 .logo h2 {
-  font-size: 20px;
-  color: white;
+  font-size: 18px;
+  font-weight: 700;
+  font-family: var(--font-heading);
+  color: var(--text-on-dark);
   margin: 0;
+  letter-spacing: -0.01em;
 }
 .sidebar-menu {
   border: none;
-  background: #001529;
+  background: transparent;
 }
 .sidebar-menu :deep(.el-menu),
 .sidebar-menu :deep(.el-sub-menu .el-menu) {
-  background: #001529;
+  background: transparent;
 }
 .sidebar-menu :deep(.el-menu-item),
 .sidebar-menu :deep(.el-sub-menu__title) {
-  color: rgba(255, 255, 255, 0.65);
-  background: #001529;
+  color: var(--text-on-dark-muted);
+  background: transparent;
+  transition: all var(--transition-normal);
+  position: relative;
 }
 .sidebar-menu :deep(.el-menu-item:hover),
 .sidebar-menu :deep(.el-sub-menu__title:hover) {
-  color: white;
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-on-dark);
+  background: var(--bg-sidebar-hover);
 }
 .sidebar-menu :deep(.el-menu-item.is-active) {
-  color: white;
-  background: #1890ff;
+  color: #fff;
+  background: var(--bg-sidebar-active);
+  box-shadow: 0 4px 12px var(--bg-sidebar-active-glow);
+}
+.sidebar-menu :deep(.el-menu-item.is-active)::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 60%;
+  background: var(--brand-300);
+  border-radius: 0 3px 3px 0;
+}
+.menu-label-with-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.menu-count-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 18px;
+  color: #fff;
+  background: #f56c6c;
+  box-shadow: 0 2px 6px rgba(245, 108, 108, 0.35);
+}
+.sidebar-menu :deep(.el-menu-item.is-active) .menu-count-badge {
+  background: #ff4d4f;
+  box-shadow: 0 2px 8px rgba(255, 77, 79, 0.45);
 }
 .sidebar-menu :deep(.el-sub-menu.is-opened > .el-sub-menu__title),
 .sidebar-menu :deep(.el-sub-menu.is-active > .el-sub-menu__title) {
-  color: white;
-  background: #1890ff;
+  color: var(--text-on-dark);
+  background: var(--bg-sidebar-submenu);
 }
 .header {
-  background: white;
-  border-bottom: 1px solid #f0f0f0;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 20px;
 }
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .header-left h3 {
   margin: 0;
   font-size: 18px;
-  color: #333;
+  font-weight: 700;
+  font-family: var(--font-heading);
+  color: var(--text-primary);
+}
+.sidebar-toggle {
+  padding: 8px;
+  font-size: 18px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.sidebar-toggle:hover {
+  color: var(--brand-500);
+  background: var(--bg-surface-hover);
 }
 .header-right {
   display: flex;
@@ -382,14 +523,17 @@ const handleCommand = async (command) => {
   gap: 8px;
   cursor: pointer;
   padding: 8px 12px;
-  border-radius: 4px;
-  transition: background 0.3s;
+  border-radius: var(--radius-md);
+  transition: background var(--transition-normal);
+  color: var(--text-secondary);
 }
 .user-info:hover {
-  background: #f5f5f5;
+  background: var(--bg-surface-hover);
 }
 .main-content {
-  background: #f0f2f5;
+  background:
+    radial-gradient(ellipse at top, rgba(99, 102, 241, 0.025), transparent 50%),
+    var(--bg-base);
   padding: 20px 20px 36px;
   overflow-x: hidden;
   overflow-y: auto;
@@ -417,6 +561,10 @@ const handleCommand = async (command) => {
     font-size: 16px;
   }
 
+  .sidebar-toggle {
+    display: none;
+  }
+
   .user-info {
     padding: 6px 8px;
     font-size: 13px;
@@ -437,8 +585,8 @@ const handleCommand = async (command) => {
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 4px;
     padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
-    background: #001529;
-    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    background: var(--bg-sidebar);
+    border-top: 1px solid var(--border-on-dark);
     box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.16);
   }
 
@@ -451,13 +599,14 @@ const handleCommand = async (command) => {
     align-items: center;
     justify-content: center;
     gap: 3px;
-    color: rgba(255, 255, 255, 0.68);
+    color: var(--text-on-dark-muted);
     text-decoration: none;
     border: none;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     background: transparent;
     font: inherit;
     font-size: 12px;
+    transition: all var(--transition-normal);
   }
 
   .mobile-tabbar-item .el-icon {
@@ -477,11 +626,12 @@ const handleCommand = async (command) => {
 
   .mobile-tabbar-item.active {
     color: #fff;
-    background: #1890ff;
+    background: var(--brand-500);
+    box-shadow: 0 2px 8px var(--bg-sidebar-active-glow);
   }
 
   .mobile-more-drawer :deep(.el-drawer) {
-    border-radius: 18px 18px 0 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   }
 
   .mobile-more-drawer :deep(.el-drawer__header) {
@@ -508,12 +658,13 @@ const handleCommand = async (command) => {
     align-items: center;
     justify-content: center;
     gap: 8px;
-    color: #606266;
+    color: var(--text-secondary);
     text-decoration: none;
-    border: 1px solid #ebeef5;
-    border-radius: 14px;
-    background: #f8fafc;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
     font-size: 12px;
+    transition: all var(--transition-normal);
   }
 
   .mobile-more-item .el-icon {
@@ -528,9 +679,9 @@ const handleCommand = async (command) => {
   }
 
   .mobile-more-item.active {
-    color: #1890ff;
-    border-color: rgba(24, 144, 255, 0.35);
-    background: #ecf5ff;
+    color: var(--brand-500);
+    border-color: var(--border-brand);
+    background: var(--brand-50);
   }
 }
 
@@ -538,5 +689,27 @@ const handleCommand = async (command) => {
   .mobile-more-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+</style>
+
+<style>
+/* Collapsed sidebar sub-menu popup — teleported outside component, needs global CSS */
+.el-popper.el-menu--popup {
+  background: var(--bg-sidebar-gradient);
+  border: 1px solid var(--border-on-dark);
+}
+.el-popper.el-menu--popup .el-menu-item,
+.el-popper.el-menu--popup .el-sub-menu__title {
+  color: var(--text-on-dark-muted);
+  background: transparent;
+}
+.el-popper.el-menu--popup .el-menu-item:hover,
+.el-popper.el-menu--popup .el-sub-menu__title:hover {
+  color: var(--text-on-dark);
+  background: var(--bg-sidebar-hover);
+}
+.el-popper.el-menu--popup .el-menu-item.is-active {
+  color: #fff;
+  background: var(--bg-sidebar-active);
 }
 </style>

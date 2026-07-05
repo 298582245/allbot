@@ -38,3 +38,37 @@ func TestValidateApplyUpdateRequest(t *testing.T) {
 		t.Fatalf("validateApplyUpdateRequest returned error: %v", err)
 	}
 }
+
+func TestDockerUpgradeRunnerWritesRequest(t *testing.T) {
+	workDir := t.TempDir()
+	request := ApplyUpdateRequest{
+		CurrentPath:  filepath.Join(workDir, "allbot"),
+		NewPath:      filepath.Join(workDir, "runtime", "update", "allbot-new"),
+		BackupPath:   filepath.Join(workDir, "runtime", "update", "backup", "allbot.bak"),
+		WorkDir:      workDir,
+		Args:         []string{"--plugins=/data/plugins"},
+		FromVersion:  "v1.0.0",
+		ToVersion:    "v1.0.1",
+		RestartDelay: "2000",
+	}
+
+	if err := DockerUpgradeRunner(request); err != nil {
+		t.Fatalf("DockerUpgradeRunner returned error: %v", err)
+	}
+
+	loaded, err := LoadApplyUpdateRequest(filepath.Join(workDir, "runtime", "update", "upgrade.json"))
+	if err != nil {
+		t.Fatalf("LoadApplyUpdateRequest returned error: %v", err)
+	}
+	if loaded.NewPath != request.NewPath || loaded.ToVersion != request.ToVersion || loaded.RestartDelay != "" || loaded.RestartedFlag != "1" {
+		t.Fatalf("loaded request = %#v", loaded)
+	}
+}
+
+func TestDockerUpgradeRequestPathCanUseEnv(t *testing.T) {
+	custom := filepath.Join(t.TempDir(), "custom-upgrade.json")
+	t.Setenv("ALLBOT_DOCKER_UPGRADE_REQUEST", custom)
+	if got := DockerUpgradeRequestPath("work"); got != custom {
+		t.Fatalf("DockerUpgradeRequestPath() = %q, expected %q", got, custom)
+	}
+}

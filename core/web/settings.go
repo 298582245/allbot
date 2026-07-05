@@ -3,6 +3,8 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/allbot/allbot/core/config"
 )
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
@@ -25,12 +27,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "获取系统设置失败: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		data, err := json.Marshal(payload)
-		if err != nil {
-			s.jsonError(w, "请求数据无效", http.StatusBadRequest)
-			return
-		}
-		if err := json.Unmarshal(data, settings); err != nil {
+		if err := mergeSystemSettingsPayload(settings, payload); err != nil {
 			s.jsonError(w, "请求数据无效", http.StatusBadRequest)
 			return
 		}
@@ -38,10 +35,21 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "保存系统设置失败: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		if s.pluginManager != nil {
+			s.pluginManager.SetScriptLimit(settings.ScriptTaskConcurrentLimit)
+		}
 		s.jsonResponse(w, map[string]interface{}{"message": "保存成功"})
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func mergeSystemSettingsPayload(settings *config.SystemSettings, payload map[string]json.RawMessage) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, settings)
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {

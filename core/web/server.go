@@ -68,6 +68,7 @@ type Server struct {
 	upgradeState                updater.UpgradeState
 	backupService               *backup.Service
 	imageHostService            *imagehost.Service
+	webChatMailer               webChatEmailSender
 	runtimeInitJobs             *runtimeProfileInitJobStore
 	runtimeMu                   sync.Mutex
 	runtimeBaseSeconds          int64
@@ -110,6 +111,10 @@ func (s *Server) SetImageHostService(service *imagehost.Service) {
 	s.imageHostService = service
 }
 
+func (s *Server) SetWebChatEmailSender(sender webChatEmailSender) {
+	s.webChatMailer = sender
+}
+
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/login", s.handleLogin)
@@ -118,6 +123,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/open/payments/return/epay", s.handlePaymentReturnEpay)
 	mux.HandleFunc("/api/open/payments/qrcode/", s.handlePaymentQRCode)
 	mux.HandleFunc("/api/open/images/", s.handleOpenImage)
+	mux.HandleFunc("/api/open/web-chat/", s.handleWebChatAPI)
+	mux.HandleFunc("/api/open/adapters/feishu/", s.handleFeishuAdapterCallback)
 	mux.HandleFunc("/api/open/adapters/wechat-official/", s.handleWechatOfficialAdapterCallback)
 	mux.HandleFunc("/api/open/", s.handleOpenAPI)
 	mux.HandleFunc("/api/open-apis", s.handleOpenAPIConfigs)
@@ -133,6 +140,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/plugins/recycle-bin", s.handlePluginRecycleBin)
 	mux.HandleFunc("/api/plugins", s.handlePlugins)
 	mux.HandleFunc("/api/plugins/", s.handlePluginDetail)
+	mux.HandleFunc("/api/plugin-web/panels", s.handlePluginWebPanels)
+	mux.HandleFunc("/api/plugin-web/", s.handlePluginWebAPI)
+	mux.HandleFunc("/plugin-web/", s.handlePluginWebStatic)
 	mux.HandleFunc("/api/system/status", s.handleSystemStatus)
 	mux.HandleFunc("/api/system/update/status", s.handleSystemUpdateStatus)
 	mux.HandleFunc("/api/system/update/upgrade", s.handleSystemUpgrade)
@@ -151,12 +161,15 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/adapter-platforms", s.handleAdapterPlatforms)
 	mux.HandleFunc("/api/adapters", s.handleAdapters)
 	mux.HandleFunc("/api/adapters/", s.handleAdapterDetail)
+	mux.HandleFunc("/api/logs/settings", s.handleLogSettings)
+	mux.HandleFunc("/api/logs/cleanup", s.handleLogCleanup)
 	mux.HandleFunc("/api/logs", s.handleLogs)
 	mux.HandleFunc("/api/scheduled-tasks", s.handleScheduledTasks)
 	mux.HandleFunc("/api/scheduled-tasks/", s.handleScheduledTaskDetail)
 	mux.HandleFunc("/api/script-tasks", s.handleScriptTasks)
 	mux.HandleFunc("/api/script-tasks/", s.handleScriptTaskDetail)
 	mux.HandleFunc("/api/script-envs", s.handleScriptEnvs)
+	mux.HandleFunc("/api/script-envs/import", s.handleScriptEnvImport)
 	mux.HandleFunc("/api/script-envs/", s.handleScriptEnvDetail)
 	mux.HandleFunc("/api/replies/keywords", s.handleKeywordReplies)
 	mux.HandleFunc("/api/replies/keywords/", s.handleKeywordReplyDetail)
@@ -164,6 +177,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/dependencies", s.handleDependencies)
 	mux.HandleFunc("/api/dependencies/", s.handleDependencyDetail)
 	mux.HandleFunc("/api/runtime-profiles", s.handleRuntimeProfiles)
+	mux.HandleFunc("/api/runtime-profiles/download-settings", s.handleRuntimeProfileDownloadSettings)
 	mux.HandleFunc("/api/runtime-profiles/init", s.handleRuntimeProfileInit)
 	mux.HandleFunc("/api/runtime-profiles/init/", s.handleRuntimeProfileInitJob)
 	mux.HandleFunc("/api/runtime-profiles/status", s.handleRuntimeProfileStatus)
@@ -178,6 +192,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/data/export", s.handleDataExport)
 	mux.HandleFunc("/api/data/import", s.handleDataImport)
 	mux.Handle("/assets/", s.webAssetsHandler())
+	mux.HandleFunc("/chat", s.handleChatIndex)
+	mux.HandleFunc("/chat/", s.handleChatIndex)
 	mux.HandleFunc("/login", s.handleIndex)
 	mux.HandleFunc("/login/", s.handleAccessCodeEntry)
 	mux.HandleFunc("/", s.handleIndex)
@@ -1410,6 +1426,17 @@ func (s *Server) readWebIndex() ([]byte, error) {
 	return fs.ReadFile(s.webFS, "index.html")
 }
 
+func (s *Server) handleChatIndex(w http.ResponseWriter, r *http.Request) {
+	data, err := s.readWebIndex()
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><body><h1>AllBot</h1><p>Web UI files not found.</p></body></html>`))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(data)
+}
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if !s.accessGranted(r) {
 		http.NotFound(w, r)
@@ -1559,7 +1586,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if !s.validAdminToken(r.Header.Get("Authorization")) {
+		if !s.validAdminToken(r.Header.Get("Authorization")) && !s.requestHasValidSession(r) {
 			s.jsonError(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/deps"
 )
 
@@ -120,6 +121,52 @@ func TestRuntimeProfileStatusReturnsAllProfiles(t *testing.T) {
 			t.Fatalf("expected 3 statuses, got %#v", response)
 		}
 	})
+}
+
+func TestHandleRuntimeProfileDownloadSettings(t *testing.T) {
+	server := testServer(t)
+
+	getRecorder := performOpenAPIJSONRequest(t, server.handleRuntimeProfileDownloadSettings, http.MethodGet, "/api/runtime-profiles/download-settings", map[string]interface{}{})
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", getRecorder.Code, getRecorder.Body.String())
+	}
+	var defaults config.RuntimeDownloadSettings
+	decodeOpenAPIResponse(t, getRecorder, &defaults)
+	if defaults != config.DefaultRuntimeDownloadSettings() {
+		t.Fatalf("unexpected defaults: %#v", defaults)
+	}
+
+	putRecorder := performOpenAPIJSONRequest(t, server.handleRuntimeProfileDownloadSettings, http.MethodPut, "/api/runtime-profiles/download-settings", map[string]interface{}{
+		"proxy_url":                 "http://127.0.0.1:7890",
+		"node_mirror_url":           "https://npmmirror.com/mirrors/node",
+		"python_package_mirror_url": "",
+		"python_metadata_url":       "",
+	})
+	if putRecorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", putRecorder.Code, putRecorder.Body.String())
+	}
+	var response struct {
+		Message  string                         `json:"message"`
+		Settings config.RuntimeDownloadSettings `json:"settings"`
+	}
+	decodeOpenAPIResponse(t, putRecorder, &response)
+	if response.Message != "保存成功" || response.Settings.ProxyURL != "http://127.0.0.1:7890" || response.Settings.NodeMirrorURL != "https://npmmirror.com/mirrors/node" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if response.Settings.PythonPackageMirrorURL != config.DefaultRuntimeDownloadSettings().PythonPackageMirrorURL {
+		t.Fatalf("expected python package default, got %#v", response.Settings)
+	}
+}
+
+func TestHandleRuntimeProfileDownloadSettingsRejectsInvalidConfig(t *testing.T) {
+	server := testServer(t)
+	recorder := performOpenAPIJSONRequest(t, server.handleRuntimeProfileDownloadSettings, http.MethodPut, "/api/runtime-profiles/download-settings", map[string]interface{}{
+		"proxy_url":       "ftp://proxy.example.com",
+		"node_mirror_url": "https://nodejs.org/dist",
+	})
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func waitRuntimeProfileInitJob(t *testing.T, server *Server, jobID string) runtimeProfileInitJob {

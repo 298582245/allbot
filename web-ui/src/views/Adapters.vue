@@ -5,12 +5,12 @@
         <div class="page-header">
           <div>
             <div class="title-row">
-              <h2>平台机器人</h2>
+              <span class="title">平台机器人</span>
               <el-button class="mobile-info-button" type="primary" link aria-label="查看平台机器人说明" @click="showPageDescription">
                 <el-icon><InfoFilled /></el-icon>
               </el-button>
             </div>
-            <p>{{ pageDescription }}</p>
+            <div class="subtitle">{{ pageDescription }}</div>
           </div>
           <div class="header-actions">
             <el-input v-model="searchKeyword" class="header-search" clearable placeholder="搜索机器人备注、平台、ID 或描述" />
@@ -26,7 +26,7 @@
       <div class="adapter-grid">
         <el-card v-for="adapter in paginatedAdapters" :key="adapter.id" class="adapter-card" :class="{ pinned: adapter.pinned }" shadow="hover">
         <template #header>
-          <div class="adapter-pin-row">
+          <div class="card-header">
             <el-button
               class="adapter-pin-button"
               :class="{ pinned: adapter.pinned }"
@@ -37,9 +37,7 @@
             >
               {{ adapter.pinned ? '取消置顶' : '置顶' }}
             </el-button>
-          </div>
-          <div class="card-header">
-            <div>
+            <div class="card-title-wrap">
               <div class="card-title">{{ adapter.remark || getPlatformName(adapter.platform) + ' #' + adapter.id }}</div>
               <div class="card-subtitle">{{ getPlatformName(adapter.platform) }} · ID {{ adapter.id }}</div>
             </div>
@@ -72,15 +70,11 @@
       <el-empty v-else-if="!loading && filteredAdapters.length === 0" description="没有匹配的机器人" />
     </div>
 
-      <div class="adapters-pagination">
-        <el-pagination
-          v-model:current-page="currentPage"
-          :page-size="pageSize"
-          :total="filteredAdapters.length"
-          layout="total, prev, pager, next"
-          background
-        />
-      </div>
+      <StdPagination
+        v-model:current-page="currentPage"
+        :page-size="pageSize"
+        :total="filteredAdapters.length"
+      />
     </el-card>
 
     <el-dialog v-model="dialogVisible" :title="dialogTitle" width="560px" @close="resetForm">
@@ -144,10 +138,12 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Adapters' })
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled, Plus } from '@element-plus/icons-vue'
 import { deleteAdapter, getAdapterPlatforms, getAdapters, saveAdapter, setAdapterPinned } from '@/api'
+import StdPagination from '@/components/StdPagination.vue'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -523,12 +519,9 @@ onMounted(async () => {
   gap: 6px;
 }
 
-.page-header h2 {
-  margin: 0 0 6px;
-}
-
-.title-row h2 {
-  margin: 0 0 6px;
+.title {
+  font-size: 18px;
+  font-weight: 600;
 }
 
 .mobile-info-button {
@@ -537,9 +530,11 @@ onMounted(async () => {
   font-size: 16px;
 }
 
-.page-header p {
-  margin: 0;
+.subtitle {
+  margin-top: 6px;
   color: #909399;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .header-actions {
@@ -566,33 +561,39 @@ onMounted(async () => {
 }
 
 .adapter-card {
-  min-height: 220px;
+  min-height: 200px;
 }
 
 .adapter-card.pinned {
   border-color: #f3d19e;
 }
 
-.adapter-pin-row {
-  display: flex;
-  justify-content: flex-start;
-  margin-bottom: 8px;
-}
-
 .adapter-pin-button {
-  padding-left: 0;
+  flex-shrink: 0;
+  min-width: 4em;
+  justify-content: flex-start;
+  padding: 0;
 }
 
 .card-header {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-title-wrap {
+  flex: 1;
+  min-width: 0;
 }
 
 .card-title {
   font-size: 16px;
   font-weight: 600;
   color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-subtitle {
@@ -627,14 +628,6 @@ onMounted(async () => {
 .buttons {
   display: flex;
   gap: 8px;
-}
-
-.adapters-pagination {
-  flex-shrink: 0;
-  padding-top: 12px;
-  display: flex;
-  justify-content: center;
-  border-top: 1px solid #ebeef5;
 }
 
 .switch-text {
@@ -685,17 +678,16 @@ onMounted(async () => {
     gap: 10px;
   }
 
-  .page-header h2 {
-    font-size: 18px;
+  .title {
+    font-size: 16px;
   }
 
   .mobile-info-button {
     display: inline-flex;
   }
 
-  .page-header p {
+  .subtitle {
     display: none;
-    font-size: 13px;
   }
 
   .header-actions {
@@ -719,6 +711,12 @@ onMounted(async () => {
     min-height: auto;
   }
 
+  .card-header {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
   .card-actions {
     align-items: flex-start;
     flex-direction: column;
@@ -738,13 +736,7 @@ onMounted(async () => {
     -webkit-overflow-scrolling: touch;
   }
 
-  .adapters-pagination {
-    overflow-x: auto;
-    justify-content: flex-start;
-  }
-
-  .adapters-content::-webkit-scrollbar,
-  .adapters-pagination::-webkit-scrollbar {
+  .adapters-content::-webkit-scrollbar {
     display: none;
   }
 }

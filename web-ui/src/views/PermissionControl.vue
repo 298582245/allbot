@@ -5,12 +5,12 @@
         <div class="page-header">
           <div>
             <div class="title-row">
-              <h2>权限控制</h2>
+              <span class="title">权限控制</span>
               <el-button class="mobile-info-button" type="primary" link aria-label="查看权限控制说明" @click="showPageDescription">
                 <el-icon><InfoFilled /></el-icon>
               </el-button>
             </div>
-            <p>{{ pageDescription }}</p>
+            <div class="subtitle">{{ pageDescription }}</div>
           </div>
         </div>
       </template>
@@ -31,18 +31,26 @@
             <div class="field-tip">按统一用户 union_id 授予管理员权限，用户绑定的不同平台账号都会生效。</div>
           </el-form-item>
           <el-empty v-if="adapterOptions.length === 0" description="暂无适配器，请先在适配器页面添加平台" />
-          <el-form-item v-for="adapter in adapterOptions" :key="adapter.platform" :label="adapter.label">
-            <el-select
-              v-model="platformAdminMap[adapter.platform]"
-              multiple
-              filterable
-              allow-create
-              default-first-option
-              placeholder="用户 ID，可输入多个"
-              style="width: 100%"
-            />
-            <div class="field-tip">{{ adapter.remark || adapter.platform }} 平台管理员用于系统级管理权限判断。</div>
-          </el-form-item>
+          <template v-else>
+            <el-form-item label="选择平台">
+              <el-select v-model="selectedPlatform" filterable placeholder="搜索或选择平台" style="width: 100%" @change="onPlatformChange">
+                <el-option v-for="adapter in adapterOptions" :key="adapter.platform" :label="adapter.label" :value="adapter.platform" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="selectedPlatform" :label="selectedPlatformLabel">
+              <el-select
+                v-model="platformAdminMap[selectedPlatform]"
+                multiple
+                filterable
+                allow-create
+                default-first-option
+                placeholder="用户 ID，可输入多个"
+                style="width: 100%"
+                @visible-change="onAdminSelectVisibleChange"
+              />
+              <div class="field-tip">{{ selectedPlatformRemark }} 平台管理员用于系统级管理权限判断。修改后失焦自动保存。</div>
+            </el-form-item>
+          </template>
         </section>
 
         <section class="form-section">
@@ -88,6 +96,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'PermissionControl' })
 import { computed, onMounted, reactive, ref } from 'vue'
 import { InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -98,6 +107,9 @@ const saving = ref(false)
 const adapters = ref([])
 const platformAdminMap = reactive({})
 const platformAdminUnionIDs = ref([])
+const selectedPlatform = ref('')
+const lastSavedAdmins = ref({})
+let autoSaving = false
 const pageDescription = '统一管理平台管理员、群聊和用户访问规则。'
 
 const showPageDescription = () => {
@@ -131,6 +143,16 @@ const adapterOptions = computed(() => {
   return Array.from(platformMap.values())
 })
 
+const selectedPlatformLabel = computed(() => {
+  const adapter = adapterOptions.value.find(a => a.platform === selectedPlatform.value)
+  return adapter ? adapter.label : selectedPlatform.value
+})
+
+const selectedPlatformRemark = computed(() => {
+  const adapter = adapterOptions.value.find(a => a.platform === selectedPlatform.value)
+  return adapter ? (adapter.remark || adapter.platform) : selectedPlatform.value
+})
+
 const loadSettings = async () => {
   loading.value = true
   try {
@@ -149,6 +171,7 @@ const loadSettings = async () => {
       access_control: normalizeAccessControl(data.access_control)
     })
     syncPlatformAdminMap(form.platform_admins)
+    snapshotPlatformAdmins()
   } finally {
     loading.value = false
   }
@@ -164,6 +187,7 @@ const handleSave = async () => {
       access_control: normalizeAccessControl(form.access_control)
     })
     ElMessage.success('权限配置已保存')
+    snapshotPlatformAdmins()
   } finally {
     saving.value = false
   }
@@ -238,6 +262,50 @@ function collectPlatformAdmins() {
     })
   return [...unionAdmins, ...platformAdmins]
 }
+
+function snapshotPlatformAdmins() {
+  const snapshot = {}
+  Object.keys(platformAdminMap).forEach((platform) => {
+    snapshot[platform] = [...(platformAdminMap[platform] || [])]
+  })
+  lastSavedAdmins.value = snapshot
+}
+
+function onPlatformChange(platform) {
+  if (platform && !Array.isArray(platformAdminMap[platform])) {
+    platformAdminMap[platform] = []
+  }
+}
+
+function onAdminSelectVisibleChange(visible) {
+  if (visible) return
+  if (!selectedPlatform.value) return
+  const platform = selectedPlatform.value
+  const current = [...(platformAdminMap[platform] || [])].sort().join(',')
+  const saved = [...(lastSavedAdmins.value[platform] || [])].sort().join(',')
+  if (current === saved) return
+  autoSavePlatformAdmin(platform)
+}
+
+async function autoSavePlatformAdmin(platform) {
+  if (autoSaving) return
+  autoSaving = true
+  try {
+    form.platform_admins = collectPlatformAdmins()
+    await request.put('/settings', {
+      ...form,
+      platform_admins: form.platform_admins,
+      access_control: normalizeAccessControl(form.access_control)
+    })
+    lastSavedAdmins.value[platform] = [...(platformAdminMap[platform] || [])]
+    const label = adapterOptions.value.find(a => a.platform === platform)?.label || platform
+    ElMessage.success(`${label} 管理员已自动保存`)
+  } catch {
+    ElMessage.error('自动保存失败，请点击「保存权限配置」手动保存')
+  } finally {
+    autoSaving = false
+  }
+}
 </script>
 
 <style scoped>
@@ -246,10 +314,9 @@ function collectPlatformAdmins() {
 .page-card :deep(.el-card__body) { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .title-row { display: flex; align-items: center; gap: 6px; }
-.page-header h2 { margin: 0 0 6px; }
-.title-row h2 { margin: 0 0 6px; }
+.title { font-size: 18px; font-weight: 600; }
 .mobile-info-button { display: none; padding: 0; font-size: 16px; }
-.page-header p { margin: 0; color: #909399; }
+.subtitle { margin-top: 6px; color: #909399; font-size: 13px; line-height: 1.5; }
 
 .permission-form {
   flex: 1;
@@ -272,22 +339,6 @@ function collectPlatformAdmins() {
   font-weight: 600;
   color: #303133;
 }
-
-.platform-admins {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.platform-admin-row {
-  display: grid;
-  grid-template-columns: 140px minmax(180px, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-}
-
-.platform-select { width: 100%; }
 
 .field-tip {
   width: 100%;
@@ -317,7 +368,8 @@ function collectPlatformAdmins() {
   .page-card :deep(.el-card__body) { padding: 12px; }
   .page-header { align-items: flex-start; flex-direction: column; }
   .mobile-info-button { display: inline-flex; }
-  .page-header p { display: none; font-size: 12px; line-height: 1.5; }
+  .subtitle { display: none; }
+  .title { font-size: 16px; }
   .permission-form { padding-right: 0; }
   .form-section { padding: 12px; border-radius: 12px; }
   .permission-control :deep(.el-form-item) { display: block; margin-bottom: 16px; }
@@ -328,9 +380,6 @@ function collectPlatformAdmins() {
     font-weight: 600;
   }
   .permission-control :deep(.el-form-item__content) { margin-left: 0 !important; }
-  .platform-admin-row { grid-template-columns: 1fr; padding: 10px; border: 1px solid #ebeef5; border-radius: 10px; }
-  .platform-admin-row .el-button { width: 100%; margin-left: 0; }
-  .platform-admins > .el-button { width: 100%; margin-left: 0; }
   .form-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

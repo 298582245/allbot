@@ -1,6 +1,8 @@
 {
   "packages": {
+    "Pillow": "12.3.0",
     "cs": "3.4.0",
+    "qrcode": "8.2",
     "requests": "2.31.0"
   }
 }

@@ -1,0 +1,495 @@
+import request from '@/utils/request'
+
+// 登录
+export const login = (data) => {
+  return request({
+    url: '/login',
+    method: 'post',
+    data
+  })
+}
+
+// 获取系统状态
+export const getSystemStatus = () => {
+  return request({
+    url: '/system/status',
+    method: 'get'
+  })
+}
+
+// 获取更新信息
+export const getUpdateInfo = () => {
+  return request({
+    url: '/system/update',
+    method: 'get'
+  })
+}
+
+// 获取升级状态
+export const getUpdateStatus = () => {
+  return request({
+    url: '/system/update/status',
+    method: 'get',
+    silent: true
+  })
+}
+
+// 执行一键升级
+export const startSystemUpgrade = () => {
+  return request({
+    url: '/system/update/upgrade',
+    method: 'post',
+    timeout: 15 * 60 * 1000
+  })
+}
+
+// 获取仪表盘消息统计
+export const getMessageStats = (params = {}) => {
+  return request({
+    url: '/system/message-stats',
+    method: 'get',
+    params
+  })
+}
+
+// 获取数据统计概览
+export const getStatisticsOverview = () => {
+  return request({
+    url: '/statistics/overview',
+    method: 'get'
+  })
+}
+
+// 获取消息总量趋势
+export const getMessageTotalTrend = (params = {}) => {
+  return request({
+    url: '/statistics/message-total-trend',
+    method: 'get',
+    params
+  })
+}
+
+// 获取插件触发趋势
+export const getPluginTriggerTrend = (params = {}) => {
+  return request({
+    url: '/statistics/plugin-trigger-trend',
+    method: 'get',
+    params
+  })
+}
+
+// 获取插件列表
+export const getPlugins = () => {
+  return request({
+    url: '/plugins',
+    method: 'get'
+  })
+}
+
+// 获取插件创建模板
+export const getPluginTemplates = () => {
+  return request({
+    url: '/plugins/templates',
+    method: 'get',
+    silent: true
+  })
+}
+
+// 预览插件创建结果
+export const previewCreatePlugin = (data) => {
+  return request({
+    url: '/plugins/preview',
+    method: 'post',
+    data,
+    silent: true
+  })
+}
+
+// 校验插件创建配置
+export const validateCreatePlugin = (data) => {
+  return request({
+    url: '/plugins/validate',
+    method: 'post',
+    data
+  })
+}
+
+// 创建插件
+export const createPlugin = (data) => {
+  return request({
+    url: '/plugins',
+    method: 'post',
+    data
+  })
+}
+
+// 控制插件（启动/停止/重启）
+export const controlPlugin = (pluginId, action) => {
+  return request({
+    url: `/plugins/${pluginId}`,
+    method: 'post',
+    data: { action }
+  })
+}
+
+// 设置插件置顶状态
+export const setPluginPinned = (pluginId, pinned) => {
+  return controlPlugin(pluginId, pinned ? 'pin' : 'unpin')
+}
+
+// 删除插件
+export const deletePlugin = (pluginId) => {
+  return request({
+    url: `/plugins/${pluginId}`,
+    method: 'delete'
+  })
+}
+
+// 获取插件回收站
+export const getPluginRecycleBin = () => {
+  return request({
+    url: '/plugins/recycle-bin',
+    method: 'get'
+  })
+}
+
+// 删除插件备份压缩包
+export const deletePluginBackup = (name) => {
+  return request({
+    url: '/plugins/recycle-bin',
+    method: 'delete',
+    params: { name }
+  })
+}
+
+// 获取脚本环境变量列表
+export const getScriptEnvs = (params = {}) => {
+  return request({
+    url: '/script-envs',
+    method: 'get',
+    params
+  })
+}
+
+// 创建脚本环境变量
+export const createScriptEnv = (data) => {
+  return request({
+    url: '/script-envs',
+    method: 'post',
+    data
+  })
+}
+
+// 更新脚本环境变量
+export const updateScriptEnv = (id, data) => {
+  return request({
+    url: `/script-envs/${encodeURIComponent(String(id))}`,
+    method: 'put',
+    data
+  })
+}
+
+// 删除脚本环境变量
+export const deleteScriptEnv = (id) => {
+  return request({
+    url: `/script-envs/${encodeURIComponent(String(id))}`,
+    method: 'delete'
+  })
+}
+
+// 获取开放接口列表
+export const getOpenApis = (params = {}) => {
+  return request({
+    url: '/open-apis',
+    method: 'get',
+    params
+  })
+}
+
+// 获取开放接口详情
+export const getOpenApi = (id) => {
+  return request({
+    url: `/open-apis/${encodeURIComponent(String(id))}`,
+    method: 'get'
+  })
+}
+
+// 创建开放接口
+export const createOpenApi = (data) => {
+  return request({
+    url: '/open-apis',
+    method: 'post',
+    data
+  })
+}
+
+// 更新开放接口
+export const updateOpenApi = (id, data) => {
+  return request({
+    url: `/open-apis/${encodeURIComponent(String(id))}`,
+    method: 'put',
+    data
+  })
+}
+
+// 删除开放接口
+export const deleteOpenApi = (id) => {
+  return request({
+    url: `/open-apis/${encodeURIComponent(String(id))}`,
+    method: 'delete'
+  })
+}
+
+// 获取开放接口代码
+export const getOpenApiCode = (id) => {
+  return request({
+    url: `/open-apis/${encodeURIComponent(String(id))}/code`,
+    method: 'get'
+  })
+}
+
+// 更新开放接口代码
+export const updateOpenApiCode = (id, data) => {
+  return request({
+    url: `/open-apis/${encodeURIComponent(String(id))}/code`,
+    method: 'put',
+    data
+  })
+}
+
+// 获取运行环境 Profile
+export const getRuntimeProfiles = () => {
+  return request({
+    url: '/runtime-profiles',
+    method: 'get'
+  })
+}
+
+// 保存运行环境 Profile
+export const saveRuntimeProfiles = (profiles) => {
+  return request({
+    url: '/runtime-profiles',
+    method: 'put',
+    data: { profiles }
+  })
+}
+
+// 初始化运行环境 Profile
+export const initRuntimeProfile = (data) => {
+  return request({
+    url: '/runtime-profiles/init',
+    method: 'post',
+    data,
+    timeout: 15 * 60 * 1000
+  })
+}
+
+// 获取运行环境 Profile 初始化任务
+export const getRuntimeProfileInitJob = (jobId) => {
+  return request({
+    url: `/runtime-profiles/init/${encodeURIComponent(String(jobId))}`,
+    method: 'get',
+    silent: true
+  })
+}
+
+// 获取运行环境 Profile 最新初始化任务
+export const getLatestRuntimeProfileInitJob = (profileId) => {
+  return request({
+    url: '/runtime-profiles/init/latest',
+    method: 'get',
+    params: { profile_id: profileId },
+    silent: true
+  })
+}
+
+// 获取运行环境 Profile 状态
+export const getRuntimeProfileStatus = () => {
+  return request({
+    url: '/runtime-profiles/status',
+    method: 'get'
+  })
+}
+
+// 测试运行环境 Profile
+export const testRuntimeProfile = (profile) => {
+  return request({
+    url: '/runtime-profiles/test',
+    method: 'post',
+    data: profile
+  })
+}
+
+// 获取适配器平台列表
+export const getAdapterPlatforms = () => {
+  return request({
+    url: '/adapter-platforms',
+    method: 'get',
+    silent: true
+  })
+}
+
+// 获取适配器列表
+export const getAdapters = () => {
+  return request({
+    url: '/adapters',
+    method: 'get'
+  })
+}
+
+// 创建/更新适配器
+export const saveAdapter = (data) => {
+  return request({
+    url: '/adapters',
+    method: 'post',
+    data
+  })
+}
+
+// 设置适配器置顶状态
+export const setAdapterPinned = (adapterId, pinned) => {
+  return request({
+    url: `/adapters/${adapterId}`,
+    method: 'post',
+    data: { action: pinned ? 'pin' : 'unpin' }
+  })
+}
+
+// 获取适配器详情
+export const getAdapter = (platform) => {
+  return request({
+    url: `/adapters/${platform}`,
+    method: 'get'
+  })
+}
+
+// 删除适配器
+export const deleteAdapter = (platform) => {
+  return request({
+    url: `/adapters/${platform}`,
+    method: 'delete'
+  })
+}
+
+// 获取日志
+export const getLogs = (params = {}) => {
+  return request({
+    url: '/logs',
+    method: 'get',
+    params
+  })
+}
+
+// 清空日志
+export const clearLogs = (params = {}) => {
+  return request({
+    url: '/logs',
+    method: 'delete',
+    params
+  })
+}
+
+// 获取日志设置
+export const getLogSettings = () => {
+  return request({
+    url: '/logs/settings',
+    method: 'get'
+  })
+}
+
+// 保存日志设置
+export const saveLogSettings = (data) => {
+  return request({
+    url: '/logs/settings',
+    method: 'put',
+    data
+  })
+}
+
+// 立即清理日志
+export const cleanupLogs = (data = {}) => {
+  return request({
+    url: '/logs/cleanup',
+    method: 'post',
+    data
+  })
+}
+
+// 获取备份概览
+export const getBackups = () => {
+  return request({
+    url: '/backups',
+    method: 'get'
+  })
+}
+
+// 保存备份配置
+export const saveBackupSettings = (data) => {
+  return request({
+    url: '/backups/settings',
+    method: 'put',
+    data
+  })
+}
+
+// 手动创建备份
+export const createBackup = () => {
+  return request({
+    url: '/backups',
+    method: 'post',
+    timeout: 10 * 60 * 1000
+  })
+}
+
+// 删除备份文件
+export const deleteBackup = (name) => {
+  return request({
+    url: `/backups/${encodeURIComponent(String(name))}/delete`,
+    method: 'delete'
+  })
+}
+
+// 获取图床配置
+export const getImageSettings = () => {
+  return request({
+    url: '/images/settings',
+    method: 'get'
+  })
+}
+
+// 保存图床配置
+export const saveImageSettings = (data) => {
+  return request({
+    url: '/images/settings',
+    method: 'put',
+    data
+  })
+}
+
+// 获取图床图片列表
+export const listImages = (params = {}) => {
+  return request({
+    url: '/images',
+    method: 'get',
+    params
+  })
+}
+
+// 上传图床图片
+export const uploadImage = (formData) => {
+  return request({
+    url: '/images',
+    method: 'post',
+    data: formData,
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000
+  })
+}
+
+// 删除图床图片
+export const deleteImage = (id) => {
+  return request({
+    url: `/images/${encodeURIComponent(String(id))}`,
+    method: 'delete'
+  })
+}

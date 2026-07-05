@@ -4,8 +4,15 @@
       <template #header>
         <div class="page-header">
           <div>
-            <h2>支付配置</h2>
-            <p>配置积分兑换、第三方支付通道和同时待支付订单数量。</p>
+            <div class="title-row">
+              <span class="title">支付配置</span>
+              <el-button class="mobile-info-button" type="primary" link aria-label="查看支付配置说明" @click="showPageDescription">
+                <el-icon><InfoFilled /></el-icon>
+              </el-button>
+            </div>
+            <div class="subtitle">{{ pageDescription }}</div>
+          </div>
+          <div class="header-actions">
           </div>
         </div>
       </template>
@@ -151,13 +158,20 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'PaymentConfig' })
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { InfoFilled } from '@element-plus/icons-vue'
 import request from '@/utils/request'
 
 const loading = ref(false)
 const saving = ref(false)
 const paymentSettings = reactive(createDefaultPaymentSettings())
+
+const pageDescription = '配置积分兑换、第三方支付通道和同时待支付订单数量。'
+const showPageDescription = () => {
+  ElMessageBox.alert(pageDescription, '支付配置说明', { confirmButtonText: '知道了', type: 'info' })
+}
 
 const epayDisabled = computed(() => !paymentSettings.third_party_enabled || !paymentSettings.epay.enabled)
 const notifyUrl = computed(() => {
@@ -296,8 +310,10 @@ function normalizePaymentMethod(value) {
 .page-card { height: 100%; display: flex; flex-direction: column; }
 .page-card :deep(.el-card__body) { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.page-header h2 { margin: 0 0 6px; }
-.page-header p { margin: 0; color: #909399; }
+.title-row { display: flex; align-items: center; gap: 6px; }
+.title { font-size: 18px; font-weight: 600; }
+.mobile-info-button { display: none; padding: 0; font-size: 16px; }
+.subtitle { margin-top: 6px; color: #909399; font-size: 13px; line-height: 1.5; }
 .payment-form { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }
 .form-section { padding: 14px 16px 10px; margin-bottom: 14px; border: 1px solid #ebeef5; border-radius: 10px; background: #fff; }
 .section-title { margin-bottom: 14px; font-size: 15px; font-weight: 600; color: #303133; }
@@ -310,6 +326,10 @@ function normalizePaymentMethod(value) {
 @media (max-width: 768px) {
   .page-shell { height: calc(100dvh - 52px - 76px - 24px); overflow: hidden; }
   .page-card :deep(.el-card__body) { padding: 12px; }
+  .page-header { align-items: flex-start; flex-direction: column; }
+  .title { font-size: 16px; }
+  .mobile-info-button { display: inline-flex; }
+  .subtitle { display: none; }
   .payment-form { padding-right: 0; }
   .form-section { padding: 12px; border-radius: 12px; }
   .payment-config :deep(.el-form-item) { display: block; margin-bottom: 16px; }

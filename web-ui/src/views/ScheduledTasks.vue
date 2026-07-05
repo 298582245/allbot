@@ -5,7 +5,7 @@
         <div class="page-header">
           <div>
             <div class="title-row">
-              <h2>定时任务</h2>
+              <span class="title">定时任务</span>
               <el-button
                 class="mobile-info-button"
                 type="primary"
@@ -16,7 +16,7 @@
                 <el-icon><InfoFilled /></el-icon>
               </el-button>
             </div>
-            <p>{{ pageDescription }}</p>
+            <div class="subtitle">{{ pageDescription }}</div>
           </div>
           <el-button type="primary" @click="openDialog()">新增任务</el-button>
         </div>
@@ -89,10 +89,8 @@
           <el-table-column type="selection" width="50" reserve-selection />
           <el-table-column label="ID" width="90">
             <template #default="{ row }">
-              <span class="id-with-pin"
-                >{{ row.id
-                }}<span v-if="row.pinned" class="pin-icon">📌</span></span
-              >
+              <span class="id-with-pin"><span class="pin-id">{{ row.id
+                }}</span><svg v-if="row.pinned" class="pin-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M16 9V4l1-1V2H7v1l1 1v5l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z" fill="currentColor"/></svg></span>
             </template>
           </el-table-column>
           <el-table-column label="名称" min-width="180">
@@ -115,6 +113,13 @@
               </div>
             </template>
           </el-table-column>
+          <el-table-column label="状态" width="120">
+            <template #default="{ row }">
+              <el-tag :type="row.enabled ? 'success' : 'info'">{{
+                row.enabled ? "启用" : "禁用"
+              }}</el-tag>
+            </template>
+          </el-table-column>
           <el-table-column label="表达式" width="190" show-overflow-tooltip>
             <template #default="{ row }">{{ row.cron }}</template>
           </el-table-column>
@@ -124,13 +129,6 @@
               <div class="task-desc">
                 {{ row.group_id ? `群 ${row.group_id}` : "私聊" }}
               </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" width="120">
-            <template #default="{ row }">
-              <el-tag :type="row.enabled ? 'success' : 'info'">{{
-                row.enabled ? "启用" : "禁用"
-              }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="上次执行" width="180">
@@ -161,104 +159,53 @@
         </el-table>
       </div>
 
-      <div class="mobile-task-table" v-loading="loading">
-        <el-table
-          ref="mobileTableRef"
-          :data="pagedItems"
-          border
-          stripe
-          height="100%"
-          row-key="id"
-          class="mobile-selection-table"
-          @selection-change="handleSelectionChange"
+      <div class="mobile-task-cards" v-loading="loading">
+        <article
+          v-for="row in pagedItems"
+          :key="row.id"
+          class="mobile-task-card"
+          :class="{ selected: isSelected(row) }"
         >
-          <el-table-column
-            type="selection"
-            width="42"
-            reserve-selection
-            align="center"
-            class-name="mobile-selection-cell"
-          />
-          <el-table-column label="任务内容" class-name="mobile-content-cell">
-            <template #default="{ row }">
-              <div class="mobile-row-title">
-                {{ row.name || row.task_key || `任务 ${row.id}` }}
-              </div>
-              <div class="mobile-field-grid">
-                <div>
-                  <span>ID</span
-                  ><strong class="id-with-pin"
-                    >{{ row.id
-                    }}<span v-if="row.pinned" class="pin-icon">📌</span></strong
-                  >
-                </div>
-                <div>
-                  <span>备注</span><strong>{{ row.description || "-" }}</strong>
-                </div>
-                <div>
-                  <span>来源</span><strong>{{ sourceName(row.source) }}</strong>
-                </div>
-                <div v-if="row.plugin_id">
-                  <span>插件</span><strong>{{ row.plugin_id }}</strong>
-                </div>
-                <div>
-                  <span>表达式</span><strong>{{ row.cron }}</strong>
-                </div>
-                <div>
-                  <span>身份</span><strong>{{ taskIdentityText(row) }}</strong>
-                </div>
-                <div>
-                  <span>会话</span
-                  ><strong>{{
-                    row.group_id ? `群 ${row.group_id}` : "私聊"
-                  }}</strong>
-                </div>
-                <div>
-                  <span>状态</span
-                  ><strong>{{ row.enabled ? "启用" : "禁用" }}</strong>
-                </div>
-                <div>
-                  <span>上次执行</span
-                  ><strong>{{ formatTime(row.last_run_at) }}</strong>
-                </div>
-                <div>
-                  <span>下次执行</span
-                  ><strong>{{ formatTime(row.next_run_at) }}</strong>
-                </div>
-              </div>
-              <div class="mobile-table-actions">
-                <el-button
-                  size="small"
-                  type="success"
-                  :loading="runningId === row.id"
-                  @click="runItem(row)"
-                  >启动</el-button
-                >
-                <el-button size="small" @click="openDialog(row)"
-                  >编辑</el-button
-                >
-                <el-button size="small" type="danger" @click="deleteItem(row)"
-                  >删除</el-button
-                >
-              </div>
-            </template>
-          </el-table-column>
-        </el-table>
-        <el-empty
-          v-if="!loading && pagedItems.length === 0"
-          description="暂无定时任务"
-        />
+          <div class="mobile-task-head">
+            <el-checkbox
+              :model-value="isSelected(row)"
+              @change="checked => toggleTaskSelection(row, checked)"
+            />
+            <div class="mobile-task-title">
+              <strong>{{ row.name || row.task_key || `任务 ${row.id}` }}</strong>
+              <span class="mobile-task-id">
+                ID <span class="id-with-pin"><span class="pin-id">{{ row.id }}</span><svg v-if="row.pinned" class="pin-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M16 9V4l1-1V2H7v1l1 1v5l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z" fill="currentColor"/></svg></span>
+              </span>
+            </div>
+            <el-tag :type="row.enabled ? 'success' : 'info'" effect="plain">
+              {{ row.enabled ? "启用" : "禁用" }}
+            </el-tag>
+          </div>
+          <div class="mobile-task-fields">
+            <div><span>备注</span><strong>{{ row.description || "-" }}</strong></div>
+            <div><span>来源</span><strong>{{ sourceName(row.source) }}</strong></div>
+            <div v-if="row.plugin_id"><span>插件</span><strong>{{ row.plugin_id }}</strong></div>
+            <div><span>表达式</span><strong>{{ row.cron }}</strong></div>
+            <div><span>身份</span><strong>{{ taskIdentityText(row) }}</strong></div>
+            <div><span>会话</span><strong>{{ row.group_id ? `群 ${row.group_id}` : "私聊" }}</strong></div>
+            <div><span>上次执行</span><strong>{{ formatTime(row.last_run_at) }}</strong></div>
+            <div><span>下次执行</span><strong>{{ formatTime(row.next_run_at) }}</strong></div>
+          </div>
+          <div class="mobile-task-actions">
+            <el-button size="small" type="success" :loading="runningId === row.id" @click="runItem(row)">启动</el-button>
+            <el-button size="small" @click="openDialog(row)">编辑</el-button>
+            <el-button size="small" type="danger" @click="deleteItem(row)">删除</el-button>
+          </div>
+        </article>
+        <el-empty v-if="!loading && pagedItems.length === 0" description="暂无定时任务" />
       </div>
 
-      <div class="pagination-bar">
-        <el-pagination
-          v-model:current-page="page"
-          v-model:page-size="pageSize"
-          :total="filteredItems.length"
-          :page-sizes="[10, 20, 50, 100]"
-          layout="total, sizes, prev, pager, next, jumper"
-        />
-      </div>
+      <StdPagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :total="filteredItems.length"
+        :page-sizes="[10, 20, 50, 100]"
+      />
     </el-card>
 
     <el-dialog
@@ -358,11 +305,13 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+defineOptions({ name: 'ScheduledTasks' })
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { InfoFilled } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import request from "@/utils/request";
 import { getAdapterPlatforms, getAdapters } from "@/api";
+import StdPagination from '@/components/StdPagination.vue'
 
 const loading = ref(false);
 const saving = ref(false);
@@ -381,7 +330,7 @@ const statusFilter = ref("all");
 const selectedItems = ref([]);
 const batchAction = ref("");
 const desktopTableRef = ref(null);
-const mobileTableRef = ref(null);
+const syncingDesktopSelection = ref(false);
 const page = ref(1);
 const pageSize = ref(20);
 const form = reactive(createEmptyForm());
@@ -402,6 +351,7 @@ const statusCounters = computed(() => ({
 }));
 
 const hasSelection = computed(() => selectedItems.value.length > 0);
+const selectedIdSet = computed(() => new Set(selectedItems.value.map((item) => item.id)));
 const adapterPlatformNames = computed(() =>
   Object.fromEntries(
     adapterPlatformOptions.value.map((option) => [option.value, option.label])
@@ -465,6 +415,7 @@ watch(items, () => {
   selectedItems.value = selectedItems.value.filter((item) =>
     currentIds.has(item.id)
   );
+  nextTick(syncDesktopSelection);
 });
 
 watch([filteredItems, pageSize], () => {
@@ -525,12 +476,39 @@ const deleteItem = async (item) => {
 };
 
 const handleSelectionChange = (selection) => {
-  selectedItems.value = selection;
+  if (syncingDesktopSelection.value) return;
+  selectedItems.value = Array.isArray(selection) ? selection : [];
 };
+
+const isSelected = (row) => {
+  return selectedIdSet.value.has(row?.id);
+};
+
+const toggleTaskSelection = (row, checked) => {
+  if (!row?.id) return;
+  if (checked) {
+    if (!selectedIdSet.value.has(row.id)) {
+      selectedItems.value = [...selectedItems.value, row];
+    }
+  } else {
+    selectedItems.value = selectedItems.value.filter((item) => item.id !== row.id);
+  }
+  nextTick(syncDesktopSelection);
+};
+
+function syncDesktopSelection() {
+  syncingDesktopSelection.value = true;
+  desktopTableRef.value?.clearSelection();
+  pagedItems.value.forEach((row) => {
+    if (selectedIdSet.value.has(row.id)) desktopTableRef.value?.toggleRowSelection(row, true);
+  });
+  nextTick(() => {
+    syncingDesktopSelection.value = false;
+  });
+}
 
 const clearSelection = () => {
   desktopTableRef.value?.clearSelection();
-  mobileTableRef.value?.clearSelection();
   selectedItems.value = [];
 };
 
@@ -678,12 +656,12 @@ function adapterLabelById(adapterId) {
 
 function taskIdentityText(task) {
   const adapterLabelText = adapterLabelById(task.adapter_id);
-  const platformText =
+  return (
     adapterLabelText ||
     `${getPlatformName(task.platform)}${
       task.adapter_id ? ` #${task.adapter_id}` : ""
-    }`;
-  return `${platformText} / ${task.user_id || "-"}`;
+    }`
+  );
 }
 
 function ensureSelectedAdapterMatchesPlatform() {
@@ -729,20 +707,20 @@ function formatTime(value) {
   align-items: center;
   gap: 6px;
 }
-.page-header h2 {
-  margin: 0 0 6px;
-}
-.title-row h2 {
-  margin: 0 0 6px;
+.title {
+  font-size: 18px;
+  font-weight: 600;
 }
 .mobile-info-button {
   display: none;
   padding: 0;
   font-size: 16px;
 }
-.page-header p {
-  margin: 0;
+.subtitle {
+  margin-top: 6px;
   color: #909399;
+  font-size: 13px;
+  line-height: 1.5;
 }
 .task-toolbar {
   display: flex;
@@ -773,13 +751,8 @@ function formatTime(value) {
   min-height: 0;
   overflow: hidden;
 }
-.mobile-task-table {
+.mobile-task-cards {
   display: none;
-}
-.pagination-bar {
-  display: flex;
-  justify-content: flex-end;
-  flex-shrink: 0;
 }
 .task-name {
   font-weight: 600;
@@ -789,9 +762,13 @@ function formatTime(value) {
   align-items: center;
   gap: 2px;
 }
+.pin-id {
+  min-width: 2em;
+  text-align: right;
+}
 .pin-icon {
-  font-size: 14px;
-  line-height: 1;
+  color: #6366f1;
+  flex-shrink: 0;
 }
 .task-desc,
 .plugin-id,
@@ -816,8 +793,11 @@ function formatTime(value) {
   .mobile-info-button {
     display: inline-flex;
   }
-  .page-header p {
+  .subtitle {
     display: none;
+  }
+  .title {
+    font-size: 16px;
   }
   .page-header > .el-button {
     width: 100%;
@@ -848,97 +828,69 @@ function formatTime(value) {
   .desktop-task-table {
     display: none;
   }
-  .mobile-task-table {
+  .mobile-task-cards {
     flex: 1 1 auto;
-    min-height: 180px;
-    display: block;
-    overflow: auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
     padding-bottom: 8px;
     -webkit-overflow-scrolling: touch;
   }
-  .mobile-task-table :deep(.el-table),
-  .mobile-task-table :deep(.el-table__inner-wrapper),
-  .mobile-task-table :deep(.el-table__body-wrapper),
-  .mobile-task-table :deep(.el-scrollbar),
-  .mobile-task-table :deep(.el-scrollbar__wrap),
-  .mobile-task-table :deep(.el-scrollbar__view) {
-    width: 100% !important;
-    min-width: 0 !important;
+  .mobile-task-card {
+    padding: 12px;
+    border: 1px solid #e4e7ed;
+    border-radius: 10px;
+    background: #fff;
+    transition: border-color 0.2s, background 0.2s;
   }
-  .mobile-task-table :deep(.el-table__inner-wrapper::before) {
-    display: none;
+  .mobile-task-card.selected {
+    border-color: #6366f1;
+    background: #f5f3ff;
   }
-  .mobile-task-table :deep(.el-table__header-wrapper),
-  .mobile-task-table :deep(colgroup) {
-    display: none;
-  }
-  .mobile-task-table :deep(.el-table__body) {
-    width: 100% !important;
-    table-layout: fixed;
-  }
-  .mobile-task-table :deep(.el-table__row) {
-    display: grid;
-    grid-template-columns: 42px minmax(0, 1fr);
-    align-items: stretch;
-    width: 100% !important;
-  }
-  .mobile-task-table :deep(.el-table__cell) {
-    display: block;
-    box-sizing: border-box;
-    min-width: 0;
-    padding: 10px 8px;
-    border-right: 0;
-  }
-  .mobile-task-table :deep(.mobile-selection-cell) {
-    width: 42px !important;
-    padding: 12px 6px;
-    text-align: center;
-  }
-  .mobile-task-table :deep(.mobile-selection-cell .cell) {
+  .mobile-task-head {
     display: flex;
-    justify-content: center;
-    width: 100%;
-    padding: 0;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
   }
-  .mobile-task-table :deep(.mobile-content-cell) {
-    width: auto !important;
-  }
-  .mobile-task-table :deep(.mobile-content-cell .cell) {
-    width: 100%;
+  .mobile-task-title {
+    flex: 1;
     min-width: 0;
-    padding: 0;
-    line-height: 1.4;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
-  .mobile-row-title {
+  .mobile-task-title strong {
+    font-size: 14px;
     font-weight: 600;
+    color: #303133;
     word-break: break-word;
-    overflow-wrap: anywhere;
   }
-  .mobile-row-desc {
-    margin-top: 4px;
-    color: #909399;
+  .mobile-task-id {
     font-size: 12px;
-    word-break: break-word;
-    overflow-wrap: anywhere;
+    color: #909399;
   }
-  .mobile-field-grid {
-    margin-top: 8px;
+  .mobile-task-fields {
     display: grid;
     gap: 6px;
     font-size: 12px;
+    padding: 8px 0;
+    border-top: 1px solid #f0f2f5;
   }
-  .mobile-field-grid > div {
+  .mobile-task-fields > div {
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
     gap: 10px;
     min-width: 0;
   }
-  .mobile-field-grid span {
+  .mobile-task-fields span {
     color: #909399;
     flex-shrink: 0;
   }
-  .mobile-field-grid strong {
+  .mobile-task-fields strong {
     min-width: 0;
     color: #303133;
     font-weight: 500;
@@ -946,15 +898,14 @@ function formatTime(value) {
     word-break: break-word;
     overflow-wrap: anywhere;
   }
-  .mobile-table-actions {
+  .mobile-task-actions {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
-    margin-top: 10px;
     padding-top: 10px;
     border-top: 1px solid #f0f2f5;
   }
-  .mobile-table-actions .el-button {
+  .mobile-task-actions .el-button {
     width: 100%;
     min-width: 0;
     margin-left: 0;
@@ -974,13 +925,7 @@ function formatTime(value) {
   .scheduled-tasks :deep(.el-form-item__content) {
     margin-left: 0 !important;
   }
-  .pagination-bar {
-    justify-content: flex-start;
-    overflow-x: auto;
-    flex-shrink: 0;
-  }
-  .mobile-task-table::-webkit-scrollbar,
-  .pagination-bar::-webkit-scrollbar {
+  .mobile-task-cards::-webkit-scrollbar {
     display: none;
   }
 }

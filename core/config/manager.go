@@ -78,6 +78,9 @@ func (m *AdapterManager) startAdapter(config *AdapterConfig) error {
 	if err != nil {
 		return fmt.Errorf("创建 %s 适配器失败: %w", desc.DisplayName, err)
 	}
+	if databaseAware, ok := adp.(interface{ SetDatabase(*Database) }); ok {
+		databaseAware.SetDatabase(m.db)
+	}
 
 	if m.messageHandler != nil {
 		adapterID := config.ID
@@ -276,6 +279,17 @@ func (m *AdapterManager) SetAdapterPinned(id int64, pinned bool) error {
 }
 
 func (m *AdapterManager) SaveAdapterConfig(id int64, platform, remark, description string, enabled bool, configData interface{}) error {
+	platform = strings.TrimSpace(platform)
+	if platform == WebChatPlatform {
+		existing, err := m.db.GetAdapter(WebChatPlatform)
+		if err != nil {
+			return fmt.Errorf("检查 Web 聊天室实例失败: %w", err)
+		}
+		if existing != nil && existing.ID != id {
+			return fmt.Errorf("Web 聊天室只允许创建一个实例")
+		}
+	}
+
 	mergedConfigData, err := m.mergeExistingSensitiveConfig(id, platform, configData)
 	if err != nil {
 		return err

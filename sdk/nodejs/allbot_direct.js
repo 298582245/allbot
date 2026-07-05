@@ -24,6 +24,44 @@ function redirectConsoleToStderr() {
 
 redirectConsoleToStderr();
 
+function normalizeButtonRows(buttons) {
+    if (!Array.isArray(buttons)) return [];
+    return buttons
+        .map((row) => {
+            if (!Array.isArray(row)) return [];
+            return row
+                .map((item) => {
+                    const button = {
+                        text: String((item && (item.text ?? item.Text)) ?? ''),
+                        value: String((item && (item.value ?? item.Value)) ?? '')
+                    };
+                    const userId = String((item && (item.user_id ?? item.userId ?? item.UserID)) ?? '').trim();
+                    if (userId) button.user_id = userId;
+                    return button;
+                })
+                .filter((item) => item.text && item.value);
+        })
+        .filter((row) => row.length > 0);
+}
+
+function normalizeRichParts(parts) {
+    if (!Array.isArray(parts)) parts = [parts];
+    return parts
+        .map((part) => {
+            if (typeof part === 'string') return { type: 'text', text: part };
+            if (!part || typeof part !== 'object') return null;
+            if (Object.prototype.hasOwnProperty.call(part, 'image')) {
+                return { type: 'image', url: String(part.image ?? ''), alt: String(part.alt ?? '') };
+            }
+            const type = String(part.type || (part.markdown !== undefined ? 'markdown' : part.url !== undefined ? 'image' : 'text')).toLowerCase();
+            if (type === 'text') return { type, text: String(part.text ?? part.content ?? '') };
+            if (type === 'markdown') return { type, markdown: String(part.markdown ?? part.text ?? part.content ?? '') };
+            if (type === 'image') return { type, url: String(part.url ?? ''), alt: String(part.alt ?? '') };
+            return null;
+        })
+        .filter((part) => part && ((part.type === 'image' && part.url) || (part.type === 'text' && part.text) || (part.type === 'markdown' && part.markdown)));
+}
+
 let currentContext = null;
 
 class Context {
@@ -49,6 +87,7 @@ class Context {
         this.admin = Boolean(data.is_admin);
         this.is_admin = this.admin;
         this.metadata = data.metadata || {};
+        this.event = buildEvent(this.metadata);
         this.userConfig = data.user_config || {};
         this.user_config = this.userConfig;
         this.accessControl = data.access_control || {};
@@ -58,6 +97,7 @@ class Context {
         currentContext = this;
         this.db = new Database(this);
         this.pay = new PAY(this);
+        this.web = new WebRouter();
     }
 
     
@@ -96,9 +136,58 @@ class Context {
         return this.reply(text);
     }
 
-    async sendMessage(options = {}) {
+    async sendMarkdown(markdown) {
+        return this._send({ action: 'send_markdown', markdown: String(markdown ?? '') });
+    }
+
+    async send_markdown(markdown) {
+        return this.sendMarkdown(markdown);
+    }
+
+    async sendRich(parts, options = {}) {
+        const payload = {
+            action: 'send_rich',
+            parts: normalizeRichParts(parts),
+            fallback_text: String(options.fallbackText || options.fallback_text || ''),
+            prefer: String(options.prefer || 'auto')
+        };
+        return this._send(payload);
+    }
+
+    async replyRich(parts, options = {}) {
+        return this.sendRich(parts, options);
+    }
+
+    async send_rich(parts, options = {}) {
+        return this.sendRich(parts, options);
+    }
+
+    async reply_rich(parts, options = {}) {
+        return this.replyRich(parts, options);
+    }
+
+    async sendRichMessage(options = {}) {
         const targetPlatform = String(options.platform || this.platform || '');
         return this._request({
+            action: 'send_rich_message',
+            platform: targetPlatform,
+            adapter_id: this._adapterIdFor(options, targetPlatform),
+            user_id: String(options.userId || options.user_id || this.userId || ''),
+            group_id: String(options.groupId || options.group_id || ''),
+            union_id: String(options.unionId || options.union_id || ''),
+            parts: normalizeRichParts(options.parts || options.content || []),
+            fallback_text: String(options.fallbackText || options.fallback_text || ''),
+            prefer: String(options.prefer || 'auto')
+        }, 'send_rich_message_response');
+    }
+
+    async send_rich_message(options = {}) {
+        return this.sendRichMessage(options);
+    }
+
+    async sendMessage(options = {}) {
+        const targetPlatform = String(options.platform || this.platform || '');
+        const payload = {
             action: 'send_message',
             platform: targetPlatform,
             adapter_id: this._adapterIdFor(options, targetPlatform),
@@ -106,7 +195,18 @@ class Context {
             group_id: String(options.groupId || options.group_id || ''),
             union_id: String(options.unionId || options.union_id || ''),
             text: String(options.text || options.content || '')
-        }, 'send_message_response');
+        };
+        const buttons = normalizeButtonRows(options.buttons || options.buttonRows || []);
+        if (buttons.length) payload.buttons = buttons;
+        return this._request(payload, 'send_message_response');
+    }
+
+    async sendButtons(text, buttons = []) {
+        return this._send({ action: 'send_buttons', text: String(text ?? ''), buttons: normalizeButtonRows(buttons) });
+    }
+
+    async send_buttons(text, buttons = []) {
+        return this.sendButtons(text, buttons);
     }
 
     async send_message(options = {}) {
@@ -118,7 +218,7 @@ class Context {
             ? userId
             : { userId, groupId, content, platform, adapterId };
         const target = splitPushUserAndUnionId(options.userId ?? options.user_id ?? '', options.unionId ?? options.union_id ?? '');
-        return this._request({
+        const payload = {
             action: 'send_message',
             platform: String(options.platform || this.platform || ''),
             adapter_id: String(options.adapterId || options.adapter_id || ''),
@@ -126,7 +226,10 @@ class Context {
             group_id: String(options.groupId || options.group_id || ''),
             union_id: target.unionId,
             text: String(options.content ?? options.text ?? '')
-        }, 'send_message_response');
+        };
+        const buttons = normalizeButtonRows(options.buttons || options.buttonRows || []);
+        if (buttons.length) payload.buttons = buttons;
+        return this._request(payload, 'send_message_response');
     }
 
 
@@ -418,6 +521,27 @@ class PAY {
     }
 }
 
+function buildEvent(metadata = {}) {
+    const isEvent = metadata.message_type === 'event' || Boolean(metadata.event_name);
+    if (!isEvent) return null;
+    const name = metadata.event_name || metadata.qq_office_event_type || '';
+    if (!name) return null;
+    const event = {
+        name,
+        eventName: name,
+        type: metadata.qq_office_event_type || name,
+        timestamp: metadata.qq_office_timestamp || '',
+        groupOpenid: metadata.qq_office_group_openid || '',
+        group_openid: metadata.qq_office_group_openid || '',
+        memberOpenid: metadata.qq_office_member_openid || '',
+        member_openid: metadata.qq_office_member_openid || '',
+        opMemberOpenid: metadata.qq_office_op_member_openid || '',
+        op_member_openid: metadata.qq_office_op_member_openid || '',
+        metadata
+    };
+    return event;
+}
+
 function normalizeAccessControl(config = {}) {
     const list = (value) => Array.isArray(value) ? value.map(String).filter(Boolean) : [];
     return {
@@ -557,6 +681,93 @@ function normalizeQueryOrder(options = {}) {
 }
 
 
+class WebRouter {
+    constructor() {
+        this.routes = [];
+    }
+
+    get(path, handler) {
+        return this.add('GET', path, handler);
+    }
+
+    post(path, handler) {
+        return this.add('POST', path, handler);
+    }
+
+    put(path, handler) {
+        return this.add('PUT', path, handler);
+    }
+
+    delete(path, handler) {
+        return this.add('DELETE', path, handler);
+    }
+
+    add(method, path, handler) {
+        if (typeof handler !== 'function') throw new Error('Web API handler 必须是函数');
+        this.routes.push({ method: String(method || '').toUpperCase(), path: normalizeWebPath(path), handler });
+        return this;
+    }
+
+    match(method, path) {
+        const normalizedMethod = String(method || '').toUpperCase();
+        const normalizedPath = normalizeWebPath(path);
+        return this.routes.find((route) => route.method === normalizedMethod && route.path === normalizedPath);
+    }
+}
+
+class WebRequest {
+    constructor(data) {
+        this.method = String(data.method || '').toUpperCase();
+        this.path = normalizeWebPath(data.path || data.request?.path || '/');
+        this.query = flattenSingleValue(data.query || data.request?.query || {});
+        this.headers = flattenSingleValue(data.headers || data.request?.headers || {});
+        this.body = data.body ?? data.request?.body ?? '';
+        this.data = data.json || data.form || data.request?.json || data.request?.form || undefined;
+    }
+
+    async json() {
+        if (this.data !== undefined) return this.data;
+        if (typeof this.body !== 'string' || !this.body.trim()) return {};
+        return JSON.parse(this.body);
+    }
+
+    jsonResponse(data, status = 200, headers = {}) {
+        return new WebResponse(data, status, headers);
+    }
+}
+
+class WebResponse {
+    constructor(data, status = 200, headers = {}) {
+        this.statusCode = Number(status) || 200;
+        this.headers = { 'Content-Type': 'application/json; charset=utf-8', ...headers };
+        this.body = data;
+    }
+
+    toAction() {
+        const action = { action: 'web_response', status: this.statusCode, headers: this.headers };
+        if (typeof this.body === 'string') action.body = this.body;
+        else action.json = this.body;
+        return action;
+    }
+}
+
+function normalizeWebPath(path) {
+    const text = String(path || '/').trim();
+    const normalized = text.startsWith('/') ? text : `/${text}`;
+    return normalized.replace(/\/+/g, '/').replace(/\/$/, '') || '/';
+}
+
+function toWebResponseAction(result) {
+    if (result instanceof WebResponse) return result.toAction();
+    if (result instanceof HTTPResponse) {
+        const action = result.toAction();
+        action.action = 'web_response';
+        return action;
+    }
+    if (result && typeof result === 'object' && result.action === 'web_response') return result;
+    return new WebResponse(result ?? {}).toAction();
+}
+
 class HTTPResponse {
     constructor() {
         this.statusCode = 200;
@@ -597,6 +808,15 @@ class HTTPResponse {
         if (this.jsonData !== undefined) action.json = this.jsonData;
         return action;
     }
+}
+
+async function runWebAPIAction(handler, data, rl) {
+    const ctx = new Context(data, rl);
+    await handler(ctx);
+    const req = new WebRequest(data);
+    const route = ctx.web.match(req.method, req.path);
+    if (!route) return new WebResponse({ error: '插件 Web API 路由不存在' }, 404).toAction();
+    return toWebResponseAction(await route.handler(req, ctx));
 }
 
 async function runOpenAPIAction(handler, data, rl) {
@@ -650,9 +870,14 @@ function runDirect(handler) {
 
         try {
             const messageData = JSON.parse(line);
-            const ctx = new Context(messageData, rl);
-            await handler(ctx);
-            writeProtocolAction({ action: 'done', success: true });
+            if (messageData.event_type === 'web_api') {
+                const action = await runWebAPIAction(handler, messageData, rl);
+                writeProtocolAction(action);
+            } else {
+                const ctx = new Context(messageData, rl);
+                await handler(ctx);
+                writeProtocolAction({ action: 'done', success: true });
+            }
             process.exit(0);
         } catch (error) {
             writeProtocolAction({ action: 'done', success: false, error: error.message });
@@ -677,4 +902,4 @@ if (require.main === module && process.argv[2] === 'openapi') {
     });
 }
 
-module.exports = { Context, Database, PAY, HTTPResponse, runDirect, runOpenAPI };
+module.exports = { Context, Database, PAY, HTTPResponse, WebRouter, WebRequest, WebResponse, runDirect, runOpenAPI };

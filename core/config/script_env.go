@@ -13,6 +13,7 @@ type ScriptEnvVar struct {
 	Value     string    `json:"value"`
 	Remark    string    `json:"remark"`
 	Enabled   bool      `json:"enabled"`
+	Pinned    bool      `json:"pinned"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -23,28 +24,39 @@ type ScriptEnvQuery struct {
 	Names   []string
 }
 
+type ScriptEnvImportItem struct {
+	Name    string `json:"name"`
+	Value   string `json:"value"`
+	Remark  string `json:"remark"`
+	Enabled *bool  `json:"enabled,omitempty"`
+	Pinned  *bool  `json:"pinned,omitempty"`
+}
+
 func (d *Database) SaveScriptEnvVar(item *ScriptEnvVar) (*ScriptEnvVar, error) {
 	if err := normalizeScriptEnvVar(item); err != nil {
+		return nil, err
+	}
+	if err := d.ensureScriptEnvNameValueUnique(item.ID, item.Name, item.Value); err != nil {
 		return nil, err
 	}
 	now := time.Now()
 	if item.ID == 0 {
 		result, err := d.db.Exec(`
-			INSERT INTO script_env_vars (name, value, remark, enabled, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)
-		`, item.Name, item.Value, item.Remark, boolInt(item.Enabled), now, now)
+			INSERT INTO script_env_vars (name, value, remark, enabled, pinned, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, item.Name, item.Value, item.Remark, boolInt(item.Enabled), boolInt(item.Pinned), now, now)
 		if err != nil {
-			return nil, err
+			return nil, formatScriptEnvDuplicateError(err)
 		}
 		item.ID, _ = result.LastInsertId()
 	} else {
 		_, err := d.db.Exec(`
 			UPDATE script_env_vars
-			SET name = ?, value = ?, remark = ?, enabled = ?, updated_at = ?
+			SET name = ?, value = ?, remark = ?, enabled = ?, pinned = ?, updated_at = ?
 			WHERE id = ?
-		`, item.Name, item.Value, item.Remark, boolInt(item.Enabled), now, item.ID)
+		`, item.Name, item.Value, item.Remark, boolInt(item.Enabled), boolInt(item.Pinned), now, item.ID)
 		if err != nil {
-			return nil, err
+			return nil, formatScriptEnvDuplicateError(err)
 		}
 	}
 	return d.GetScriptEnvVar(item.ID)
@@ -52,7 +64,7 @@ func (d *Database) SaveScriptEnvVar(item *ScriptEnvVar) (*ScriptEnvVar, error) {
 
 func (d *Database) GetScriptEnvVar(id int64) (*ScriptEnvVar, error) {
 	row := d.db.QueryRow(`
-		SELECT id, name, value, remark, enabled, created_at, updated_at
+		SELECT id, name, value, remark, enabled, pinned, created_at, updated_at
 		FROM script_env_vars WHERE id = ?
 	`, id)
 	item, err := scanScriptEnvVar(row)
@@ -90,10 +102,10 @@ func (d *Database) ListScriptEnvVars(query ScriptEnvQuery) ([]*ScriptEnvVar, err
 		}
 	}
 	rows, err := d.db.Query(`
-		SELECT id, name, value, remark, enabled, created_at, updated_at
+		SELECT id, name, value, remark, enabled, pinned, created_at, updated_at
 		FROM script_env_vars
 		WHERE `+strings.Join(conditions, " AND ")+`
-		ORDER BY name ASC, id ASC
+		ORDER BY pinned DESC, id DESC
 	`, args...)
 	if err != nil {
 		return nil, err
@@ -116,9 +128,13 @@ func (d *Database) ScriptEnvMap(names []string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := make(map[string]string, len(items))
+	values := make(map[string][]string, len(items))
 	for _, item := range items {
-		result[item.Name] = item.Value
+		values[item.Name] = append(values[item.Name], item.Value)
+	}
+	result := make(map[string]string, len(values))
+	for name, itemValues := range values {
+		result[name] = strings.Join(itemValues, "&")
 	}
 	return result, nil
 }
@@ -126,6 +142,121 @@ func (d *Database) ScriptEnvMap(names []string) (map[string]string, error) {
 func (d *Database) DeleteScriptEnvVar(id int64) error {
 	_, err := d.db.Exec(`DELETE FROM script_env_vars WHERE id = ?`, id)
 	return err
+}
+
+func (d *Database) DeleteScriptEnvVars(ids []int64) (int64, error) {
+	return d.execScriptEnvIDs(`DELETE FROM script_env_vars WHERE id IN (%s)`, ids)
+}
+
+func (d *Database) UpdateScriptEnvVarsEnabled(ids []int64, enabled bool) (int64, error) {
+	return d.execScriptEnvIDs(`UPDATE script_env_vars SET enabled = ?, updated_at = ? WHERE id IN (%s)`, ids, boolInt(enabled), time.Now())
+}
+
+func (d *Database) UpdateScriptEnvVarsPinned(ids []int64, pinned bool) (int64, error) {
+	return d.execScriptEnvIDs(`UPDATE script_env_vars SET pinned = ?, updated_at = ? WHERE id IN (%s)`, ids, boolInt(pinned), time.Now())
+}
+
+func (d *Database) ImportScriptEnvVars(importItems []ScriptEnvImportItem) (int64, error) {
+	items := make([]ScriptEnvVar, 0, len(importItems))
+	seen := make(map[string]bool, len(importItems))
+	for i, importItem := range importItems {
+		item := ScriptEnvVar{Name: importItem.Name, Value: importItem.Value, Remark: importItem.Remark, Enabled: true}
+		if importItem.Enabled != nil {
+			item.Enabled = *importItem.Enabled
+		}
+		if importItem.Pinned != nil {
+			item.Pinned = *importItem.Pinned
+		}
+		if err := normalizeScriptEnvVar(&item); err != nil {
+			return 0, fmt.Errorf("第 %d 个变量无效: %w", i+1, err)
+		}
+		key := scriptEnvNameValueKey(item.Name, item.Value)
+		if seen[key] {
+			return 0, fmt.Errorf("导入文件中存在重复变量名和值: %s", item.Name)
+		}
+		seen[key] = true
+		if err := d.ensureScriptEnvNameValueUnique(0, item.Name, item.Value); err != nil {
+			return 0, err
+		}
+		items = append(items, item)
+	}
+	tx, err := d.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	for _, item := range items {
+		if _, err := tx.Exec(`
+			INSERT INTO script_env_vars (name, value, remark, enabled, pinned, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, item.Name, item.Value, item.Remark, boolInt(item.Enabled), boolInt(item.Pinned), now, now); err != nil {
+			return 0, formatScriptEnvDuplicateError(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int64(len(items)), nil
+}
+
+func (d *Database) execScriptEnvIDs(queryTemplate string, ids []int64, prefixArgs ...interface{}) (int64, error) {
+	ids = normalizeIDs(ids)
+	if len(ids) == 0 {
+		return 0, fmt.Errorf("请选择要操作的脚本环境变量")
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, 0, len(prefixArgs)+len(ids))
+	args = append(args, prefixArgs...)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	result, err := d.db.Exec(fmt.Sprintf(queryTemplate, strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func normalizeIDs(ids []int64) []int64 {
+	result := make([]int64, 0, len(ids))
+	seen := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		result = append(result, id)
+	}
+	return result
+}
+
+func (d *Database) ensureScriptEnvNameValueUnique(id int64, name, value string) error {
+	var existingID int64
+	err := d.db.QueryRow(`
+		SELECT id FROM script_env_vars
+		WHERE name = ? AND value = ? AND id <> ?
+		LIMIT 1
+	`, name, value, id).Scan(&existingID)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("已存在相同变量名和值的脚本环境变量")
+}
+
+func formatScriptEnvDuplicateError(err error) error {
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "unique") {
+		return fmt.Errorf("已存在相同变量名和值的脚本环境变量")
+	}
+	return err
+}
+
+func scriptEnvNameValueKey(name, value string) string {
+	return name + "\x00" + value
 }
 
 func normalizeScriptEnvVar(item *ScriptEnvVar) error {
@@ -147,9 +278,11 @@ type scriptEnvScanner interface {
 func scanScriptEnvVar(scanner scriptEnvScanner) (*ScriptEnvVar, error) {
 	var item ScriptEnvVar
 	var enabled int
-	if err := scanner.Scan(&item.ID, &item.Name, &item.Value, &item.Remark, &enabled, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	var pinned int
+	if err := scanner.Scan(&item.ID, &item.Name, &item.Value, &item.Remark, &enabled, &pinned, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return nil, err
 	}
 	item.Enabled = enabled == 1
+	item.Pinned = pinned == 1
 	return &item, nil
 }

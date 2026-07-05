@@ -34,6 +34,9 @@ func (s *Server) handleBackupDetail(w http.ResponseWriter, r *http.Request) {
 	case "status":
 		s.handleBackupStatus(w, r)
 		return
+	case "import":
+		s.handleImportBackup(w, r)
+		return
 	}
 
 	parts := strings.Split(rest, "/")
@@ -51,6 +54,8 @@ func (s *Server) handleBackupDetail(w http.ResponseWriter, r *http.Request) {
 		s.handleDownloadBackup(w, r, name)
 	case "delete":
 		s.handleDeleteBackup(w, r, name)
+	case "restore":
+		s.handleRestoreBackup(w, r, name)
 	default:
 		s.jsonError(w, "备份路径无效", http.StatusBadRequest)
 	}
@@ -141,6 +146,70 @@ func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 		s.logManager.AddLog("info", fmt.Sprintf("创建系统备份: %s", file.Name))
 	}
 	s.jsonResponse(w, map[string]interface{}{"message": "备份创建成功", "file": file})
+}
+
+func (s *Server) handleImportBackup(w http.ResponseWriter, r *http.Request) {
+	service, ok := s.requireBackupService(w)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 512<<20)
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		s.jsonError(w, "解析上传文件失败: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		s.jsonError(w, "请选择备份文件", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	result, err := service.Import(ctx, backup.ImportOptions{Reader: file, OriginalName: header.Filename, MaxSize: 512 << 20})
+	if err != nil {
+		s.jsonError(w, "导入备份失败: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if s.logManager != nil {
+		s.logManager.AddLog("info", fmt.Sprintf("导入系统备份: %s", result.File.Name))
+	}
+	s.jsonResponse(w, result)
+}
+
+func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request, name string) {
+	service, ok := s.requireBackupService(w)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var options backup.RestoreOptions
+	if err := json.NewDecoder(r.Body).Decode(&options); err != nil {
+		s.jsonError(w, "请求数据无效", http.StatusBadRequest)
+		return
+	}
+	if !options.Confirm || (!options.IncludeData && !options.IncludePlugins && !options.IncludeOpenAPIs) {
+		s.jsonError(w, "请确认并至少选择一项恢复内容", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
+	defer cancel()
+	result, err := service.Restore(ctx, name, options)
+	if err != nil {
+		s.jsonError(w, "恢复备份失败: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if s.logManager != nil {
+		s.logManager.AddLog("info", fmt.Sprintf("恢复系统备份: %s", name))
+	}
+	s.jsonResponse(w, result)
 }
 
 func (s *Server) handleDownloadBackup(w http.ResponseWriter, r *http.Request, name string) {

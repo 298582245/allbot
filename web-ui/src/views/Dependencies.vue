@@ -1,9 +1,19 @@
 <template>
   <div class="dependencies">
-    <el-card>
+    <el-card class="page-card">
       <template #header>
-        <div class="card-header">
-          <span>运行环境依赖管理</span>
+        <div class="page-header">
+          <div>
+            <div class="title-row">
+              <span class="title">运行环境依赖管理</span>
+              <el-button class="mobile-info-button" type="primary" link aria-label="查看运行环境依赖管理说明" @click="showPageDescription">
+                <el-icon><InfoFilled /></el-icon>
+              </el-button>
+            </div>
+            <div class="subtitle">{{ pageDescription }}</div>
+          </div>
+          <div class="header-actions">
+          </div>
         </div>
       </template>
 
@@ -100,22 +110,18 @@
         <el-empty v-if="!loading && nodejsDeps.length === 0" description="暂无 Node.js 依赖" />
       </div>
 
-      <div class="pagination-wrapper">
-        <el-pagination
-          v-if="activeTab === 'python' && pythonDeps.length > 0"
-          v-model:current-page="pythonCurrentPage"
-          :page-size="pageSize"
-          :total="pythonDeps.length"
-          layout="total, prev, pager, next"
-        />
-        <el-pagination
-          v-if="activeTab === 'nodejs' && nodejsDeps.length > 0"
-          v-model:current-page="nodejsCurrentPage"
-          :page-size="pageSize"
-          :total="nodejsDeps.length"
-          layout="total, prev, pager, next"
-        />
-      </div>
+      <StdPagination
+        v-if="activeTab === 'python' && pythonDeps.length > 0"
+        v-model:current-page="pythonCurrentPage"
+        :page-size="pageSize"
+        :total="pythonDeps.length"
+      />
+      <StdPagination
+        v-if="activeTab === 'nodejs' && nodejsDeps.length > 0"
+        v-model:current-page="nodejsCurrentPage"
+        :page-size="pageSize"
+        :total="nodejsDeps.length"
+      />
     </el-card>
 
     <el-dialog
@@ -135,7 +141,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="包名">
-          <el-input v-model.trim="newDep.name" placeholder="例如: requests" />
+          <el-input v-model.trim="newDep.name" :placeholder="currentRuntime === 'python' ? '例如: requests 或 qrcode[pil]' : '例如: axios'" />
         </el-form-item>
         <el-form-item label="版本">
           <el-input v-model.trim="newDep.version" placeholder="例如: 2.28.0，留空安装并更新到最新版" />
@@ -152,11 +158,13 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Dependencies' })
 import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, InfoFilled } from '@element-plus/icons-vue'
 import { getRuntimeProfiles } from '@/api'
 import request from '@/utils/request'
+import StdPagination from '@/components/StdPagination.vue'
 
 const activeTab = ref('python')
 const loading = ref(false)
@@ -281,14 +289,35 @@ const showAddDialog = (runtime) => {
   addDialogVisible.value = true
 }
 
+const pageDescription = '管理运行环境已安装的 npm 和 pip 依赖包。'
+
+const showPageDescription = () => {
+  ElMessageBox.alert(pageDescription, '运行环境依赖管理说明', {
+    confirmButtonText: '知道了',
+    type: 'info'
+  })
+}
+
+const showProfileTip = () => {
+  ElMessageBox.alert(activeProfileTip.value, '依赖说明', {
+    confirmButtonText: '知道了',
+    type: 'info'
+  })
+}
+
 const handleInstall = async () => {
   if (!newDep.value.name) {
     ElMessage.warning('请输入包名')
     return
   }
 
-  if (!/^[a-zA-Z0-9_\-\.]+$/.test(newDep.value.name)) {
-    ElMessage.error('包名只能包含字母、数字、下划线、连字符和点')
+  const packageNamePattern = currentRuntime.value === 'python'
+    ? /^[a-zA-Z0-9_\-\.]+(\[[a-zA-Z0-9_\-\.,]+\])?$/
+    : /^[a-zA-Z0-9_\-\.]+$/
+  if (!packageNamePattern.test(newDep.value.name)) {
+    ElMessage.error(currentRuntime.value === 'python'
+      ? 'Python 包名只能包含字母、数字、下划线、连字符、点和 extras（如 qrcode[pil]）'
+      : '包名只能包含字母、数字、下划线、连字符和点')
     return
   }
 
@@ -385,10 +414,35 @@ onMounted(async () => {
   flex-direction: column;
 }
 
-.card-header {
+.page-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.mobile-info-button {
+  display: none;
+  padding: 0;
+  font-size: 16px;
+}
+
+.subtitle {
+  margin-top: 6px;
+  color: #909399;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .toolbar {
@@ -506,19 +560,6 @@ onMounted(async () => {
   border-top: 1px solid #f0f0f0;
 }
 
-.pagination-wrapper {
-  position: relative;
-  z-index: 2;
-  flex-shrink: 0;
-  min-height: 49px;
-  margin-top: 16px;
-  padding-top: 16px;
-  display: flex;
-  justify-content: center;
-  border-top: 1px solid #ebeef5;
-  background: #fff;
-}
-
 @media (max-width: 768px) {
   .dependencies {
     height: calc(100dvh - 52px - 76px - 24px);
@@ -535,10 +576,26 @@ onMounted(async () => {
     overflow: hidden;
   }
 
-  .card-header {
+  .page-header {
     align-items: flex-start;
     flex-direction: column;
     gap: 12px;
+  }
+
+  .title {
+    font-size: 16px;
+  }
+
+  .mobile-info-button {
+    display: inline-flex;
+  }
+
+  .subtitle {
+    display: none;
+  }
+
+  .version-tip {
+    display: none;
   }
 
   .toolbar {
@@ -561,10 +618,6 @@ onMounted(async () => {
   .toolbar-actions > .el-button {
     width: 100%;
     margin-left: 0;
-  }
-
-  .version-tip :deep(.el-alert__title) {
-    line-height: 1.5;
   }
 
   .deps-content {
@@ -601,17 +654,7 @@ onMounted(async () => {
     margin-left: 0;
   }
 
-  .pagination-wrapper {
-    flex-shrink: 0;
-    justify-content: flex-start;
-    overflow-x: auto;
-    margin-top: 12px;
-    padding-top: 12px;
-    min-height: 45px;
-  }
-
-  .deps-content::-webkit-scrollbar,
-  .pagination-wrapper::-webkit-scrollbar {
+  .deps-content::-webkit-scrollbar {
     display: none;
   }
 }

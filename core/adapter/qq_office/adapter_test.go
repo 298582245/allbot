@@ -191,6 +191,108 @@ func TestQQOfficeSendMessageIncrementsReplySeq(t *testing.T) {
 	}
 }
 
+func TestQQOfficeSendMessageRetriesAsActiveWhenPassiveReplyLimitExceeded(t *testing.T) {
+	bodies := make(chan map[string]interface{}, 2)
+	var messageCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/v2/groups/group-openid/messages":
+			atomic.AddInt32(&messageCalls, 1)
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode message body failed: %v", err)
+			}
+			bodies <- body
+			if atomic.LoadInt32(&messageCalls) == 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"message":"回复消息失败，被动回复时间或者次数超过限制","code":40034128,"err_code":40034128}`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	if err := adp.SendMessage("group_group-openid|msg_msg-group|at_member-openid", "你好"); err != nil {
+		t.Fatalf("SendMessage returned error: %v", err)
+	}
+	first := <-bodies
+	second := <-bodies
+	if first["msg_id"] != "msg-group" {
+		t.Fatalf("first body should use passive msg_id: %#v", first)
+	}
+	if _, ok := second["msg_id"]; ok {
+		t.Fatalf("second body should omit msg_id: %#v", second)
+	}
+	if _, ok := second["msg_seq"]; ok {
+		t.Fatalf("second body should omit msg_seq: %#v", second)
+	}
+}
+
+func TestQQOfficeSendMarkdownPostsC2CAndGroup(t *testing.T) {
+	var userCalls int32
+	var groupCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/v2/users/user-openid/messages":
+			atomic.AddInt32(&userCalls, 1)
+			assertQQOfficeMarkdownRequest(t, r, "## 你好", "msg-c2c")
+		case "/v2/groups/group-openid/messages":
+			atomic.AddInt32(&groupCalls, 1)
+			assertQQOfficeMarkdownRequest(t, r, "<@member-openid>\n**群回复**", "msg-group")
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	if err := adp.SendMarkdown("user_user-openid|msg_msg-c2c", "## 你好"); err != nil {
+		t.Fatalf("SendMarkdown C2C returned error: %v", err)
+	}
+	if err := adp.SendMarkdown("group_group-openid|msg_msg-group|at_member-openid", "**群回复**"); err != nil {
+		t.Fatalf("SendMarkdown group returned error: %v", err)
+	}
+	if atomic.LoadInt32(&userCalls) != 1 || atomic.LoadInt32(&groupCalls) != 1 {
+		t.Fatalf("userCalls=%d groupCalls=%d, expected 1/1", userCalls, groupCalls)
+	}
+}
+
+func TestQQOfficeSendMarkdownDMSFallsBackToText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/dms/guild123/messages":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body failed: %v", err)
+			}
+			if body["content"] != "标题" || body["msg_id"] != "msg456" {
+				t.Fatalf("body = %#v", body)
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	if err := adp.SendMarkdown("dms_guild123|msg_msg456", "## 标题"); err != nil {
+		t.Fatalf("SendMarkdown returned error: %v", err)
+	}
+}
+
 func TestQQOfficeSendImageUploadsAndSendsMedia(t *testing.T) {
 	var uploadCalls int32
 	var messageCalls int32
@@ -244,6 +346,100 @@ func TestQQOfficeSendImageUploadsAndSendsMedia(t *testing.T) {
 	}
 }
 
+func TestQQOfficeSendButtonsPostsKeyboard(t *testing.T) {
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/v2/groups/group-openid/messages":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body failed: %v", err)
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	buttons := [][]types.ButtonOption{{{Text: "全部", Value: "0", UserID: "member-openid"}, {Text: "账号1", Value: "1"}}}
+	if err := adp.SendButtons("group_group-openid|msg_msg-group|at_member-openid", "请选择", buttons); err != nil {
+		t.Fatalf("SendButtons returned error: %v", err)
+	}
+	if body["msg_type"] != float64(2) || body["msg_id"] != "msg-group" || body["msg_seq"] != float64(1) {
+		t.Fatalf("body = %#v", body)
+	}
+	markdown := body["markdown"].(map[string]interface{})
+	if markdown["content"] != "<@member-openid>\n请选择" {
+		t.Fatalf("markdown = %#v", markdown)
+	}
+	keyboard := body["keyboard"].(map[string]interface{})
+	content := keyboard["content"].(map[string]interface{})
+	rows := content["rows"].([]interface{})
+	row := rows[0].(map[string]interface{})
+	items := row["buttons"].([]interface{})
+	first := items[0].(map[string]interface{})
+	firstAction := first["action"].(map[string]interface{})
+	firstPermission := firstAction["permission"].(map[string]interface{})
+	if firstAction["type"] != float64(1) || firstAction["data"] != "0" || firstPermission["type"] != float64(0) {
+		t.Fatalf("first button = %#v", first)
+	}
+	users := firstPermission["specify_user_ids"].([]interface{})
+	if len(users) != 1 || users[0] != "member-openid" {
+		t.Fatalf("specify_user_ids = %#v", users)
+	}
+	second := items[1].(map[string]interface{})
+	secondPermission := second["action"].(map[string]interface{})["permission"].(map[string]interface{})
+	if secondPermission["type"] != float64(2) {
+		t.Fatalf("second button = %#v", second)
+	}
+}
+
+func TestQQOfficeHandleInteractionCreateBuildsMessage(t *testing.T) {
+	var ackCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/interactions/interaction-1":
+			ackCalled = true
+			if r.Method != http.MethodPut {
+				t.Fatalf("method = %s", r.Method)
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	got := make(chan *types.Message, 1)
+	adp.SetMessageHandler(func(msg *types.Message) { got <- msg })
+
+	adp.handleDispatch("INTERACTION_CREATE", map[string]interface{}{
+		"id":                  "interaction-1",
+		"group_openid":        "group-openid",
+		"group_member_openid": "member-openid",
+		"data":                map[string]interface{}{"resolved": map[string]interface{}{"button_data": "0", "button_id": "1"}},
+	})
+
+	if !ackCalled {
+		t.Fatalf("interaction ack was not called")
+	}
+	msg := <-got
+	if msg.Platform != "qq_office" || msg.UserID != "member-openid" || msg.GroupID != "group-openid" || msg.Content != "0" {
+		t.Fatalf("message = %+v", msg)
+	}
+	if msg.Metadata["message_type"] != "button" || msg.Metadata["reply_target"] != "group_group-openid|msg_interaction-1|at_member-openid" {
+		t.Fatalf("metadata = %#v", msg.Metadata)
+	}
+}
+
 func TestQQOfficeSendMessagePostsC2CAndGroup(t *testing.T) {
 	var userCalls int32
 	var groupCalls int32
@@ -267,11 +463,29 @@ func TestQQOfficeSendMessagePostsC2CAndGroup(t *testing.T) {
 	if err := adp.SendMessage("user_user-openid|msg_msg-c2c", "你好"); err != nil {
 		t.Fatalf("SendMessage C2C returned error: %v", err)
 	}
-	if err := adp.SendMessage("group_group-openid|msg_msg-group", "群回复"); err != nil {
+	if err := adp.SendMessage("group_group-openid|msg_msg-group|at_member-openid", "群回复"); err != nil {
 		t.Fatalf("SendMessage group returned error: %v", err)
 	}
 	if atomic.LoadInt32(&userCalls) != 1 || atomic.LoadInt32(&groupCalls) != 1 {
 		t.Fatalf("userCalls=%d groupCalls=%d, expected 1/1", userCalls, groupCalls)
+	}
+}
+
+func assertQQOfficeMarkdownRequest(t *testing.T, r *http.Request, content string, msgID string) {
+	t.Helper()
+	if r.Method != http.MethodPost {
+		t.Fatalf("method = %s, expected POST", r.Method)
+	}
+	var body map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Fatalf("decode message body failed: %v", err)
+	}
+	markdown, ok := body["markdown"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("markdown body = %#v", body)
+	}
+	if body["msg_type"] != float64(2) || body["msg_id"] != msgID || body["msg_seq"] != float64(1) || markdown["content"] != content {
+		t.Fatalf("message body = %#v", body)
 	}
 }
 
@@ -299,6 +513,7 @@ func TestQQOfficeParseMessageTarget(t *testing.T) {
 		kind      string
 		id        string
 		messageID string
+		atUser    string
 		wantErr   string
 	}{
 		{name: "dms", target: "dms_guild123", kind: "dms", id: "guild123"},
@@ -306,6 +521,7 @@ func TestQQOfficeParseMessageTarget(t *testing.T) {
 		{name: "raw guild", target: "guild123", kind: "dms", id: "guild123"},
 		{name: "c2c reply", target: "user_user-openid|msg_msg-c2c", kind: "user", id: "user-openid", messageID: "msg-c2c"},
 		{name: "group reply", target: "group_group-openid|msg_msg-group", kind: "group", id: "group-openid", messageID: "msg-group"},
+		{name: "group reply with at", target: "group_group-openid|msg_msg-group|at_member-openid", kind: "group", id: "group-openid", messageID: "msg-group", atUser: "member-openid"},
 		{name: "empty msg", target: "dms_guild123|msg_", wantErr: "msg_id 不能为空"},
 	}
 	for _, tt := range tests {
@@ -320,8 +536,8 @@ func TestQQOfficeParseMessageTarget(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseQQOfficeMessageTarget returned error: %v", err)
 			}
-			if parsed.kind != tt.kind || parsed.id != tt.id || parsed.msgID != tt.messageID {
-				t.Fatalf("target = %+v, expected kind=%q id=%q msgID=%q", parsed, tt.kind, tt.id, tt.messageID)
+			if parsed.kind != tt.kind || parsed.id != tt.id || parsed.msgID != tt.messageID || parsed.atUser != tt.atUser {
+				t.Fatalf("target = %+v, expected kind=%q id=%q msgID=%q atUser=%q", parsed, tt.kind, tt.id, tt.messageID, tt.atUser)
 			}
 		})
 	}
@@ -395,8 +611,81 @@ func TestQQOfficeHandleGroupAtMessageBuildsMessage(t *testing.T) {
 	if msg.Platform != "qq_office" || msg.GroupID != "group-openid" || msg.UserID != "member-openid" || msg.Content != "@bot 查询天气" {
 		t.Fatalf("message = %+v", msg)
 	}
-	if msg.Metadata["message_type"] != "group" || msg.Metadata["reply_target"] != "group_group-openid|msg_msg-group" {
+	if msg.Metadata["message_type"] != "group" || msg.Metadata["reply_target"] != "group_group-openid|msg_msg-group|at_member-openid" || msg.Metadata["qq_office_message_event"] != "GROUP_AT_MESSAGE_CREATE" {
 		t.Fatalf("metadata = %#v", msg.Metadata)
+	}
+	if adp.ReplyTarget(msg) != "group_group-openid|msg_msg-group|at_member-openid" {
+		t.Fatalf("ReplyTarget = %q", adp.ReplyTarget(msg))
+	}
+}
+
+func TestQQOfficeHandleGroupMessageBuildsMessage(t *testing.T) {
+	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
+	got := make(chan *types.Message, 1)
+	adp.SetMessageHandler(func(msg *types.Message) { got <- msg })
+
+	adp.handleDispatch("GROUP_MESSAGE_CREATE", map[string]interface{}{
+		"id":           "msg-group",
+		"group_openid": "group-openid",
+		"content":      "  查询天气  ",
+		"author": map[string]interface{}{
+			"member_openid": "member-openid",
+		},
+	})
+
+	msg := <-got
+	if msg.Platform != "qq_office" || msg.GroupID != "group-openid" || msg.UserID != "member-openid" || msg.Content != "查询天气" {
+		t.Fatalf("message = %+v", msg)
+	}
+	if msg.Metadata["message_type"] != "group" || msg.Metadata["qq_office_event_type"] != "GROUP_MESSAGE_CREATE" || msg.Metadata["qq_office_message_event"] != "GROUP_MESSAGE_CREATE" {
+		t.Fatalf("metadata = %#v", msg.Metadata)
+	}
+	if msg.Metadata["reply_target"] != "group_group-openid|msg_msg-group|at_member-openid" {
+		t.Fatalf("reply_target = %q", msg.Metadata["reply_target"])
+	}
+}
+
+func TestQQOfficeHandleGroupMemberAddBuildsEventMessage(t *testing.T) {
+	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
+	got := make(chan *types.Message, 1)
+	adp.SetMessageHandler(func(msg *types.Message) { got <- msg })
+
+	adp.handleDispatch("GROUP_MEMBER_ADD", map[string]interface{}{
+		"group_openid":  "group-openid",
+		"member_openid": "member-openid",
+		"timestamp":     "123456",
+	})
+
+	msg := <-got
+	if msg.Platform != "qq_office" || msg.GroupID != "group-openid" || msg.UserID != "member-openid" || msg.Content != "GROUP_MEMBER_ADD" {
+		t.Fatalf("message = %+v", msg)
+	}
+	if msg.Metadata["message_type"] != "event" || msg.Metadata["event_name"] != "GROUP_MEMBER_ADD" || msg.Metadata["qq_office_timestamp"] != "123456" {
+		t.Fatalf("metadata = %#v", msg.Metadata)
+	}
+}
+
+func TestQQOfficeHandleGroupMsgReceiveUsesOperator(t *testing.T) {
+	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
+	got := make(chan *types.Message, 1)
+	adp.SetMessageHandler(func(msg *types.Message) { got <- msg })
+
+	adp.handleDispatch("GROUP_MSG_RECEIVE", map[string]interface{}{
+		"group_openid":     "group-openid",
+		"op_member_openid": "operator-openid",
+		"timestamp":        "123456",
+	})
+
+	msg := <-got
+	if msg.UserID != "operator-openid" || msg.Metadata["qq_office_op_member_openid"] != "operator-openid" {
+		t.Fatalf("message = %+v metadata=%#v", msg, msg.Metadata)
+	}
+}
+
+func TestQQOfficeIdentifyIntentsIncludeGroupEvents(t *testing.T) {
+	intents := qqOfficeIntentDirectMessage | qqOfficeIntentGroupMember | qqOfficeIntentGroupAndC2C
+	if intents&qqOfficeIntentGroupMember == 0 || intents&qqOfficeIntentGroupAndC2C == 0 {
+		t.Fatalf("intents = %d", intents)
 	}
 }
 

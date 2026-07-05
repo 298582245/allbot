@@ -29,17 +29,21 @@ type MessageCountSummary struct {
 }
 
 type MessageTotalTrendPoint struct {
-	Label string `json:"label"`
-	Total int64  `json:"total"`
+	Label   string `json:"label"`
+	Total   int64  `json:"total"`
+	Private int64  `json:"private"`
+	Group   int64  `json:"group"`
 }
 
 type MessageTotalTrendSummary struct {
-	Granularity string                   `json:"granularity"`
-	Start       string                   `json:"start"`
-	End         string                   `json:"end"`
-	Labels      []string                 `json:"labels"`
-	Totals      []int64                  `json:"totals"`
-	Points      []MessageTotalTrendPoint `json:"points"`
+	Granularity   string                   `json:"granularity"`
+	Start         string                   `json:"start"`
+	End           string                   `json:"end"`
+	Labels        []string                 `json:"labels"`
+	Totals        []int64                  `json:"totals"`
+	PrivateTotals []int64                  `json:"private_totals"`
+	GroupTotals   []int64                  `json:"group_totals"`
+	Points        []MessageTotalTrendPoint `json:"points"`
 }
 
 func (d *Database) RecordMessageStat(msg *types.Message) error {
@@ -68,13 +72,35 @@ func (d *Database) RecordMessageStat(msg *types.Message) error {
 	if adapterName == "" {
 		adapterName = platform + "#" + adapterID
 	}
+	messageType := normalizeMessageStatType(msg)
 	_, err := d.db.Exec(`
-		INSERT INTO message_stats (stat_date, stat_hour, platform, adapter_id, adapter_name, count, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-		ON CONFLICT(stat_date, stat_hour, platform, adapter_id)
+		INSERT INTO message_stats (stat_date, stat_hour, platform, adapter_id, adapter_name, message_type, count, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		ON CONFLICT(stat_date, stat_hour, platform, adapter_id, message_type)
 		DO UPDATE SET count = count + 1, adapter_name = excluded.adapter_name, updated_at = CURRENT_TIMESTAMP
-	`, now.Format("2006-01-02"), now.Hour(), platform, adapterID, adapterName)
+	`, now.Format("2006-01-02"), now.Hour(), platform, adapterID, adapterName, messageType)
 	return err
+}
+
+func normalizeMessageStatType(msg *types.Message) string {
+	if msg == nil {
+		return "private"
+	}
+	if strings.TrimSpace(msg.GroupID) != "" {
+		return "group"
+	}
+	messageType := ""
+	if msg.Metadata != nil {
+		messageType = strings.ToLower(strings.TrimSpace(msg.Metadata["message_type"]))
+	}
+	switch messageType {
+	case "group", "supergroup", "channel", "guild", "room", "conversation":
+		return "group"
+	case "private", "c2c", "dms", "direct", "user", "event":
+		return "private"
+	default:
+		return "private"
+	}
 }
 
 func (d *Database) GetMessageCountSummary() (MessageCountSummary, error) {
@@ -174,32 +200,50 @@ func (d *Database) queryMonthlyMessageTotalTrend(start, end string) (*MessageTot
 }
 
 func (d *Database) queryMessageTotalTrend(granularity string, labels []string, dateExpr string) (*MessageTotalTrendSummary, error) {
-	result := &MessageTotalTrendSummary{Granularity: granularity, Labels: labels, Totals: make([]int64, len(labels)), Points: make([]MessageTotalTrendPoint, 0, len(labels))}
+	result := &MessageTotalTrendSummary{
+		Granularity:   granularity,
+		Labels:        labels,
+		Totals:        make([]int64, len(labels)),
+		PrivateTotals: make([]int64, len(labels)),
+		GroupTotals:   make([]int64, len(labels)),
+		Points:        make([]MessageTotalTrendPoint, 0, len(labels)),
+	}
 	if len(labels) == 0 {
 		return result, nil
 	}
 	result.Start = labels[0]
 	result.End = labels[len(labels)-1]
-	rows, err := d.db.Query(`SELECT `+dateExpr+`, COALESCE(SUM(count), 0) FROM message_stats WHERE `+dateExpr+` BETWEEN ? AND ? GROUP BY `+dateExpr+` ORDER BY `+dateExpr, result.Start, result.End)
+	rows, err := d.db.Query(`SELECT `+dateExpr+`, COALESCE(NULLIF(message_type, ''), 'private'), COALESCE(SUM(count), 0) FROM message_stats WHERE `+dateExpr+` BETWEEN ? AND ? GROUP BY `+dateExpr+`, message_type ORDER BY `+dateExpr, result.Start, result.End)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	counts := map[string]int64{}
+	privateCounts := map[string]int64{}
+	groupCounts := map[string]int64{}
 	for rows.Next() {
 		var label string
+		var messageType string
 		var total int64
-		if err := rows.Scan(&label, &total); err != nil {
+		if err := rows.Scan(&label, &messageType, &total); err != nil {
 			return nil, err
 		}
-		counts[label] = total
+		if messageType == "group" {
+			groupCounts[label] += total
+		} else {
+			privateCounts[label] += total
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	for index, label := range labels {
-		result.Totals[index] = counts[label]
-		result.Points = append(result.Points, MessageTotalTrendPoint{Label: label, Total: counts[label]})
+		privateTotal := privateCounts[label]
+		groupTotal := groupCounts[label]
+		total := privateTotal + groupTotal
+		result.PrivateTotals[index] = privateTotal
+		result.GroupTotals[index] = groupTotal
+		result.Totals[index] = total
+		result.Points = append(result.Points, MessageTotalTrendPoint{Label: label, Total: total, Private: privateTotal, Group: groupTotal})
 	}
 	return result, nil
 }
@@ -258,11 +302,11 @@ func (d *Database) normalizeLegacyMessageStats() error {
 			adapterName = platform + "#" + adapterID
 		}
 		if _, err := d.db.Exec(`
-			INSERT INTO message_stats (stat_date, stat_hour, platform, adapter_id, adapter_name, count, created_at, updated_at)
-			SELECT stat_date, stat_hour, platform, ?, ?, count, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+			INSERT INTO message_stats (stat_date, stat_hour, platform, adapter_id, adapter_name, message_type, count, created_at, updated_at)
+			SELECT stat_date, stat_hour, platform, ?, ?, message_type, count, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 			FROM message_stats
 			WHERE platform = ? AND adapter_id = ?
-			ON CONFLICT(stat_date, stat_hour, platform, adapter_id)
+			ON CONFLICT(stat_date, stat_hour, platform, adapter_id, message_type)
 			DO UPDATE SET count = count + excluded.count, adapter_name = excluded.adapter_name, updated_at = CURRENT_TIMESTAMP
 		`, adapterID, adapterName, platform, platform); err != nil {
 			return err

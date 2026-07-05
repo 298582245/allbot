@@ -4,15 +4,23 @@
       <template #header>
         <div class="page-header">
           <div>
-            <h2>运行环境</h2>
-            <p>维护多个 Node.js/Python 解释器，支持手动路径和项目内自动下载托管。</p>
+            <div class="title-row">
+              <span class="title">运行环境</span>
+              <el-button class="mobile-info-button" type="primary" link aria-label="查看运行环境说明" @click="showPageDescription">
+                <el-icon><InfoFilled /></el-icon>
+              </el-button>
+            </div>
+            <div class="subtitle">{{ pageDescription }}</div>
           </div>
-          <el-button type="primary" @click="openDialog()">新增环境</el-button>
+          <div class="header-actions">
+            <el-button @click="openDownloadSettings">下载设置</el-button>
+            <el-button type="primary" @click="openDialog()">新增环境</el-button>
+          </div>
         </div>
       </template>
 
       <div class="table-area desktop-table" v-loading="loading">
-        <el-table :data="profiles" border height="100%" empty-text="暂无运行环境">
+        <el-table :data="paginatedProfiles" border height="100%" empty-text="暂无运行环境">
           <el-table-column prop="id" label="ID" width="150" />
           <el-table-column prop="name" label="名称" min-width="150" />
           <el-table-column label="运行时" width="100">
@@ -64,7 +72,7 @@
 
       <div class="mobile-profile-list" v-loading="loading">
         <el-empty v-if="profiles.length === 0" description="暂无运行环境" />
-        <div v-for="(row, index) in profiles" :key="row.id" class="mobile-profile-card">
+        <div v-for="(row, index) in paginatedProfiles" :key="row.id" class="mobile-profile-card">
           <div class="mobile-card-header">
             <div class="mobile-title">
               <span>{{ row.name || row.id }}</span>
@@ -114,6 +122,12 @@
           </div>
         </div>
       </div>
+
+      <StdPagination
+        v-model:current-page="currentPage"
+        :page-size="pageSize"
+        :total="filteredProfiles.length"
+      />
     </el-card>
 
     <el-dialog v-model="dialogVisible" :title="editingIndex >= 0 ? '编辑运行环境' : '新增运行环境'" width="680px">
@@ -141,7 +155,7 @@
         </el-form-item>
         <el-form-item v-if="form.source === 'managed'" label="目标版本" required>
           <el-input v-model="form.requested_version" placeholder="例如 18.20.4、3.10.11" />
-          <div class="field-tip">只填写版本号，下载源由后端固定，安装目录限制在项目 runtime/interpreters。</div>
+          <div class="field-tip">只填写版本号，下载源可在下载设置中配置，安装目录限制在项目 runtime/interpreters。</div>
         </el-form-item>
         <el-form-item label="架构">
           <el-select v-model="form.architecture" style="width: 100%">
@@ -177,19 +191,48 @@
         <el-button type="primary" :loading="saving" @click="saveDialog">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="downloadSettingsVisible" title="运行环境下载设置" width="720px">
+      <el-form :model="downloadSettings" label-width="170px">
+        <el-form-item label="代理地址">
+          <el-input v-model="downloadSettings.proxy_url" placeholder="例如 http://127.0.0.1:7890，留空表示直连或使用系统环境" />
+          <div class="field-tip">如包含用户名密码会明文保存在本地数据库，请仅在可信环境使用。</div>
+        </el-form-item>
+        <el-form-item label="Node.js 镜像">
+          <el-input v-model="downloadSettings.node_mirror_url" placeholder="https://nodejs.org/dist" />
+          <div class="field-tip">示例：https://npmmirror.com/mirrors/node</div>
+        </el-form-item>
+        <el-form-item label="Python 包镜像">
+          <el-input v-model="downloadSettings.python_package_mirror_url" placeholder="https://www.nuget.org/api/v2/package/python" />
+        </el-form-item>
+        <el-form-item label="Python 元数据地址">
+          <el-input v-model="downloadSettings.python_metadata_url" placeholder="https://api.nuget.org/v3/registration5-gz-semver2/python/index.json" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="downloadSettingsVisible = false">取消</el-button>
+        <el-button @click="resetDownloadSettings">恢复默认</el-button>
+        <el-button type="primary" :loading="downloadSettingsSaving" @click="saveDownloadSettingsDialog">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+defineOptions({ name: 'RuntimeProfiles' })
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getLatestRuntimeProfileInitJob, getRuntimeProfileInitJob, getRuntimeProfiles, getRuntimeProfileStatus, initRuntimeProfile, saveRuntimeProfiles, testRuntimeProfile } from '@/api'
+import { InfoFilled } from '@element-plus/icons-vue'
+import { getLatestRuntimeProfileInitJob, getRuntimeDownloadSettings, getRuntimeProfileInitJob, getRuntimeProfiles, getRuntimeProfileStatus, initRuntimeProfile, saveRuntimeDownloadSettings, saveRuntimeProfiles, testRuntimeProfile } from '@/api'
+import StdPagination from '@/components/StdPagination.vue'
 
 const loading = ref(false)
 const saving = ref(false)
 const testingId = ref('')
 const initializingId = ref('')
 const profiles = ref([])
+const currentPage = ref(1)
+const pageSize = 10
 const statuses = ref([])
 const initJobs = ref({})
 const pollTimers = new Map()
@@ -197,9 +240,37 @@ const dialogVisible = ref(false)
 const editingIndex = ref(-1)
 const autoInitialize = ref(true)
 const form = reactive(emptyProfile())
+const downloadSettingsVisible = ref(false)
+const downloadSettingsSaving = ref(false)
+const downloadSettings = reactive(defaultDownloadSettings())
+
+const pageDescription = '维护多个 Node.js/Python 解释器，支持手动路径、项目内自动下载托管，并可配置代理/镜像。'
+const showPageDescription = () => {
+  ElMessageBox.alert(pageDescription, '运行环境说明', { confirmButtonText: '知道了', type: 'info' })
+}
+
+const filteredProfiles = computed(() => profiles.value)
+
+const paginatedProfiles = computed(() => {
+  const start = (currentPage.value - 1) * pageSize
+  return filteredProfiles.value.slice(start, start + pageSize)
+})
 
 function emptyProfile() {
   return { id: '', name: '', runtime: 'nodejs', version: '', executable: '', enabled: true, default: false, description: '', source: 'manual', requested_version: '', architecture: defaultArchitecture() }
+}
+
+function defaultDownloadSettings() {
+  return {
+    proxy_url: '',
+    node_mirror_url: 'https://nodejs.org/dist',
+    python_package_mirror_url: 'https://www.nuget.org/api/v2/package/python',
+    python_metadata_url: 'https://api.nuget.org/v3/registration5-gz-semver2/python/index.json'
+  }
+}
+
+function assignDownloadSettings(settings) {
+  Object.assign(downloadSettings, defaultDownloadSettings(), settings || {})
 }
 
 function defaultArchitecture() {
@@ -212,6 +283,11 @@ function normalizeArchitectureForRuntime() {
 }
 
 watch(() => [form.runtime, form.source], normalizeArchitectureForRuntime)
+
+watch(filteredProfiles, () => {
+  const maxPage = Math.max(1, Math.ceil(filteredProfiles.value.length / pageSize))
+  if (currentPage.value > maxPage) currentPage.value = maxPage
+})
 
 async function loadProfiles() {
   loading.value = true
@@ -238,6 +314,27 @@ function openDialog(row = null, index = -1) {
   editingIndex.value = index
   autoInitialize.value = index < 0
   dialogVisible.value = true
+}
+
+async function openDownloadSettings() {
+  const settings = await getRuntimeDownloadSettings()
+  assignDownloadSettings(settings)
+  downloadSettingsVisible.value = true
+}
+
+function resetDownloadSettings() {
+  assignDownloadSettings(defaultDownloadSettings())
+}
+
+async function saveDownloadSettingsDialog() {
+  downloadSettingsSaving.value = true
+  try {
+    const response = await saveRuntimeDownloadSettings({ ...downloadSettings })
+    assignDownloadSettings(response?.settings)
+    ElMessage.success(response?.message || '保存成功')
+  } finally {
+    downloadSettingsSaving.value = false
+  }
 }
 
 async function saveDialog() {
@@ -467,8 +564,10 @@ onBeforeUnmount(() => {
 .page-card { height: 100%; display: flex; flex-direction: column; }
 .page-card :deep(.el-card__body) { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.page-header h2 { margin: 0 0 6px; }
-.page-header p { margin: 0; color: #909399; }
+.title-row { display: flex; align-items: center; gap: 6px; }
+.title { font-size: 18px; font-weight: 600; }
+.mobile-info-button { display: none; padding: 0; font-size: 16px; }
+.subtitle { margin-top: 6px; color: #909399; font-size: 13px; line-height: 1.5; }
 .table-area { flex: 1; min-height: 0; overflow: hidden; }
 .mobile-profile-list { display: none; }
 .default-tag { margin-left: 6px; }
@@ -480,8 +579,11 @@ onBeforeUnmount(() => {
   .page-card { height: 100%; min-height: 0; }
   .page-card :deep(.el-card__body) { overflow: hidden; }
   .page-header { align-items: flex-start; flex-direction: column; }
-  .page-header p { display: none; }
-  .page-header > .el-button { width: 100%; margin-left: 0; }
+  .title { font-size: 16px; }
+  .mobile-info-button { display: inline-flex; }
+  .subtitle { display: none; }
+  .header-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
+  .header-actions > .el-button { width: 100%; margin-left: 0; }
   .desktop-table { display: none; }
   .mobile-profile-list { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 2px; }
   .mobile-profile-card { padding: 14px; border: 1px solid #ebeef5; border-radius: 12px; background: #fff; }

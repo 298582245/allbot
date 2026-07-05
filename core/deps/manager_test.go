@@ -9,6 +9,64 @@ import (
 	"testing"
 )
 
+func TestValidatePythonDependencyNameAllowsExtras(t *testing.T) {
+	valid := []string{"requests", "qrcode[pil]", "my-package[extra_one,extra.two]"}
+	for _, name := range valid {
+		if err := validatePythonDependencyName(name); err != nil {
+			t.Fatalf("expected %q to be valid, got %v", name, err)
+		}
+	}
+	invalid := []string{"-r", "--upgrade", "../pkg", "https://example.com/pkg.whl", "qrcode[pil] --index-url http://evil", "pkg[]", "pkg[bad extra]"}
+	for _, name := range invalid {
+		if err := validatePythonDependencyName(name); err == nil {
+			t.Fatalf("expected %q to be invalid", name)
+		}
+	}
+}
+
+func TestPythonPackageLookupNameRemovesExtras(t *testing.T) {
+	cases := map[string]string{
+		"qrcode[pil]":                 "qrcode",
+		"my-package[extra_one,extra]": "my-package",
+		"requests":                    "requests",
+	}
+	for input, expected := range cases {
+		if actual := pythonPackageLookupName(input); actual != expected {
+			t.Fatalf("pythonPackageLookupName(%q) = %q, want %q", input, actual, expected)
+		}
+	}
+}
+
+func TestValidateNodeDependencyNameRejectsArgumentsAndPaths(t *testing.T) {
+	valid := []string{"axios", "@scope/pkg", "my-package.name"}
+	for _, name := range valid {
+		if err := validateNodeDependencyName(name); err != nil {
+			t.Fatalf("expected %q to be valid, got %v", name, err)
+		}
+	}
+	invalid := []string{"--save", "../pkg", "http://example.com/pkg.tgz", "@scope/", "scope/pkg", "pkg --registry http://evil"}
+	for _, name := range invalid {
+		if err := validateNodeDependencyName(name); err == nil {
+			t.Fatalf("expected %q to be invalid", name)
+		}
+	}
+}
+
+func TestValidateDependencyVersionRejectsArguments(t *testing.T) {
+	valid := []string{"", "latest", "1.2.3", "^1.2.0", "~1.2.0", "1.0.0-beta.1+build.1"}
+	for _, version := range valid {
+		if err := validateDependencyVersion(version); err != nil {
+			t.Fatalf("expected %q to be valid, got %v", version, err)
+		}
+	}
+	invalid := []string{"1.0.0 --index-url http://evil", "../1.0.0", "https://example.com/pkg"}
+	for _, version := range invalid {
+		if err := validateDependencyVersion(version); err == nil {
+			t.Fatalf("expected %q to be invalid", version)
+		}
+	}
+}
+
 func TestEnsurePythonLatestSkipsWhenRecordedVersionExists(t *testing.T) {
 	runtimeDir := t.TempDir()
 	manager := NewManager(runtimeDir)
@@ -378,6 +436,9 @@ func TestManagedProfileInitializationUsesDownloader(t *testing.T) {
 	if result.Status != "initialized" || !downloader.called {
 		t.Fatalf("unexpected result=%#v downloader=%#v", result, downloader)
 	}
+	if downloader.lastOptions.NodeMirrorURL != "" {
+		t.Fatalf("expected empty default options, got %#v", downloader.lastOptions)
+	}
 	profiles, err := manager.ListRuntimeProfiles()
 	if err != nil {
 		t.Fatal(err)
@@ -387,6 +448,87 @@ func TestManagedProfileInitializationUsesDownloader(t *testing.T) {
 			t.Fatal("托管解释器路径未写回")
 		}
 	}
+}
+
+func TestManagedProfileInitializationPassesDownloadOptions(t *testing.T) {
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node 不可用，跳过托管初始化 mock 测试")
+	}
+	npmPath, err := exec.LookPath("npm")
+	if err != nil {
+		t.Skip("npm 不可用，跳过托管初始化 mock 测试")
+	}
+	runtimeDir := t.TempDir()
+	manager := NewManager(runtimeDir)
+	downloader := &mockRuntimeDownloader{rootDir: runtimeDir, sourceNode: nodePath, sourceNpm: npmPath}
+	manager.setRuntimeDownloader(downloader)
+	if _, err := manager.SaveRuntimeProfiles([]RuntimeProfile{
+		{ID: "node-default", Name: "默认 Node.js", Runtime: "nodejs", Executable: "node", Enabled: true, Default: true},
+		{ID: "managed-node", Name: "Managed Node", Runtime: "nodejs", Source: "managed", RequestedVersion: "18.20.4", Architecture: "win-x64", Enabled: true},
+		{ID: "python-default", Name: "默认 Python", Runtime: "python", Executable: "python", Enabled: true, Default: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	options := RuntimeDownloadOptions{ProxyURL: "http://127.0.0.1:7890", NodeMirrorURL: "https://npmmirror.com/mirrors/node"}
+	if _, err := manager.InitializeRuntimeProfile("managed-node", RuntimeProfileInitOptions{AutoDownload: true, DownloadOptions: options}); err != nil {
+		t.Fatal(err)
+	}
+	if downloader.lastOptions != options {
+		t.Fatalf("expected options %#v, got %#v", options, downloader.lastOptions)
+	}
+}
+
+func TestRuntimeDownloadSpecsUseMirrors(t *testing.T) {
+	downloader := NewHTTPRuntimeDownloader(t.TempDir())
+	nodeSpec, err := downloader.nodeDownloadSpec("18.20.4", "win-x64", RuntimeDownloadOptions{NodeMirrorURL: "https://npmmirror.com/mirrors/node/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeSpec.URL != "https://npmmirror.com/mirrors/node/v18.20.4/node-v18.20.4-win-x64.zip" || nodeSpec.SHA256URL != "https://npmmirror.com/mirrors/node/v18.20.4/SHASUMS256.txt" {
+		t.Fatalf("unexpected node urls: %#v", nodeSpec)
+	}
+	if !containsString(nodeSpec.TrustedHosts, "npmmirror.com") || !containsString(nodeSpec.HashTrustedHosts, "npmmirror.com") {
+		t.Fatalf("node trusted hosts missing mirror: %#v %#v", nodeSpec.TrustedHosts, nodeSpec.HashTrustedHosts)
+	}
+
+	pythonSpec, err := downloader.pythonDownloadSpec("3.10.11", "win-x64", RuntimeDownloadOptions{PythonPackageMirrorURL: "https://mirror.example.com/nuget/python/", PythonMetadataURL: "https://mirror.example.com/nuget/index.json/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pythonSpec.URL != "https://mirror.example.com/nuget/python/3.10.11" || pythonSpec.NuGetIndexURL != "https://mirror.example.com/nuget/index.json" {
+		t.Fatalf("unexpected python urls: %#v", pythonSpec)
+	}
+	if !containsString(pythonSpec.TrustedHosts, "mirror.example.com") || !containsString(pythonSpec.HashTrustedHosts, "mirror.example.com") {
+		t.Fatalf("python trusted hosts missing mirror: %#v %#v", pythonSpec.TrustedHosts, pythonSpec.HashTrustedHosts)
+	}
+}
+
+func TestRuntimeDownloadSpecsKeepDefaultURLs(t *testing.T) {
+	downloader := NewHTTPRuntimeDownloader(t.TempDir())
+	nodeSpec, err := downloader.nodeDownloadSpec("18.20.4", "win-x64", RuntimeDownloadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeSpec.URL != "https://nodejs.org/dist/v18.20.4/node-v18.20.4-win-x64.zip" || nodeSpec.SHA256URL != "https://nodejs.org/dist/v18.20.4/SHASUMS256.txt" {
+		t.Fatalf("unexpected default node urls: %#v", nodeSpec)
+	}
+	pythonSpec, err := downloader.pythonDownloadSpec("3.10.11", "win-x64", RuntimeDownloadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pythonSpec.URL != "https://www.nuget.org/api/v2/package/python/3.10.11" || pythonSpec.NuGetIndexURL != "https://api.nuget.org/v3/registration5-gz-semver2/python/index.json" {
+		t.Fatalf("unexpected default python urls: %#v", pythonSpec)
+	}
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestNodeProfileNpmPathPrefersExecutableDirectory(t *testing.T) {
@@ -446,14 +588,16 @@ func writeZipForTest(path, name string, data []byte) error {
 }
 
 type mockRuntimeDownloader struct {
-	rootDir    string
-	sourceNode string
-	sourceNpm  string
-	called     bool
+	rootDir     string
+	sourceNode  string
+	sourceNpm   string
+	called      bool
+	lastOptions RuntimeDownloadOptions
 }
 
-func (d *mockRuntimeDownloader) EnsureRuntime(runtimeName, version, architecture string, force bool, progress RuntimeProfileInitProgressFunc) (RuntimeDownloadResult, error) {
+func (d *mockRuntimeDownloader) EnsureRuntime(runtimeName, version, architecture string, force bool, options RuntimeDownloadOptions, progress RuntimeProfileInitProgressFunc) (RuntimeDownloadResult, error) {
 	d.called = true
+	d.lastOptions = options
 	reportRuntimeInitProgress(progress, "download", "mock 下载完成", 60)
 	root := filepath.Join(d.rootDir, "mock", runtimeName, version+"-"+architecture)
 	if err := os.MkdirAll(root, 0755); err != nil {

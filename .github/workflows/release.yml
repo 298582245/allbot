@@ -36,6 +36,36 @@ jobs:
           echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
           echo "build_time=${BUILD_TIME}" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare release notes
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          tag = os.environ["TAG"].strip()
+          lines = Path("version.txt").read_text(encoding="utf-8").splitlines()
+          start = None
+          for index, line in enumerate(lines):
+              if line.strip() == f"AllBot {tag}":
+                  start = index
+                  break
+          if start is None:
+              raise SystemExit(f"version.txt missing release notes for {tag}")
+
+          collected = [lines[start].strip()]
+          for line in lines[start + 1:]:
+              stripped = line.strip()
+              if stripped.startswith("AllBot v"):
+                  break
+              collected.append(line.rstrip())
+
+          body = "\n".join(collected).strip() + "\n"
+          Path("release-notes.md").write_text(body, encoding="utf-8")
+          PY
+
       - name: Run tests
         shell: bash
         run: go test ./...
@@ -62,7 +92,7 @@ jobs:
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: AllBot ${{ steps.meta.outputs.tag }}
-          generate_release_notes: true
+          body_path: release-notes.md
           files: |
             dist/allbot-${{ steps.meta.outputs.tag }}-windows-amd64.exe
             dist/allbot-${{ steps.meta.outputs.tag }}-linux-amd64

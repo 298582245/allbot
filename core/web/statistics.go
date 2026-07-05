@@ -17,6 +17,7 @@ type statisticsOverview struct {
 	Images      config.ImageAssetStatsSummary `json:"images"`
 	ScriptTasks config.ScriptRunStatsSummary  `json:"script_tasks"`
 	Backups     statisticsBackupSummary       `json:"backups"`
+	Logs        statisticsLogSummary          `json:"logs"`
 }
 
 type statisticsSystemSummary struct {
@@ -38,6 +39,11 @@ type statisticsBackupSummary struct {
 	NextRunAt      *time.Time         `json:"next_run_at,omitempty"`
 	LastRunAt      *time.Time         `json:"last_run_at,omitempty"`
 	LastError      string             `json:"last_error,omitempty"`
+}
+
+type statisticsLogSummary struct {
+	FileCount      int   `json:"file_count"`
+	TotalSizeBytes int64 `json:"total_size_bytes"`
 }
 
 func (s *Server) handleStatisticsOverview(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +75,7 @@ func (s *Server) handleStatisticsOverview(w http.ResponseWriter, r *http.Request
 		return
 	}
 	summary.Backups = s.statisticsBackupSummary(db)
+	summary.Logs = s.statisticsLogSummary()
 	s.jsonResponse(w, summary)
 }
 
@@ -175,6 +182,22 @@ func (s *Server) statisticsBackupSummary(db *config.Database) statisticsBackupSu
 			latest := file
 			result.Latest = &latest
 		}
+	}
+	return result
+}
+
+func (s *Server) statisticsLogSummary() statisticsLogSummary {
+	result := statisticsLogSummary{}
+	if s.logManager == nil {
+		return result
+	}
+	files, err := s.logManager.ListLogFiles()
+	if err != nil {
+		return result
+	}
+	result.FileCount = len(files)
+	for _, file := range files {
+		result.TotalSizeBytes += file.Size
 	}
 	return result
 }

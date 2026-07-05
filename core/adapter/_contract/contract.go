@@ -39,6 +39,21 @@ type Adapter interface {
 	SetMessageHandler(handler func(*types.Message))
 }
 
+// MarkdownSender 由适配器按自身能力发送 Markdown 消息。
+type MarkdownSender interface {
+	SendMarkdown(target string, markdown string) error
+}
+
+// RichMessageSender 由适配器按自身能力发送富文本消息。
+type RichMessageSender interface {
+	SendRichMessage(target string, message types.RichMessage) error
+}
+
+// ButtonSender 由适配器按自身能力发送按钮消息。
+type ButtonSender interface {
+	SendButtons(target string, text string, buttons [][]types.ButtonOption) error
+}
+
 // ReplyTargetResolver 由适配器按自身目标格式解析回复目标。
 type ReplyTargetResolver interface {
 	ReplyTarget(msg *types.Message) string

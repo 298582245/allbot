@@ -31,6 +31,18 @@ type TelegramAdapter struct {
 	httpClient     *http.Client
 }
 
+type telegramInlineKeyboardButton struct {
+	Text         string `json:"text"`
+	CallbackData string `json:"callback_data"`
+}
+
+type telegramInlineKeyboardMarkup struct {
+	InlineKeyboard [][]telegramInlineKeyboardButton `json:"inline_keyboard"`
+}
+
+const telegramCallbackDataPrefix = "absel:"
+const telegramRestrictedCallbackDataPrefix = "abselu:"
+
 // NewTelegramAdapter 创建 Telegram 适配器
 func NewTelegramAdapter(botToken string, proxyURL string) *TelegramAdapter {
 	// 创建 HTTP 客户端
@@ -93,7 +105,7 @@ func (a *TelegramAdapter) FormatReplyText(msg *types.Message, text string) strin
 	if msg == nil || msg.GroupID == "" {
 		return text
 	}
-	return fmt.Sprintf(`<a href="tg://user?id=%s">%s</a> %s`, htmlEscape(msg.UserID), htmlEscape(telegramMentionName(msg)), htmlEscape(text))
+	return fmt.Sprintf(`<a href="tg://user?id=%s">%s</a> %s`, htmlEscape(msg.UserID), htmlEscape(telegramMentionName(msg)), "\n"+htmlEscape(text))
 }
 
 // SendTarget 按 Telegram chat_id 解析插件主动发送目标。
@@ -198,6 +210,91 @@ func (a *TelegramAdapter) pollUpdates() {
 	}
 }
 
+func (a *TelegramAdapter) handleCallbackQuery(callbackQuery map[string]interface{}) {
+	from, _ := callbackQuery["from"].(map[string]interface{})
+	message, _ := callbackQuery["message"].(map[string]interface{})
+	chat, _ := message["chat"].(map[string]interface{})
+	data, _ := callbackQuery["data"].(string)
+	callbackID, _ := callbackQuery["id"].(string)
+
+	userIDNum, _ := from["id"].(float64)
+	chatIDNum, _ := chat["id"].(float64)
+	messageIDNum, _ := message["message_id"].(float64)
+	userID := fmt.Sprintf("%.0f", userIDNum)
+	chatID := fmt.Sprintf("%.0f", chatIDNum)
+	messageID := fmt.Sprintf("%.0f", messageIDNum)
+	fromName := telegramDisplayName(from)
+	content, allowedUserID := telegramCallbackContent(data)
+	if allowedUserID != "" && allowedUserID != userID {
+		_ = a.answerCallbackQueryWithText(callbackID, "此按钮只能由发起用户使用")
+		return
+	}
+	if callbackID != "" {
+		_ = a.answerCallbackQuery(callbackID)
+	}
+	if content == "" {
+		return
+	}
+
+	log.Printf("[接收][Telegram][%s(回调%s)]：%s", userID, chatID, content)
+	msg := &types.Message{
+		ID:       "callback_" + messageID,
+		Platform: "telegram",
+		UserID:   userID,
+		GroupID:  chatID,
+		Content:  content,
+		Metadata: map[string]string{
+			"chat_id":                chatID,
+			"from_name":              fromName,
+			"telegram_callback_id":   callbackID,
+			"telegram_callback_data": data,
+			"telegram_message_id":    messageID,
+			"telegram_input_source":  "inline_keyboard",
+		},
+	}
+	if chatType, _ := chat["type"].(string); chatType == "private" {
+		msg.GroupID = ""
+	}
+	if a.messageHandler != nil {
+		a.messageHandler(msg)
+	}
+}
+
+func telegramCallbackContent(data string) (string, string) {
+	data = strings.TrimSpace(data)
+	if data == "" {
+		return "", ""
+	}
+	if strings.HasPrefix(data, telegramRestrictedCallbackDataPrefix) {
+		payload := strings.TrimSpace(strings.TrimPrefix(data, telegramRestrictedCallbackDataPrefix))
+		parts := strings.SplitN(payload, ":", 2)
+		if len(parts) != 2 {
+			return "", ""
+		}
+		return strings.TrimSpace(parts[1]), strings.TrimSpace(parts[0])
+	}
+	if !strings.HasPrefix(data, telegramCallbackDataPrefix) {
+		return data, ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(data, telegramCallbackDataPrefix)), ""
+}
+
+func (a *TelegramAdapter) answerCallbackQuery(callbackQueryID string) error {
+	return a.answerCallbackQueryWithText(callbackQueryID, "")
+}
+
+func (a *TelegramAdapter) answerCallbackQueryWithText(callbackQueryID string, text string) error {
+	if strings.TrimSpace(callbackQueryID) == "" {
+		return nil
+	}
+	payload := map[string]interface{}{"callback_query_id": callbackQueryID}
+	if strings.TrimSpace(text) != "" {
+		payload["text"] = strings.TrimSpace(text)
+		payload["show_alert"] = false
+	}
+	return a.callAPI("/answerCallbackQuery", payload)
+}
+
 func (a *TelegramAdapter) waitBeforeRetry(delay time.Duration) bool {
 	select {
 	case <-a.stopChan:
@@ -270,6 +367,11 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 		}
 	}
 
+	if callbackQuery, ok := update["callback_query"].(map[string]interface{}); ok {
+		a.handleCallbackQuery(callbackQuery)
+		return
+	}
+
 	// 处理消息
 	message, ok := update["message"].(map[string]interface{})
 	if !ok {
@@ -336,7 +438,7 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 func normalizeTelegramCommandText(text string, message map[string]interface{}) string {
 	entities, ok := message["entities"].([]interface{})
 	if !ok {
-		return text
+		return normalizeTelegramSlashPrefix(text)
 	}
 
 	for _, item := range entities {
@@ -368,7 +470,27 @@ func normalizeTelegramCommandText(text string, message map[string]interface{}) s
 		return strings.TrimSpace(command + text[commandEnd:])
 	}
 
-	return text
+	return normalizeTelegramSlashPrefix(text)
+}
+
+func normalizeTelegramSlashPrefix(text string) string {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "/") {
+		return text
+	}
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return text
+	}
+	command := strings.TrimPrefix(fields[0], "/")
+	if atIndex := strings.Index(command, "@"); atIndex >= 0 {
+		command = command[:atIndex]
+	}
+	if command == "" {
+		return text
+	}
+	fields[0] = command
+	return strings.Join(fields, " ")
 }
 
 func telegramDisplayName(from map[string]interface{}) string {
@@ -403,29 +525,83 @@ func htmlEscape(value string) string {
 }
 
 func (a *TelegramAdapter) SendMessage(target string, text string) error {
-	// Telegram API要求chat_id是数字类型，需要转换
-	var chatID interface{}
-
-	// 尝试将字符串转换为int64
-	if id, err := strconv.ParseInt(target, 10, 64); err == nil {
-		chatID = id
-	} else {
-		// 如果转换失败，保持字符串（用于username）
-		chatID = target
-	}
-
 	data := map[string]interface{}{
-		"chat_id": chatID,
+		"chat_id": telegramChatID(target),
 		"text":    text,
 	}
 	if strings.Contains(text, "tg://user?id=") {
 		data["parse_mode"] = "HTML"
 	}
-
-	// 发送前记录日志
 	log.Printf("[发送][Telegram][%s]：%s", target, text)
-
 	return a.callAPI("/sendMessage", data)
+}
+
+func (a *TelegramAdapter) SendMarkdown(target string, markdown string) error {
+	markdown = strings.TrimSpace(markdown)
+	if markdown == "" {
+		return fmt.Errorf("Telegram Markdown 内容不能为空")
+	}
+	data := map[string]interface{}{
+		"chat_id":    telegramChatID(target),
+		"text":       markdown,
+		"parse_mode": "Markdown",
+	}
+	log.Printf("[发送][Telegram][%s]：[Markdown] %s", target, markdown)
+	if err := a.callAPI("/sendMessage", data); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "can't parse entities") {
+			return a.SendMessage(target, utils.MarkdownToPlainText(markdown))
+		}
+		return err
+	}
+	return nil
+}
+
+func (a *TelegramAdapter) SendButtons(target string, text string, buttons [][]types.ButtonOption) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("Telegram 按钮消息内容不能为空")
+	}
+	markup := telegramInlineKeyboardMarkup{InlineKeyboard: telegramButtonsToInlineKeyboard(buttons)}
+	data := map[string]interface{}{
+		"chat_id":      telegramChatID(target),
+		"text":         text,
+		"reply_markup": markup,
+	}
+	log.Printf("[发送][Telegram][%s]：[Buttons] %s", target, text)
+	return a.callAPI("/sendMessage", data)
+}
+
+func telegramButtonsToInlineKeyboard(buttons [][]types.ButtonOption) [][]telegramInlineKeyboardButton {
+	rows := make([][]telegramInlineKeyboardButton, 0, len(buttons))
+	for _, row := range buttons {
+		if len(row) == 0 {
+			continue
+		}
+		inlineRow := make([]telegramInlineKeyboardButton, 0, len(row))
+		for _, item := range row {
+			text := strings.TrimSpace(item.Text)
+			value := strings.TrimSpace(item.Value)
+			if text == "" || value == "" {
+				continue
+			}
+			callbackData := telegramCallbackDataPrefix + value
+			if userID := strings.TrimSpace(item.UserID); userID != "" {
+				callbackData = telegramRestrictedCallbackDataPrefix + userID + ":" + value
+			}
+			inlineRow = append(inlineRow, telegramInlineKeyboardButton{Text: text, CallbackData: callbackData})
+		}
+		if len(inlineRow) > 0 {
+			rows = append(rows, inlineRow)
+		}
+	}
+	return rows
+}
+
+func telegramChatID(target string) interface{} {
+	if id, err := strconv.ParseInt(target, 10, 64); err == nil {
+		return id
+	}
+	return target
 }
 
 // SendImage 发送图片

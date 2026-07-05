@@ -155,12 +155,16 @@ class AccountQLPlugin {
     const accounts = await helpers.listMine();
     if (!accounts.length) return ctx.reply(`暂无账号，请发送【${this.prefix}登录】添加。`);
     const lines = accounts.map((item, index) => `${index + 1}. ${this.accountName(item)}｜${formatAuthStatus(accountExpiresAt(item))}｜${maskValue(item.env_value)}｜${item.status || 'active'}`);
-    await ctx.reply(`=====${this.prefix}账号管理=====\n${lines.join('\n')}\n------------------\n回复序号可操作账号，回复 q 退出：`);
+    await this.sendButtons(ctx, `=====${this.prefix}账号管理=====\n${lines.join('\n')}\n------------------\n回复序号可操作账号，回复 q 退出：`, this.accountChoiceButtons(accounts));
     const choice = String(await ctx.listen(60)).trim().toLowerCase();
     if (choice === 'q') return ctx.reply('已退出账号管理');
     const account = accounts[Number(choice) - 1];
     if (!account) return ctx.reply('❌账号序号错误');
-    await ctx.reply(`当前账号：${this.accountName(account)}\n[1] 授权账号\n[2] 删除账号\n[3] 运行当前账号\n回复 q 退出：`);
+    await this.sendButtons(ctx, `当前账号：${this.accountName(account)}\n[1] 授权账号\n[2] 删除账号\n[3] 运行当前账号\n回复 q 退出：`, [
+      [this.userButton(ctx, '授权账号', '1'), this.userButton(ctx, '运行当前账号', '3')],
+      [this.userButton(ctx, '删除账号', '2')],
+      [this.userButton(ctx, '退出', 'q')]
+    ]);
     const action = String(await ctx.listen(60)).trim().toLowerCase();
     if (action === '1') return this.authorizeAccount(ctx, account);
     if (action === '2') return this.deleteAccount(ctx, account);
@@ -171,7 +175,7 @@ class AccountQLPlugin {
   async deleteByMenu(ctx, helpers) {
     const accounts = await helpers.listMine();
     if (!accounts.length) return ctx.reply('暂无账号可删除。');
-    await ctx.reply(`请选择要删除的账号：\n${accounts.map((item, index) => `${index + 1}. ${this.accountName(item)}`).join('\n')}\n回复 q 退出：`);
+    await this.sendButtons(ctx, `请选择要删除的账号：\n${accounts.map((item, index) => `${index + 1}. ${this.accountName(item)}`).join('\n')}\n回复 q 退出：`, this.accountChoiceButtons(accounts));
     const choice = String(await ctx.listen(60)).trim().toLowerCase();
     if (choice === 'q') return ctx.reply('已取消删除');
     const account = accounts[Number(choice) - 1];
@@ -180,7 +184,7 @@ class AccountQLPlugin {
   }
 
   async deleteAccount(ctx, account) {
-    await ctx.reply(`确认删除账号【${this.accountName(account)}】吗？回复 y 确认：`);
+    await this.sendButtons(ctx, `确认删除账号【${this.accountName(account)}】吗？回复 y 确认：`, [[this.userButton(ctx, '确认删除', 'y')], [this.userButton(ctx, '取消', 'q')]]);
     const confirm = String(await ctx.listen(30)).trim().toLowerCase();
     if (confirm !== 'y') return ctx.reply('已取消删除');
     await this.store(ctx).delete(account.id);
@@ -191,7 +195,7 @@ class AccountQLPlugin {
     const accounts = await helpers.listMine();
     if (!accounts.length) return ctx.reply(`暂无账号，请先发送【${this.prefix}登录】添加。`);
     if (accounts.length === 1) return this.authorizeAccount(ctx, accounts[0]);
-    await ctx.reply(`请选择要授权的账号：\n${accounts.map((item, index) => `${index + 1}. ${this.accountName(item)}｜${formatAuthStatus(accountExpiresAt(item))}`).join('\n')}`);
+    await this.sendButtons(ctx, `请选择要授权的账号：\n${accounts.map((item, index) => `${index + 1}. ${this.accountName(item)}｜${formatAuthStatus(accountExpiresAt(item))}`).join('\n')}`, this.accountChoiceButtons(accounts));
     const choice = Number(String(await ctx.listen(60)).trim());
     const account = accounts[choice - 1];
     if (!account) return ctx.reply('❌账号序号错误');
@@ -208,7 +212,7 @@ class AccountQLPlugin {
         ? await provider.authorize(ctx, account, months)
         : provider.type === 'builtin_payment'
           ? await authorizeByBuiltinPayment(ctx, account, months, provider, this)
-          : await authorizeByBuiltinPoints(ctx, account, months, provider);
+          : await authorizeByBuiltinPoints(ctx, account, months, provider, this);
     } catch (error) {
       return ctx.reply(error.message || '授权失败');
     }
@@ -230,7 +234,7 @@ class AccountQLPlugin {
 
   async askMonths(ctx, provider, account) {
     const quote = typeof provider.quote === 'function' ? await provider.quote(ctx, account) : builtinQuote(ctx, provider);
-    await ctx.reply(`请输入授权月数（必须大于 0）${quote.description ? `（${quote.description}）` : ''}：`);
+    await this.sendButtons(ctx, `请输入授权月数（必须大于 0）${quote.description ? `（${quote.description}）` : ''}：`, [[this.userButton(ctx, '1个月', '1'), this.userButton(ctx, '3个月', '3'), this.userButton(ctx, '12个月', '12')], [this.userButton(ctx, '取消', 'q')]]);
     const months = Number(String(await ctx.listen(60)).trim() || '0');
     if (!Number.isFinite(months) || months <= 0) {
       await ctx.reply('❌授权月数必须大于 0');
@@ -248,6 +252,45 @@ class AccountQLPlugin {
     return this.replyAccountQueries(ctx, selected.accounts, `${this.prefix}账号查询结果：`, { separate: selected.all });
   }
 
+  supportsButtons(ctx) {
+    return ctx && ['telegram', 'qq_office'].includes(ctx.platform) && typeof ctx.sendButtons === 'function';
+  }
+
+  buildQuerySelectionButtons(pageAccounts, start, totalPages, page, userId = '') {
+    const restrictUserId = String(userId || '').trim();
+    const button = (text, value) => {
+      const item = { text, value };
+      if (restrictUserId) item.user_id = restrictUserId;
+      return item;
+    };
+    const rows = [[button('[0] 全部查询', '0')]];
+    for (let index = 0; index < pageAccounts.length; index += 4) {
+      rows.push(pageAccounts.slice(index, index + 4).map((account, offset) => {
+        const number = start + index + offset + 1;
+        return button(`[${number}] ${this.accountName(account)}`, String(number));
+      }));
+    }
+    if (totalPages > 1) {
+      rows.push([
+        button('上一页', 'p'),
+        button(`第 ${page + 1}/${totalPages} 页`, 'page'),
+        button('下一页', 'n')
+      ]);
+      rows.push([button('退出', 'q')]);
+    } else {
+      rows.push([button('退出', 'q')]);
+    }
+    return rows;
+  }
+
+  async sendQuerySelectionPrompt(ctx, text, buttons) {
+    if (this.supportsButtons(ctx)) {
+      await ctx.sendButtons(text, buttons);
+      return;
+    }
+    await ctx.reply(text);
+  }
+
   async selectAccountsForQuery(ctx, accounts) {
     const pageSize = 20;
     const totalPages = Math.ceil(accounts.length / pageSize);
@@ -258,10 +301,13 @@ class AccountQLPlugin {
       const lines = ['请输入要查询的账号：', '[0] 全部查询', '--------------------'];
       pageAccounts.forEach((account, index) => lines.push(`[${start + index + 1}] ${this.accountName(account)}`));
       if (totalPages > 1) lines.push('--------------------', `第 ${page + 1}/${totalPages} 页，回复 n 下一页，p 上一页，q 退出`);
-      await ctx.reply(lines.join('\n'));
+      await this.sendQuerySelectionPrompt(ctx, lines.join('\n'), this.buildQuerySelectionButtons(pageAccounts, start, totalPages, page, ctx.userId || ctx.user_id));
       const choice = String(await ctx.listen(60)).trim().toLowerCase();
       if (!choice || choice === 'q') return null;
       if (choice === '0') return { all: true, accounts };
+      if (choice === 'page') {
+        continue;
+      }
       if (totalPages > 1 && choice === 'n') {
         page = (page + 1) % totalPages;
         continue;
@@ -277,6 +323,27 @@ class AccountQLPlugin {
       }
       return { all: false, accounts: [account] };
     }
+  }
+
+  async sendButtons(ctx, text, buttons) {
+    if (typeof ctx.sendButtons === 'function') return ctx.sendButtons(text, buttons);
+    return ctx.reply(text);
+  }
+
+  userButton(ctx, text, value) {
+    const button = { text, value };
+    const userId = ctx.userId || ctx.user_id || '';
+    if (userId) button.user_id = userId;
+    return button;
+  }
+
+  accountChoiceButtons(accounts) {
+    const rows = [];
+    for (let index = 0; index < accounts.length; index += 4) {
+      rows.push(accounts.slice(index, index + 4).map((account, offset) => ({ text: `${index + offset + 1}. ${short(this.accountName(account), 12)}`, value: String(index + offset + 1) })));
+    }
+    rows.push([{ text: '退出', value: 'q' }]);
+    return rows;
   }
 
   async replyAccountQueries(ctx, accounts, title, options = {}) {
@@ -593,11 +660,11 @@ function builtinQuote(ctx, provider) {
   return { price, unit, description: price > 0 ? `${price}${unit}/月` : '免费' };
 }
 
-async function authorizeByBuiltinPoints(ctx, account, months, provider) {
+async function authorizeByBuiltinPoints(ctx, account, months, provider, plugin) {
   const quote = builtinQuote(ctx, provider);
   const totalCost = quote.price * months;
   if (totalCost > 0) {
-    await ctx.reply(`本次授权需要扣除 ${totalCost}${quote.unit}，当前 ${ctx.points}${quote.unit}，回复 y 确认：`);
+    await plugin.sendButtons(ctx, `本次授权需要扣除 ${totalCost}${quote.unit}，当前 ${ctx.points}${quote.unit}，回复 y 确认：`, [[plugin.userButton(ctx, '确认授权', 'y')], [plugin.userButton(ctx, '取消', 'q')]]);
     const confirm = String(await ctx.listen(30)).trim().toLowerCase();
     if (confirm !== 'y') throw new Error('已取消授权');
     await ctx.consumePoints(totalCost);
@@ -686,6 +753,7 @@ function formatAuthStatus(expiresAt) { if (!expiresAt) return '未授权'; retur
 function formatTime(value) { const date = value instanceof Date ? value : new Date(value); return Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', { hour12: false }) : String(value || '无'); }
 function formatDurationSeconds(ms) { const seconds = Math.max(0, Number(ms) || 0) / 1000; return `${seconds.toFixed(3)}秒`; }
 function maskValue(value) { const text = String(value || ''); return text.length <= 12 ? (text ? `${text.slice(0, 4)}****` : '空') : `${text.slice(0, 6)}****${text.slice(-4)}`; }
+function short(value, max) { const text = String(value || ''); return text.length > max ? `${text.slice(0, max)}…` : text; }
 function parseDays(value) { return (Array.isArray(value) ? value : String(value || '').split(',')).map((item) => Number(String(item).trim())).filter((item) => Number.isFinite(item)); }
 function normalizeDateTime(value) { if (!value) return ''; const date = value instanceof Date ? value : new Date(value); return Number.isFinite(date.getTime()) ? date.toISOString() : String(value); }
 function isValidEnvName(name) { return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name); }

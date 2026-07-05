@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/allbot/allbot/core/config"
+	"github.com/allbot/allbot/core/types"
 )
 
 const (
@@ -43,10 +44,12 @@ type WaitPayRequest struct {
 }
 
 type Interaction struct {
-	Reply       func(string) error
-	SendImage   func(string) error
-	Listen      func(timeout int) string
-	ListenUntil func(timeout int, done <-chan struct{}) string
+	Reply        func(string) error
+	ReplyButtons func(string, [][]types.ButtonOption) error
+	SendImage    func(string) error
+	SendRich     func(types.RichMessage) error
+	Listen       func(timeout int) string
+	ListenUntil  func(timeout int, done <-chan struct{}) string
 }
 
 type PaymentResult struct {
@@ -218,8 +221,13 @@ func (s *Service) WaitPay(req WaitPayRequest, io Interaction) (PaymentResult, er
 	if err != nil {
 		return PaymentResult{Status: "failed", Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, Message: err.Error()}, err
 	}
-	if io.Reply != nil {
-		if err = io.Reply(paymentPrompt(req.PromptTitle, amountCents, pointsAmount, currencyUnit, req.PointsUnit, methods, req.Timeout, pointsBalance)); err != nil {
+	prompt := paymentPrompt(req.PromptTitle, amountCents, pointsAmount, currencyUnit, req.PointsUnit, methods, req.Timeout, pointsBalance)
+	if io.ReplyButtons != nil {
+		if err = io.ReplyButtons(prompt, paymentMethodButtons(methods, req.PointsUnit, pointsBalance, req.UserID)); err != nil {
+			return PaymentResult{Status: "failed", Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, Message: err.Error()}, err
+		}
+	} else if io.Reply != nil {
+		if err = io.Reply(prompt); err != nil {
 			return PaymentResult{Status: "failed", Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, Message: err.Error()}, err
 		}
 	}
@@ -309,10 +317,8 @@ func (s *Service) waitEpay(req WaitPayRequest, settings config.PaymentSettings, 
 		return PaymentResult{Status: "failed", OrderNo: order.OrderNo, Provider: "epay", Method: method.Code, Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, Message: err.Error()}, err
 	}
 	initial := PaymentResult{Status: "pending", OrderNo: order.OrderNo, Provider: "epay", Method: method.Code, Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, PayURL: providerOrder.PayURL, QRCode: providerOrder.QRCode, ProviderOrderNo: providerOrder.ProviderOrderNo, Message: "等待支付"}
-	if io.Reply != nil {
-		_ = io.Reply(epayPaymentMessage(initial, method, settings.HidePayURL, paymentCurrencyUnit(settings)))
-	}
-	if err = sendEpayQRCodeImage(paymentQRCodePublicBaseURL(settings, returnURL), initial, io); err != nil {
+	baseURL := paymentQRCodePublicBaseURL(settings, returnURL)
+	if err = sendEpayPaymentInfo(baseURL, initial, method, settings.HidePayURL, paymentCurrencyUnit(settings), io); err != nil {
 		log.Printf("[PAYMENT] Send epay qrcode image failed: order=%s err=%v", order.OrderNo, err)
 		if settings.HidePayURL {
 			message := "二维码图片发送失败，请稍后重试"
@@ -504,6 +510,26 @@ func paymentPrompt(promptTitle string, amountCents, pointsAmount int64, currency
 	return strings.Join(lines, "\n")
 }
 
+func paymentMethodButtons(methods []config.PaymentMethodSetting, pointsUnit string, pointsBalance int64, userID string) [][]types.ButtonOption {
+	pointsUnit = strings.TrimSpace(pointsUnit)
+	if pointsUnit == "" {
+		pointsUnit = "积分"
+	}
+	rows := make([][]types.ButtonOption, 0, len(methods)+1)
+	for i, method := range methods {
+		label := strings.TrimSpace(method.Label)
+		if label == "" {
+			label = strings.TrimSpace(method.Code)
+		}
+		if strings.EqualFold(strings.TrimSpace(method.Provider), providerPoints) {
+			label = fmt.Sprintf("%s（剩余%s：%d）", label, pointsUnit, pointsBalance)
+		}
+		rows = append(rows, []types.ButtonOption{{Text: label, Value: fmt.Sprintf("%d", i+1), UserID: userID}})
+	}
+	rows = append(rows, []types.ButtonOption{{Text: "取消", Value: "q", UserID: userID}})
+	return rows
+}
+
 func epayPaymentMessage(result PaymentResult, method config.PaymentMethodSetting, hidePayURL bool, currencyUnit string) string {
 	label := strings.TrimSpace(method.Label)
 	if label == "" {
@@ -525,14 +551,45 @@ func epayPaymentMessage(result PaymentResult, method config.PaymentMethodSetting
 	return strings.Join(lines, "\n")
 }
 
-func sendEpayQRCodeImage(baseURL string, result PaymentResult, io Interaction) error {
+func sendEpayPaymentInfo(baseURL string, result PaymentResult, method config.PaymentMethodSetting, hidePayURL bool, currencyUnit string, io Interaction) error {
+	message := epayPaymentMessage(result, method, hidePayURL, currencyUnit)
+	imageURL, err := epayQRCodeImageURL(baseURL, result)
+	if err != nil {
+		if io.Reply != nil {
+			_ = io.Reply(message)
+		}
+		return err
+	}
+	if io.SendRich != nil {
+		if err := io.SendRich(types.RichMessage{Parts: []types.RichMessagePart{{Type: "text", Text: message + "\n"}, {Type: "image", URL: imageURL, Alt: "支付二维码"}}, FallbackText: message, Prefer: "auto"}); err == nil {
+			return nil
+		}
+	}
+	if io.Reply != nil {
+		_ = io.Reply(message)
+	}
+	if io.SendImage == nil {
+		return fmt.Errorf("适配器不支持发送图片")
+	}
+	return io.SendImage(imageURL)
+}
+
+func epayQRCodeImageURL(baseURL string, result PaymentResult) (string, error) {
 	content := strings.TrimSpace(result.QRCode)
 	if content == "" {
 		content = strings.TrimSpace(result.PayURL)
 	}
 	imageURL := PaymentQRCodeURL(baseURL, result.OrderNo, content)
 	if imageURL == "" {
-		return fmt.Errorf("二维码图片地址生成失败")
+		return "", fmt.Errorf("二维码图片地址生成失败")
+	}
+	return imageURL, nil
+}
+
+func sendEpayQRCodeImage(baseURL string, result PaymentResult, io Interaction) error {
+	imageURL, err := epayQRCodeImageURL(baseURL, result)
+	if err != nil {
+		return err
 	}
 	if io.SendImage == nil {
 		return fmt.Errorf("适配器不支持发送图片")

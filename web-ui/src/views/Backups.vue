@@ -5,15 +5,17 @@
         <div class="page-header">
           <div>
             <div class="title-row">
-              <h2>备份中心</h2>
+              <span class="title">备份中心</span>
               <el-button class="mobile-info-button" type="primary" link aria-label="查看备份中心说明" @click="showPageDescription">
                 <el-icon><InfoFilled /></el-icon>
               </el-button>
             </div>
-            <p>{{ pageDescription }}</p>
+            <div class="subtitle">{{ pageDescription }}</div>
           </div>
           <div class="header-actions">
+            <input ref="fileInput" class="hidden-file-input" type="file" accept=".zip,application/zip" @change="handleImportFileChange" />
             <el-button :loading="loading" @click="loadOverview">刷新</el-button>
+            <el-button :loading="importing" @click="openImportPicker">导入备份</el-button>
             <el-button type="primary" :loading="creating" @click="handleCreateBackup">立即备份</el-button>
           </div>
         </div>
@@ -26,7 +28,6 @@
               <div class="section-title">备份配置</div>
               <div class="section-desc">定时表达式支持 5 位或 6 位 cron，路径按当前系统自动处理。</div>
             </div>
-            <el-button type="primary" :loading="saving" @click="handleSaveSettings">保存配置</el-button>
           </div>
 
           <el-form class="backup-form" :model="form" label-width="120px">
@@ -87,33 +88,78 @@
             <el-table-column label="创建时间" width="190">
               <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="180" fixed="right">
+            <el-table-column label="操作" width="220" fixed="right">
               <template #default="{ row }">
+                <el-button type="primary" link :disabled="restoring" @click="openRestoreDialog(row)">恢复</el-button>
                 <el-button type="primary" link @click="downloadBackup(row)">下载</el-button>
-                <el-button type="danger" link @click="handleDeleteBackup(row)">删除</el-button>
+                <el-button type="danger" link :disabled="restoring || importing" @click="handleDeleteBackup(row)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
         </section>
       </div>
+
+      <div class="form-actions">
+        <el-button type="primary" :loading="saving" @click="handleSaveSettings">保存配置</el-button>
+      </div>
     </el-card>
+
+    <el-dialog v-model="importSummaryVisible" title="备份导入成功" width="520px">
+      <div v-if="importResult" class="summary-panel">
+        <div class="summary-row"><span>备份包名</span><strong>{{ importResult.file?.name || '-' }}</strong></div>
+        <div class="summary-row"><span>原始创建时间</span><strong>{{ formatTime(importResult.manifest?.created_at) }}</strong></div>
+        <div class="summary-row"><span>包含内容</span><strong>{{ formatSummaryIncludes(importResult.summary) }}</strong></div>
+        <div class="summary-row"><span>文件数量</span><strong>{{ importResult.summary?.file_count || 0 }} 个</strong></div>
+        <div class="summary-row"><span>解压大小</span><strong>{{ formatSize(importResult.summary?.total_size) }}</strong></div>
+        <el-alert v-if="importResult.warnings?.length" class="summary-alert" type="warning" :closable="false" :title="importResult.warnings.join('；')" />
+      </div>
+      <template #footer>
+        <el-button type="primary" @click="importSummaryVisible = false">知道了</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="restoreDialogVisible" title="恢复备份" width="560px" :close-on-click-modal="!restoring">
+      <div v-if="selectedBackup" class="restore-panel">
+        <el-alert type="warning" :closable="false" title="恢复会覆盖当前选择的数据。系统会先创建当前环境快照，恢复完成后需要重启 AllBot。" />
+        <div class="restore-name">{{ selectedBackup.name }}</div>
+        <el-checkbox v-model="restoreForm.include_data">恢复数据库配置</el-checkbox>
+        <el-checkbox v-model="restoreForm.include_plugins">恢复插件目录</el-checkbox>
+        <el-checkbox v-model="restoreForm.include_openapis">恢复 OpenAPI 文件</el-checkbox>
+        <el-divider />
+        <el-checkbox v-model="restoreForm.confirm">我已确认恢复会覆盖当前数据</el-checkbox>
+      </div>
+      <template #footer>
+        <el-button :disabled="restoring" @click="restoreDialogVisible = false">取消</el-button>
+        <el-button type="danger" :loading="restoring" :disabled="!canSubmitRestore" @click="handleRestoreBackup">确认恢复</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+defineOptions({ name: 'Backups' })
+import { computed, onMounted, reactive, ref } from 'vue'
 import { InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { createBackup, deleteBackup, getBackups, saveBackupSettings } from '@/api'
+import { createBackup, deleteBackup, getBackups, importBackup, restoreBackup, saveBackupSettings } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
 const loading = ref(false)
 const saving = ref(false)
 const creating = ref(false)
+const importing = ref(false)
+const restoring = ref(false)
+const fileInput = ref(null)
 const files = ref([])
+const importResult = ref(null)
+const importSummaryVisible = ref(false)
+const restoreDialogVisible = ref(false)
+const selectedBackup = ref(null)
 const status = reactive({ running: false, next_run_at: '', last_error: '' })
 const form = reactive(createDefaultSettings())
+const restoreForm = reactive(createDefaultRestoreForm())
+const canSubmitRestore = computed(() => restoreForm.confirm && (restoreForm.include_data || restoreForm.include_plugins || restoreForm.include_openapis))
 const pageDescription = '备份插件目录、OpenAPI 文件和配置数据，支持定时执行与自动清理旧备份。'
 
 onMounted(() => {
@@ -166,6 +212,53 @@ const handleCreateBackup = async () => {
   }
 }
 
+const openImportPicker = () => {
+  fileInput.value?.click()
+}
+
+const handleImportFileChange = async (event) => {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    ElMessage.error('请选择 zip 格式的备份包')
+    return
+  }
+  const formData = new FormData()
+  formData.append('file', file)
+  importing.value = true
+  try {
+    importResult.value = await importBackup(formData)
+    importSummaryVisible.value = true
+    ElMessage.success('备份导入成功')
+    await loadOverview()
+  } finally {
+    importing.value = false
+  }
+}
+
+const openRestoreDialog = (row) => {
+  selectedBackup.value = row
+  Object.assign(restoreForm, createDefaultRestoreForm())
+  restoreDialogVisible.value = true
+}
+
+const handleRestoreBackup = async () => {
+  if (!selectedBackup.value || !canSubmitRestore.value) return
+  restoring.value = true
+  try {
+    await restoreBackup(selectedBackup.value.name, { ...restoreForm })
+    restoreDialogVisible.value = false
+    ElMessageBox.alert('恢复完成，请重启 AllBot 服务使配置、插件和 OpenAPI 完全生效。', '恢复完成', {
+      confirmButtonText: '知道了',
+      type: 'success'
+    })
+    await loadOverview()
+  } finally {
+    restoring.value = false
+  }
+}
+
 const handleDeleteBackup = async (row) => {
   await ElMessageBox.confirm(`确定删除备份 ${row.name} 吗？`, '删除备份', {
     confirmButtonText: '删除',
@@ -194,6 +287,15 @@ const downloadBackup = async (row) => {
   link.click()
   document.body.removeChild(link)
   URL.revokeObjectURL(url)
+}
+
+function createDefaultRestoreForm() {
+  return {
+    include_data: false,
+    include_plugins: true,
+    include_openapis: true,
+    confirm: false
+  }
 }
 
 function createDefaultSettings() {
@@ -231,6 +333,14 @@ function formatSize(size) {
   if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`
   return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`
 }
+
+function formatSummaryIncludes(summary = {}) {
+  const includes = []
+  if (summary.has_data) includes.push('数据库')
+  if (summary.has_plugins) includes.push('插件目录')
+  if (summary.has_openapis) includes.push('OpenAPI 文件')
+  return includes.length ? includes.join('、') : '无可恢复内容'
+}
 </script>
 
 <style scoped>
@@ -239,10 +349,9 @@ function formatSize(size) {
 .page-card :deep(.el-card__body) { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .title-row { display: flex; align-items: center; gap: 6px; }
-.page-header h2 { margin: 0 0 6px; }
-.title-row h2 { margin: 0 0 6px; }
+.title { font-size: 18px; font-weight: 600; }
 .mobile-info-button { display: none; padding: 0; font-size: 16px; }
-.page-header p { margin: 0; color: #909399; }
+.subtitle { margin-top: 6px; color: #909399; font-size: 13px; line-height: 1.5; }
 .header-actions { display: flex; align-items: center; gap: 10px; }
 
 .backup-content {
@@ -279,6 +388,16 @@ function formatSize(size) {
 .section-desc { color: #909399; font-size: 13px; }
 .backup-form { max-width: 820px; }
 .hint { margin-left: 10px; color: #999; }
+.hidden-file-input { display: none; }
+
+.summary-panel,
+.restore-panel { display: grid; gap: 12px; }
+.summary-row { display: flex; justify-content: space-between; gap: 16px; }
+.summary-row span { color: #909399; }
+.summary-row strong { color: #303133; text-align: right; word-break: break-all; }
+.summary-alert { margin-top: 4px; }
+.restore-name { padding: 10px 12px; border-radius: 8px; background: #f8fafc; font-weight: 600; word-break: break-all; }
+.restore-panel :deep(.el-checkbox) { margin-right: 0; }
 
 .info-grid {
   display: grid;
@@ -298,6 +417,17 @@ function formatSize(size) {
 .error-text { color: #f56c6c !important; }
 .file-section { padding-bottom: 8px; }
 
+.form-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 0 0;
+  background: linear-gradient(180deg, rgba(255,255,255,0), #fff 28%);
+}
+
 @media (max-width: 768px) {
   .page-shell {
     height: calc(100dvh - 52px - 76px - 24px);
@@ -307,7 +437,8 @@ function formatSize(size) {
   .page-card :deep(.el-card__body) { padding: 12px; }
   .page-header { align-items: flex-start; flex-direction: column; }
   .mobile-info-button { display: inline-flex; }
-  .page-header p { display: none; font-size: 12px; line-height: 1.5; }
+  .subtitle { display: none; }
+  .title { font-size: 16px; }
   .header-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -317,7 +448,6 @@ function formatSize(size) {
   .backup-content { padding-right: 0; }
   .form-section { padding: 12px; border-radius: 12px; }
   .section-header { display: block; }
-  .section-header .el-button { width: 100%; margin-top: 12px; }
   .backups :deep(.el-form-item) { display: block; margin-bottom: 16px; }
   .backups :deep(.el-form-item__label) {
     width: 100% !important;
@@ -329,5 +459,12 @@ function formatSize(size) {
   .backups :deep(.el-input-number) { width: 100%; }
   .hint { display: block; margin: 6px 0 0; }
   .info-grid { grid-template-columns: 1fr; }
+  .form-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding-top: 10px;
+  }
+  .form-actions .el-button { width: 100%; margin-left: 0; }
 }
 </style>

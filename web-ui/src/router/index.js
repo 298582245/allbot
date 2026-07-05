@@ -3,6 +3,12 @@ import { useAuthStore } from '@/stores/auth'
 
 const routes = [
   {
+    path: '/chat',
+    name: 'WebChat',
+    component: () => import('@/views/WebChat.vue'),
+    meta: { requiresAuth: false }
+  },
+  {
     path: '/login',
     name: 'Login',
     component: () => import('@/views/Login.vue'),
@@ -36,6 +42,8 @@ const routes = [
       { path: 'payments/config', name: 'PaymentConfig', component: () => import('@/views/PaymentConfig.vue'), meta: { title: '支付配置' } },
       { path: 'payments/orders', name: 'PaymentOrders', component: () => import('@/views/PaymentOrders.vue'), meta: { title: '订单管理' } },
       { path: 'settings', name: 'Settings', component: () => import('@/views/Settings.vue'), meta: { title: '系统设置' } },
+      { path: 'plugin-panels', name: 'PluginPanels', component: () => import('@/views/PluginPanels.vue'), meta: { title: '插件面板' } },
+      { path: 'plugin-panels/:pluginId', name: 'PluginPanel', component: () => import('@/views/PluginPanel.vue'), meta: { title: '插件面板' } },
       { path: 'plugins/:id/edit', name: 'PluginEditor', component: () => import('@/views/PluginEditor.vue'), meta: { title: '编辑插件代码' } }
     ]
   }

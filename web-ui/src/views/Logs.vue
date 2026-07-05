@@ -2,33 +2,62 @@
   <div class="logs page-shell">
     <el-card class="page-card">
       <template #header>
-        <div class="card-header">
-          <span>系统日志</span>
+        <div class="page-header">
+          <div>
+            <div class="title-row">
+              <span class="title">系统日志</span>
+              <el-button class="mobile-info-button" type="primary" link aria-label="查看系统日志说明" @click="showPageDescription">
+                <el-icon><InfoFilled /></el-icon>
+              </el-button>
+            </div>
+            <div class="subtitle">{{ pageDescription }}</div>
+          </div>
           <div class="header-actions">
-            <el-button size="small" @click="handleRefresh">
+            <el-button size="small" @click="loadLogs(true)">
               <el-icon><Refresh /></el-icon>
               刷新
             </el-button>
-            <el-button size="small" @click="handleClear">
+            <el-button size="small" type="warning" :disabled="!selectedDate" @click="handleDeleteDate">
               <el-icon><Delete /></el-icon>
-              清空
+              删除当前日期
+            </el-button>
+            <el-button size="small" type="danger" @click="handleClearAll">
+              <el-icon><Delete /></el-icon>
+              清空全部
             </el-button>
           </div>
         </div>
       </template>
 
       <div class="log-toolbar">
+        <el-select v-model="selectedDate" placeholder="选择日期" filterable @change="handleFilterChange">
+          <el-option
+            v-for="item in logDates"
+            :key="item.date"
+            :label="`${item.date} (${formatFileSize(item.size)})`"
+            :value="item.date"
+          />
+        </el-select>
+        <el-select v-model="level" placeholder="日志等级" @change="handleFilterChange">
+          <el-option label="全部等级" value="" />
+          <el-option label="INFO" value="info" />
+          <el-option label="WARN" value="warn" />
+          <el-option label="ERROR" value="error" />
+          <el-option label="DEBUG" value="debug" />
+        </el-select>
         <el-input
-          v-model="searchKeyword"
+          v-model="keyword"
           clearable
           placeholder="搜索日志内容、时间或等级"
+          @clear="handleFilterChange"
+          @keyup.enter="handleFilterChange"
         />
+        <el-button @click="handleFilterChange">搜索</el-button>
+      </div>
+
+      <div class="log-options">
         <div class="toolbar-switches">
-          <el-switch
-            v-model="mergeRepeatLogs"
-            size="small"
-            active-text="合并重复日志"
-          />
+          <el-switch v-model="mergeRepeatLogs" size="small" active-text="合并重复日志" />
           <el-switch
             v-model="pauseScroll"
             size="small"
@@ -36,44 +65,72 @@
             inactive-text="自动定位最新"
           />
         </div>
+        <div class="retention-settings">
+          <span>保留天数</span>
+          <el-input-number v-model="retentionDays" :min="0" :max="3650" size="small" controls-position="right" />
+          <span class="settings-tip">0 表示禁用自动清理</span>
+          <el-button size="small" type="primary" @click="handleSaveSettings">保存设置</el-button>
+          <el-button size="small" @click="handleCleanupNow">立即清理</el-button>
+        </div>
       </div>
 
-      <div class="log-container" ref="logContainerRef">
+      <div v-loading="loading" class="log-container" ref="logContainerRef">
         <div
-          v-for="(log, index) in filteredLogs"
-          :key="index"
+          v-for="(log, index) in visibleLogs"
+          :key="`${pagination.page}-${index}`"
           :class="['log-item', `log-${log.level}`]"
         >
           <div class="log-meta">
             <span class="log-time">{{ formatLogTime(log) }}</span>
-            <span class="log-level">{{ log.level.toUpperCase() }}</span>
+            <span class="log-level">{{ String(log.level || 'info').toUpperCase() }}</span>
             <span v-if="shouldShowRepeatBadge(log)" class="log-repeat">×{{ log.repeat }}</span>
           </div>
           <span class="log-message">{{ log.message }}</span>
         </div>
 
-        <el-empty v-if="filteredLogs.length === 0" :description="searchKeyword ? '没有匹配的日志' : '暂无日志'" />
+        <el-empty v-if="!loading && visibleLogs.length === 0" :description="selectedDate ? '暂无日志' : '暂无日志文件'" />
       </div>
+
+      <StdPagination
+        v-model:current-page="pagination.page"
+        v-model:page-size="pagination.pageSize"
+        :total="pagination.total"
+        :page-sizes="[50, 100, 200, 500, 1000]"
+        @current-change="loadLogs"
+        @size-change="handlePageSizeChange"
+      />
     </el-card>
   </div>
 </template>
 
 <script setup>
-import { computed, ref, onMounted, onUnmounted } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Refresh, Delete } from '@element-plus/icons-vue'
-import { getLogs, clearLogs } from '@/api'
+defineOptions({ name: 'Logs' })
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Delete, InfoFilled, Refresh } from '@element-plus/icons-vue'
+import { cleanupLogs, clearLogs, getLogSettings, getLogs, saveLogSettings } from '@/api'
+import StdPagination from '@/components/StdPagination.vue'
 
 const logs = ref([])
+const logDates = ref([])
+const selectedDate = ref('')
+const keyword = ref('')
+const level = ref('')
+const retentionDays = ref(0)
+const loading = ref(false)
 const logContainerRef = ref(null)
-const searchKeyword = ref('')
 const pauseScroll = ref(false)
 const mergeRepeatLogs = ref(true)
+const pagination = ref({ page: 1, pageSize: 100, total: 0 })
 let logInterval = null
+
+const pageDescription = '按日期查看和删除系统运行日志，支持清空全部历史日志。'
+const showPageDescription = () => {
+  ElMessageBox.alert(pageDescription, '系统日志说明', { confirmButtonText: '知道了', type: 'info' })
+}
 
 const visibleLogs = computed(() => {
   if (mergeRepeatLogs.value) return logs.value
-
   return logs.value.map((log) => ({
     ...log,
     rawRepeat: log.repeat,
@@ -82,14 +139,14 @@ const visibleLogs = computed(() => {
   }))
 })
 
-const filteredLogs = computed(() => {
-  const keyword = searchKeyword.value.trim().toLowerCase()
-  if (!keyword) return visibleLogs.value
-  return visibleLogs.value.filter((log) => {
-    return [log.time, log.lastTime, log.level, log.message, log.repeat, log.rawRepeat]
-      .some((value) => String(value || '').toLowerCase().includes(keyword))
-  })
-})
+const todayText = () => {
+  const now = new Date()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${now.getFullYear()}-${month}-${day}`
+}
+
+const isTodaySelected = computed(() => selectedDate.value === todayText())
 
 const normalizeRepeat = (repeat) => {
   const value = Number(repeat)
@@ -107,12 +164,47 @@ const formatLogTime = (log) => {
   return `${log.time} - ${log.lastTime}`
 }
 
-const loadLogs = async () => {
+const formatFileSize = (size) => {
+  const value = Number(size) || 0
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / 1024 / 1024).toFixed(1)} MB`
+}
+
+const loadSettings = async () => {
   try {
-    logs.value = await getLogs()
-    if (!pauseScroll.value && !searchKeyword.value.trim()) scrollToLatest()
+    const data = await getLogSettings()
+    retentionDays.value = Number(data.retention_days) || 0
+  } catch (error) {
+    console.error('加载日志设置失败:', error)
+  }
+}
+
+const loadLogs = async (showMessage = false) => {
+  loading.value = true
+  try {
+    const params = {
+      date: selectedDate.value,
+      page: pagination.value.page,
+      page_size: pagination.value.pageSize,
+      keyword: keyword.value.trim(),
+      level: level.value
+    }
+    const data = await getLogs(params)
+    logs.value = Array.isArray(data.items) ? data.items : []
+    logDates.value = Array.isArray(data.dates) ? data.dates : []
+    pagination.value.total = Number(data.total) || 0
+    pagination.value.page = Number(data.page) || 1
+    pagination.value.pageSize = Number(data.page_size) || pagination.value.pageSize
+    retentionDays.value = Number(data.retention_days) || retentionDays.value || 0
+    if (data.date && data.date !== selectedDate.value) selectedDate.value = data.date
+    if (!pauseScroll.value && pagination.value.page === 1) scrollToLatest()
+    if (showMessage) ElMessage.success('日志已刷新')
   } catch (error) {
     console.error('加载日志失败:', error)
+    ElMessage.error('加载日志失败')
+  } finally {
+    loading.value = false
   }
 }
 
@@ -123,35 +215,83 @@ const scrollToLatest = () => {
   })
 }
 
-const handleRefresh = async () => {
-  await loadLogs()
-  ElMessage.success('日志已刷新')
+const handleFilterChange = () => {
+  pagination.value.page = 1
+  loadLogs()
 }
 
-const handleClear = async () => {
+const handlePageSizeChange = () => {
+  pagination.value.page = 1
+  loadLogs()
+}
+
+const reloadAfterDelete = async () => {
+  pagination.value.page = 1
+  selectedDate.value = ''
+  await loadLogs()
+}
+
+const handleDeleteDate = async () => {
+  if (!selectedDate.value) return
   try {
-    await clearLogs()
-    logs.value = []
-    ElMessage.success('日志已清空')
+    await ElMessageBox.confirm(`确定删除 ${selectedDate.value} 的日志文件吗？`, '删除日志', { type: 'warning' })
+    await clearLogs({ date: selectedDate.value })
+    ElMessage.success('当前日期日志已删除')
+    await reloadAfterDelete()
   } catch (error) {
-    console.error('清空日志失败:', error)
-    ElMessage.error('清空日志失败')
+    if (error !== 'cancel') {
+      console.error('删除日志失败:', error)
+      ElMessage.error('删除日志失败')
+    }
   }
 }
 
-onMounted(() => {
-  loadLogs()
+const handleClearAll = async () => {
+  try {
+    await ElMessageBox.confirm('确定删除全部日志文件吗？该操作不会删除非日志文件。', '清空全部日志', { type: 'warning' })
+    await clearLogs()
+    logs.value = []
+    ElMessage.success('全部日志已清空')
+    await reloadAfterDelete()
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('清空日志失败:', error)
+      ElMessage.error('清空日志失败')
+    }
+  }
+}
 
-  // 每 3 秒自动刷新
+const handleSaveSettings = async () => {
+  try {
+    await saveLogSettings({ retention_days: Number(retentionDays.value) || 0 })
+    ElMessage.success('日志设置已保存')
+  } catch (error) {
+    console.error('保存日志设置失败:', error)
+    ElMessage.error('保存日志设置失败')
+  }
+}
+
+const handleCleanupNow = async () => {
+  try {
+    const data = await cleanupLogs({ retention_days: Number(retentionDays.value) || 0 })
+    ElMessage.success(`清理完成，删除 ${Number(data.deleted) || 0} 个日志文件`)
+    await reloadAfterDelete()
+  } catch (error) {
+    console.error('立即清理日志失败:', error)
+    ElMessage.error('立即清理日志失败')
+  }
+}
+
+onMounted(async () => {
+  await loadSettings()
+  await loadLogs()
   logInterval = setInterval(() => {
-    loadLogs()
+    if (isTodaySelected.value && pagination.value.page === 1) loadLogs()
   }, 3000)
 })
 
 onUnmounted(() => {
-  if (logInterval) {
-    clearInterval(logInterval)
-  }
+  if (logInterval) clearInterval(logInterval)
 })
 </script>
 
@@ -160,12 +300,11 @@ onUnmounted(() => {
 .page-card { height: 100%; display: flex; flex-direction: column; }
 .page-card :deep(.el-card__body) { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-}
+.page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.title-row { display: flex; align-items: center; gap: 6px; }
+.title { font-size: 18px; font-weight: 600; }
+.mobile-info-button { display: none; padding: 0; font-size: 16px; }
+.subtitle { margin-top: 6px; color: #909399; font-size: 13px; line-height: 1.5; }
 
 .header-actions {
   display: flex;
@@ -175,18 +314,32 @@ onUnmounted(() => {
 
 .log-toolbar {
   display: grid;
-  grid-template-columns: minmax(240px, 420px) minmax(0, 1fr);
+  grid-template-columns: 180px 130px minmax(220px, 1fr) auto;
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
 }
 
-.toolbar-switches {
+.log-options {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.toolbar-switches,
+.retention-settings {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 16px;
+  gap: 8px 12px;
   min-width: 0;
+}
+
+.settings-tip {
+  color: #909399;
+  font-size: 12px;
 }
 
 .log-container {
@@ -200,6 +353,10 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
+.log-container :deep(.el-empty__description p) {
+  color: #909399;
+}
+
 .log-item {
   padding: 7px 0;
   display: flex;
@@ -207,9 +364,7 @@ onUnmounted(() => {
   border-bottom: 1px solid #333;
 }
 
-.log-item:last-child {
-  border-bottom: none;
-}
+.log-item:last-child { border-bottom: none; }
 
 .log-meta {
   display: flex;
@@ -246,38 +401,15 @@ onUnmounted(() => {
   word-break: break-word;
 }
 
-.log-info .log-level {
-  color: #52c41a;
-}
+.log-info .log-level { color: #52c41a; }
+.log-warn .log-level { color: #faad14; }
+.log-error .log-level { color: #f5222d; }
+.log-debug .log-level { color: #1890ff; }
 
-.log-warn .log-level {
-  color: #faad14;
-}
-
-.log-error .log-level {
-  color: #f5222d;
-}
-
-.log-debug .log-level {
-  color: #1890ff;
-}
-
-.log-container::-webkit-scrollbar {
-  width: 8px;
-}
-
-.log-container::-webkit-scrollbar-track {
-  background: #2a2a2a;
-}
-
-.log-container::-webkit-scrollbar-thumb {
-  background: #555;
-  border-radius: 4px;
-}
-
-.log-container::-webkit-scrollbar-thumb:hover {
-  background: #666;
-}
+.log-container::-webkit-scrollbar { width: 8px; }
+.log-container::-webkit-scrollbar-track { background: #2a2a2a; }
+.log-container::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+.log-container::-webkit-scrollbar-thumb:hover { background: #666; }
 
 @media (max-width: 768px) {
   .page-shell {
@@ -285,33 +417,56 @@ onUnmounted(() => {
     overflow: hidden;
   }
 
-  .card-header {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 12px;
+  .page-card :deep(.el-card__body) {
+    display: block;
+    overflow-y: auto;
   }
+
+  .page-header { align-items: flex-start; flex-direction: column; }
+  .title { font-size: 16px; }
+  .mobile-info-button { display: inline-flex; }
+  .subtitle { display: none; }
 
   .header-actions {
     width: 100%;
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
   }
 
   .header-actions .el-button {
     width: 100%;
     margin-left: 0;
+    font-size: 12px;
   }
 
   .log-toolbar {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .log-options {
+    flex-direction: column;
     gap: 8px;
     margin-bottom: 10px;
   }
 
   .toolbar-switches {
     display: grid;
-    grid-template-columns: 1fr;
-    gap: 6px;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .retention-settings {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+  }
+
+  .retention-settings .settings-tip {
+    display: none;
   }
 
   .toolbar-switches :deep(.el-switch) {
@@ -319,6 +474,8 @@ onUnmounted(() => {
   }
 
   .log-container {
+    flex: none;
+    height: 300px;
     padding: 10px;
     font-size: 12px;
     border-radius: 10px;
@@ -358,4 +515,3 @@ onUnmounted(() => {
   }
 }
 </style>
-

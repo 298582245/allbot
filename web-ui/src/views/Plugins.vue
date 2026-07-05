@@ -4,7 +4,13 @@
       <template #header>
         <div class="plugins-header page-header">
           <div>
-            <span class="title">插件列表</span>
+            <div class="title-row">
+              <span class="title">插件列表</span>
+              <el-button class="mobile-info-button" type="primary" link aria-label="查看插件管理说明" @click="showPageDescription">
+                <el-icon><InfoFilled /></el-icon>
+              </el-button>
+            </div>
+            <div class="subtitle">{{ pageDescription }}</div>
           </div>
           <div class="plugins-header-actions">
             <el-input
@@ -33,7 +39,7 @@
           v-for="plugin in paginatedPlugins"
           :key="plugin.id"
         >
-          <div class="plugin-pin-row">
+          <div class="plugin-card-header">
             <el-button
               class="plugin-pin-button"
               :class="{ pinned: plugin.pinned }"
@@ -44,8 +50,6 @@
             >
               {{ plugin.pinned ? '取消置顶' : '置顶' }}
             </el-button>
-          </div>
-          <div class="plugin-card-header">
             <span class="plugin-name">{{ plugin.name }}</span>
             <el-tag
               :type="plugin.enabled ? 'success' : 'info'"
@@ -143,15 +147,11 @@
       <el-empty v-else-if="!loading && filteredPlugins.length === 0" description="没有匹配的插件" />
     </div>
 
-      <div class="plugins-pagination">
-        <el-pagination
-          v-model:current-page="currentPage"
-          :page-size="pageSize"
-          :total="filteredPlugins.length"
-          layout="total, prev, pager, next"
-          background
-        />
-      </div>
+      <StdPagination
+        v-model:current-page="currentPage"
+        :page-size="pageSize"
+        :total="filteredPlugins.length"
+      />
     </el-card>
 
     <!-- 配置编辑对话框 -->
@@ -162,6 +162,48 @@
       @close="handleConfigDialogClose"
     >
       <el-tabs v-model="configActiveTab" class="plugin-config-tabs">
+        <el-tab-pane v-if="userConfigFields.length > 0" label="用户配置" name="user">
+          <el-form :model="currentConfig.user_config" label-width="120px">
+            <template v-for="(field, index) in userConfigFields" :key="field.key || `${field.type}-${index}`">
+              <div v-if="field.type === 'divider'" class="config-divider">
+                <el-divider>{{ field.label || '配置分组' }}</el-divider>
+                <div v-if="field.description" class="field-tip config-divider-tip">{{ field.description }}</div>
+              </div>
+              <el-form-item
+                v-else
+                :label="field.label || field.key"
+                :required="Boolean(field.required)"
+              >
+                <el-switch
+                  v-if="field.type === 'boolean' || field.type === 'bool'"
+                  v-model="currentConfig.user_config[field.key]"
+                />
+                <el-input-number
+                  v-else-if="field.type === 'number'"
+                  v-model="currentConfig.user_config[field.key]"
+                  :step="1"
+                  style="width: 220px"
+                />
+                <el-select
+                  v-else-if="field.type === 'select'"
+                  v-model="currentConfig.user_config[field.key]"
+                  style="width: 220px"
+                >
+                  <el-option v-for="option in configSelectOptions(field)" :key="option.value" :label="option.label" :value="option.value" />
+                </el-select>
+                <el-input
+                  v-else
+                  v-model="currentConfig.user_config[field.key]"
+                  :type="field.type === 'textarea' ? 'textarea' : 'text'"
+                  :rows="field.type === 'textarea' ? 3 : undefined"
+                  :placeholder="field.placeholder || ''"
+                />
+                <div v-if="field.description" class="field-tip">{{ field.description }}</div>
+              </el-form-item>
+            </template>
+          </el-form>
+        </el-tab-pane>
+
         <el-tab-pane label="插件配置" name="base">
           <el-form :model="currentConfig" label-width="120px">
             <el-form-item label="插件名称">
@@ -281,48 +323,6 @@
               </el-form-item>
               <el-form-item label="黑名单 union_id">
                 <el-select v-model="currentConfig.access_control.blocked_union_ids" multiple filterable allow-create default-first-option placeholder="union_id，可输入多个" style="width: 100%" />
-              </el-form-item>
-            </template>
-          </el-form>
-        </el-tab-pane>
-
-        <el-tab-pane v-if="userConfigFields.length > 0" label="用户配置" name="user">
-          <el-form :model="currentConfig.user_config" label-width="120px">
-            <template v-for="(field, index) in userConfigFields" :key="field.key || `${field.type}-${index}`">
-              <div v-if="field.type === 'divider'" class="config-divider">
-                <el-divider>{{ field.label || '配置分组' }}</el-divider>
-                <div v-if="field.description" class="field-tip config-divider-tip">{{ field.description }}</div>
-              </div>
-              <el-form-item
-                v-else
-                :label="field.label || field.key"
-                :required="Boolean(field.required)"
-              >
-                <el-switch
-                  v-if="field.type === 'boolean' || field.type === 'bool'"
-                  v-model="currentConfig.user_config[field.key]"
-                />
-                <el-input-number
-                  v-else-if="field.type === 'number'"
-                  v-model="currentConfig.user_config[field.key]"
-                  :step="1"
-                  style="width: 220px"
-                />
-                <el-select
-                  v-else-if="field.type === 'select'"
-                  v-model="currentConfig.user_config[field.key]"
-                  style="width: 220px"
-                >
-                  <el-option v-for="option in configSelectOptions(field)" :key="option.value" :label="option.label" :value="option.value" />
-                </el-select>
-                <el-input
-                  v-else
-                  v-model="currentConfig.user_config[field.key]"
-                  :type="field.type === 'textarea' ? 'textarea' : 'text'"
-                  :rows="field.type === 'textarea' ? 3 : undefined"
-                  :placeholder="field.placeholder || ''"
-                />
-                <div v-if="field.description" class="field-tip">{{ field.description }}</div>
               </el-form-item>
             </template>
           </el-form>
@@ -677,18 +677,25 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Plugins' })
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, shallowRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { InfoFilled, Plus } from '@element-plus/icons-vue'
 import { getAdapterPlatforms, getAdapters, getPlugins, controlPlugin, setPluginPinned, deletePlugin, getPluginRecycleBin, deletePluginBackup, getPluginTemplates, previewCreatePlugin, validateCreatePlugin, createPlugin, getRuntimeProfiles, getScriptEnvs } from '@/api'
 import request from '@/utils/request'
 import { EditorView, basicSetup } from 'codemirror'
 import { javascript } from '@codemirror/lang-javascript'
 import { python } from '@codemirror/lang-python'
 import { oneDark } from '@codemirror/theme-one-dark'
+import StdPagination from '@/components/StdPagination.vue'
 
 const router = useRouter()
+
+const pageDescription = '管理插件的启用、禁用、置顶、编辑代码和回收站。'
+const showPageDescription = () => {
+  ElMessageBox.alert(pageDescription, '插件管理说明', { confirmButtonText: '知道了', type: 'info' })
+}
 
 const loading = ref(false)
 const plugins = ref([])
@@ -1072,7 +1079,7 @@ const handleConfig = async (plugin) => {
     config.script_env = createScriptEnvConfig(config.script_env || {})
     await loadScriptEnvOptions()
     currentConfig.value = config
-    configActiveTab.value = 'base'
+    configActiveTab.value = userConfigFields.value.length > 0 ? 'user' : 'base'
     configDialogVisible.value = true
   } catch (error) {
     console.error('获取插件配置失败:', error)
@@ -2032,10 +2039,10 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
-.plugins-header .title {
-  font-size: 18px;
-  font-weight: bold;
-}
+.title { font-size: 18px; font-weight: 600; }
+.title-row { display: flex; align-items: center; gap: 6px; }
+.mobile-info-button { display: none; padding: 0; font-size: 16px; }
+.subtitle { margin-top: 6px; color: #909399; font-size: 13px; line-height: 1.5; }
 
 .plugins-header-actions {
   display: flex;
@@ -2071,21 +2078,18 @@ onBeforeUnmount(() => {
   flex-direction: column;
   background: #fff;
   transition: box-shadow 0.2s;
-  min-height: 220px;
+  min-height: 200px;
 }
 
 .plugin-card.pinned {
   border-color: #f3d19e;
 }
 
-.plugin-pin-row {
-  display: flex;
-  justify-content: flex-start;
-  margin-bottom: 8px;
-}
-
 .plugin-pin-button {
-  padding-left: 0;
+  flex-shrink: 0;
+  min-width: 4em;
+  justify-content: flex-start;
+  padding: 0;
 }
 
 .plugin-card:hover {
@@ -2096,15 +2100,21 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   margin-bottom: 12px;
   padding-bottom: 10px;
   border-bottom: 1px solid #f0f0f0;
 }
 
 .plugin-name {
+  flex: 1;
+  min-width: 0;
   font-size: 16px;
   font-weight: 600;
   color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plugin-card-body {
@@ -2370,14 +2380,6 @@ onBeforeUnmount(() => {
   border-top: 1px solid #f0f0f0;
 }
 
-.plugins-pagination {
-  flex-shrink: 0;
-  padding-top: 12px;
-  display: flex;
-  justify-content: center;
-  border-top: 1px solid #ebeef5;
-}
-
 @media (max-width: 768px) {
   .page-shell {
     height: calc(100dvh - 52px - 76px - 24px);
@@ -2396,9 +2398,9 @@ onBeforeUnmount(() => {
     flex-direction: column;
   }
 
-  .plugins-header .title {
-    font-size: 16px;
-  }
+  .title { font-size: 16px; }
+  .mobile-info-button { display: inline-flex; }
+  .subtitle { display: none; }
 
   .plugins-header-actions {
     justify-content: stretch;
@@ -2422,12 +2424,9 @@ onBeforeUnmount(() => {
     padding: 14px;
   }
 
-  .plugin-pin-row {
-    margin-bottom: 6px;
-  }
-
   .plugin-card-header {
-    align-items: flex-start;
+    flex-wrap: wrap;
+    align-items: center;
     gap: 8px;
   }
 
@@ -2462,13 +2461,7 @@ onBeforeUnmount(() => {
     -webkit-overflow-scrolling: touch;
   }
 
-  .plugins-pagination {
-    overflow-x: auto;
-    justify-content: flex-start;
-  }
-
-  .plugins-content::-webkit-scrollbar,
-  .plugins-pagination::-webkit-scrollbar {
+  .plugins-content::-webkit-scrollbar {
     display: none;
   }
 }

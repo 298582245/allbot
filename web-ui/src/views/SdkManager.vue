@@ -61,6 +61,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'SdkManager' })
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Document, Folder, InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'

@@ -32,6 +32,51 @@ func TestBuiltinPluginListKeywordReplySeeded(t *testing.T) {
 	}
 }
 
+func TestBuiltinKeywordRepliesUseCurrentContentAsTrigger(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	items, err := db.ListKeywordReplies()
+	if err != nil {
+		t.Fatalf("ListKeywordReplies returned error: %v", err)
+	}
+
+	cases := []struct {
+		keyword   string
+		content   string
+		matchType string
+	}{
+		{keyword: "myid", content: "myid", matchType: "exact"},
+		{keyword: "我的平台", content: "我的平台", matchType: "exact"},
+		{keyword: "groupId", content: "groupId", matchType: "exact"},
+		{keyword: `(?i)^v(ersion)?$`, content: "version", matchType: "regex"},
+	}
+	for _, tc := range cases {
+		var item *KeywordReply
+		for _, candidate := range items {
+			if candidate.Content == tc.content {
+				item = candidate
+				break
+			}
+		}
+		if item == nil {
+			t.Fatalf("builtin keyword with content %s not found", tc.content)
+		}
+		if item.Content != tc.content {
+			t.Fatalf("keyword %s content = %q, expected %q", tc.keyword, item.Content, tc.content)
+		}
+		if item.MatchType != tc.matchType {
+			t.Fatalf("keyword %s match_type = %q, expected %q", tc.keyword, item.MatchType, tc.matchType)
+		}
+		if tc.keyword == `^[Vv]ersion?$` && item.Keyword != tc.keyword {
+			t.Fatalf("keyword version regex = %q, expected %q", item.Keyword, tc.keyword)
+		}
+	}
+}
+
 func TestBuiltinRechargeKeywordReplyIsUserAvailable(t *testing.T) {
 	db, err := NewDatabase(":memory:")
 	if err != nil {
@@ -55,6 +100,36 @@ func TestBuiltinRechargeKeywordReplyIsUserAvailable(t *testing.T) {
 	}
 	if !recharge.Builtin || recharge.AdminOnly || !recharge.Pinned || !recharge.Enabled {
 		t.Fatalf("积分充值 flags unexpected: builtin=%v admin=%v pinned=%v enabled=%v", recharge.Builtin, recharge.AdminOnly, recharge.Pinned, recharge.Enabled)
+	}
+}
+
+func TestBuiltinUserSearchKeywordReplySeeded(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	items, err := db.ListKeywordReplies()
+	if err != nil {
+		t.Fatalf("ListKeywordReplies returned error: %v", err)
+	}
+
+	var userSearch *KeywordReply
+	for _, item := range items {
+		if item.Keyword == "用户搜索" {
+			userSearch = item
+			break
+		}
+	}
+	if userSearch == nil {
+		t.Fatal("builtin keyword 用户搜索 not found")
+	}
+	if !userSearch.Builtin || !userSearch.AdminOnly || !userSearch.Pinned || !userSearch.Enabled {
+		t.Fatalf("用户搜索 flags unexpected: builtin=%v admin=%v pinned=%v enabled=%v", userSearch.Builtin, userSearch.AdminOnly, userSearch.Pinned, userSearch.Enabled)
+	}
+	if userSearch.MatchType != "exact" || userSearch.ReplyType != "builtin" {
+		t.Fatalf("用户搜索 type unexpected: match=%q reply=%q", userSearch.MatchType, userSearch.ReplyType)
 	}
 }
 

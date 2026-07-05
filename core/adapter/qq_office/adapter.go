@@ -25,6 +25,7 @@ import (
 
 	"github.com/allbot/allbot/core/adapter/_contract"
 	"github.com/allbot/allbot/core/types"
+	"github.com/allbot/allbot/core/utils"
 )
 
 type UserInfo = contract.UserInfo
@@ -35,7 +36,9 @@ const (
 	qqOfficeDefaultAPIBaseURL   = "https://api.sgroup.qq.com"
 	qqOfficeDefaultTokenURL     = "https://bots.qq.com/app/getAppAccessToken"
 	qqOfficeIntentDirectMessage = 1 << 12
+	qqOfficeIntentGroupMember   = 1 << 24
 	qqOfficeIntentGroupAndC2C   = 1 << 25
+	qqOfficeIntentInteraction   = 1 << 26
 	qqOfficeTokenRefreshBefore  = 60 * time.Second
 	qqOfficeReplySeqTTL         = 10 * time.Minute
 )
@@ -120,9 +123,17 @@ func (a *QQOfficeAdapter) ReplyTarget(msg *types.Message) string {
 	}
 	if msg.Metadata != nil {
 		if replyTarget := strings.TrimSpace(msg.Metadata["reply_target"]); replyTarget != "" {
+			if strings.HasPrefix(replyTarget, "group_") && !strings.Contains(replyTarget, "|at_") {
+				if memberOpenID := strings.TrimSpace(msg.Metadata["qq_office_member_openid"]); memberOpenID != "" {
+					return replyTarget + "|at_" + memberOpenID
+				}
+			}
 			return replyTarget
 		}
 		if groupOpenID := strings.TrimSpace(msg.Metadata["qq_office_group_openid"]); groupOpenID != "" {
+			if memberOpenID := strings.TrimSpace(msg.Metadata["qq_office_member_openid"]); memberOpenID != "" {
+				return "group_" + groupOpenID + "|at_" + memberOpenID
+			}
 			return "group_" + groupOpenID
 		}
 		if userOpenID := strings.TrimSpace(msg.Metadata["qq_office_user_openid"]); userOpenID != "" {
@@ -220,7 +231,136 @@ func (a *QQOfficeAdapter) SendMessage(target string, text string) error {
 		return fmt.Errorf("QQ 官方消息目标类型无效: %s", targetInfo.kind)
 	}
 	log.Printf("[发送][QQ官方][%s]：%s", target, text)
-	return a.callAPI(http.MethodPost, path, body, nil)
+	return a.callAPIWithPassiveFallback(path, body, targetInfo)
+}
+
+func (a *QQOfficeAdapter) SendButtons(target string, text string, buttons [][]types.ButtonOption) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("QQ 官方按钮消息内容不能为空")
+	}
+	targetInfo, err := parseQQOfficeMessageTarget(target)
+	if err != nil {
+		return err
+	}
+	if targetInfo.kind == "dms" {
+		return a.SendMessage(target, formatButtonsFallbackText(text, buttons))
+	}
+	keyboard := qqOfficeButtonsToKeyboard(buttons)
+	if len(keyboard) == 0 {
+		return a.SendMessage(target, text)
+	}
+	body := map[string]interface{}{
+		"msg_type": 2,
+		"markdown": map[string]interface{}{"content": qqOfficeGroupAtContent(targetInfo, text)},
+		"keyboard": map[string]interface{}{"content": map[string]interface{}{"rows": keyboard}},
+	}
+	if targetInfo.msgID != "" {
+		body["msg_id"] = targetInfo.msgID
+		body["msg_seq"] = a.nextReplySeq(targetInfo)
+	}
+	path := ""
+	switch targetInfo.kind {
+	case "user":
+		path = "/v2/users/" + url.PathEscape(targetInfo.id) + "/messages"
+	case "group":
+		path = "/v2/groups/" + url.PathEscape(targetInfo.id) + "/messages"
+	default:
+		return fmt.Errorf("QQ 官方按钮目标类型无效: %s", targetInfo.kind)
+	}
+	log.Printf("[发送][QQ官方][%s]：[Buttons] %s", target, text)
+	return a.callAPIWithPassiveFallback(path, body, targetInfo)
+}
+
+func qqOfficeButtonsToKeyboard(buttons [][]types.ButtonOption) []map[string]interface{} {
+	rows := make([]map[string]interface{}, 0, len(buttons))
+	buttonID := 1
+	for _, row := range buttons {
+		items := make([]map[string]interface{}, 0, len(row))
+		for _, item := range row {
+			text := strings.TrimSpace(item.Text)
+			value := strings.TrimSpace(item.Value)
+			if text == "" || value == "" {
+				continue
+			}
+			permission := map[string]interface{}{"type": 2}
+			if userID := strings.TrimSpace(item.UserID); userID != "" {
+				permission = map[string]interface{}{"type": 0, "specify_user_ids": []string{userID}}
+			}
+			items = append(items, map[string]interface{}{
+				"id": strconv.Itoa(buttonID),
+				"render_data": map[string]interface{}{
+					"label":         text,
+					"visited_label": text,
+				},
+				"action": map[string]interface{}{
+					"type":                     1,
+					"permission":               permission,
+					"click_limit":              1,
+					"unsupport_tips":           value,
+					"data":                     value,
+					"at_bot_show_channel_list": true,
+				},
+			})
+			buttonID++
+		}
+		if len(items) > 0 {
+			rows = append(rows, map[string]interface{}{"buttons": items})
+		}
+	}
+	return rows
+}
+
+func formatButtonsFallbackText(text string, buttons [][]types.ButtonOption) string {
+	lines := []string{strings.TrimSpace(text)}
+	for _, row := range buttons {
+		parts := make([]string, 0, len(row))
+		for _, item := range row {
+			label := strings.TrimSpace(item.Text)
+			value := strings.TrimSpace(item.Value)
+			if label == "" || value == "" {
+				continue
+			}
+			parts = append(parts, label)
+		}
+		if len(parts) > 0 {
+			lines = append(lines, strings.Join(parts, "  "))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (a *QQOfficeAdapter) SendMarkdown(target string, markdown string) error {
+	markdown = strings.TrimSpace(markdown)
+	if markdown == "" {
+		return fmt.Errorf("QQ 官方 Markdown 内容不能为空")
+	}
+	targetInfo, err := parseQQOfficeMessageTarget(target)
+	if err != nil {
+		return err
+	}
+	if targetInfo.kind == "dms" {
+		return a.SendMessage(target, utils.MarkdownToPlainText(markdown))
+	}
+	body := map[string]interface{}{
+		"msg_type": 2,
+		"markdown": map[string]interface{}{"content": qqOfficeGroupAtContent(targetInfo, markdown)},
+	}
+	if targetInfo.msgID != "" {
+		body["msg_id"] = targetInfo.msgID
+		body["msg_seq"] = a.nextReplySeq(targetInfo)
+	}
+	path := ""
+	switch targetInfo.kind {
+	case "user":
+		path = "/v2/users/" + url.PathEscape(targetInfo.id) + "/messages"
+	case "group":
+		path = "/v2/groups/" + url.PathEscape(targetInfo.id) + "/messages"
+	default:
+		return fmt.Errorf("QQ 官方 Markdown 目标类型无效: %s", targetInfo.kind)
+	}
+	log.Printf("[发送][QQ官方][%s]：[Markdown] %s", target, markdown)
+	return a.callAPIWithPassiveFallback(path, body, targetInfo)
 }
 
 func (a *QQOfficeAdapter) nextReplySeq(target qqOfficeMessageTarget) int {
@@ -276,7 +416,7 @@ func (a *QQOfficeAdapter) SendImage(target string, imageURL string) error {
 		return fmt.Errorf("QQ 官方图片目标类型无效: %s", targetInfo.kind)
 	}
 	log.Printf("[发送][QQ官方][%s]：[图片] %s", target, imageURL)
-	return a.callAPI(http.MethodPost, path, body, nil)
+	return a.callAPIWithPassiveFallback(path, body, targetInfo)
 }
 
 func (a *QQOfficeAdapter) uploadImageMedia(target qqOfficeMessageTarget, imageURL string) (qqOfficeMedia, error) {
@@ -308,6 +448,14 @@ func (a *QQOfficeAdapter) uploadImageMedia(target qqOfficeMessageTarget, imageUR
 
 func (a *QQOfficeAdapter) SendFile(target string, filePath string) error {
 	return fmt.Errorf("QQ 官方机器人文件发送暂未实现")
+}
+
+func (a *QQOfficeAdapter) ackInteraction(interactionID string) error {
+	interactionID = strings.TrimSpace(interactionID)
+	if interactionID == "" {
+		return nil
+	}
+	return a.callAPI(http.MethodPut, "/interactions/"+url.PathEscape(interactionID), map[string]interface{}{"code": 0}, nil)
 }
 
 func (a *QQOfficeAdapter) GetUserInfo(userID string) (*UserInfo, error) {
@@ -375,6 +523,25 @@ func (a *QQOfficeAdapter) getAccessToken() (string, error) {
 	a.accessToken = accessToken
 	a.tokenExpiresAt = time.Now().Add(time.Duration(expiresIn) * time.Second)
 	return a.accessToken, nil
+}
+
+func (a *QQOfficeAdapter) callAPIWithPassiveFallback(path string, body map[string]interface{}, target qqOfficeMessageTarget) error {
+	err := a.callAPI(http.MethodPost, path, body, nil)
+	if err == nil || target.msgID == "" || target.kind == "dms" || !isQQOfficePassiveReplyLimitError(err) {
+		return err
+	}
+	delete(body, "msg_id")
+	delete(body, "msg_seq")
+	log.Printf("[WARN][QQ官方] 被动回复超过限制，改用主动消息重发: target=%s_%s err=%v", target.kind, target.id, err)
+	return a.callAPI(http.MethodPost, path, body, nil)
+}
+
+func isQQOfficePassiveReplyLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := err.Error()
+	return strings.Contains(text, "40034128") || strings.Contains(text, "被动回复时间或者次数超过限制")
 }
 
 func (a *QQOfficeAdapter) callAPI(method, path string, body interface{}, result interface{}) error {
@@ -486,7 +653,7 @@ func (a *QQOfficeAdapter) connectAndReadGateway() error {
 	if err := a.sendIdentify(); err != nil {
 		return fmt.Errorf("发送 Identify 失败: %w", err)
 	}
-	log.Printf("[INFO][QQ官方] Gateway 已连接，已订阅 DMS/C2C/群聊事件")
+	log.Printf("[INFO][QQ官方] Gateway 已连接，已订阅 DMS/C2C/群聊/群成员/群事件")
 
 	heartbeatDone := make(chan struct{})
 	defer close(heartbeatDone)
@@ -501,7 +668,7 @@ func (a *QQOfficeAdapter) sendIdentify() error {
 	}
 	return a.sendGatewayPayload(2, map[string]interface{}{
 		"token":   "QQBot " + token,
-		"intents": qqOfficeIntentDirectMessage | qqOfficeIntentGroupAndC2C,
+		"intents": qqOfficeIntentDirectMessage | qqOfficeIntentGroupMember | qqOfficeIntentGroupAndC2C | qqOfficeIntentInteraction,
 		"shard":   []int{0, 1},
 		"properties": map[string]string{
 			"$os":      runtime.GOOS,
@@ -590,8 +757,12 @@ func (a *QQOfficeAdapter) handleDispatch(eventType string, data map[string]inter
 		a.handleDirectMessage(data)
 	case "C2C_MESSAGE_CREATE":
 		a.handleC2CMessage(data)
-	case "GROUP_AT_MESSAGE_CREATE":
-		a.handleGroupAtMessage(data)
+	case "GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE":
+		a.handleGroupMessage(eventType, data)
+	case "GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE", "GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT", "GROUP_MSG_RECEIVE", "GROUP_MSG_REJECT":
+		a.handleQQOfficeEvent(eventType, data)
+	case "INTERACTION_CREATE":
+		a.handleInteractionCreate(data)
 	default:
 		if eventType != "" {
 			log.Printf("[INFO][QQ官方] Gateway 收到未处理事件: %s", eventType)
@@ -667,6 +838,10 @@ func (a *QQOfficeAdapter) handleC2CMessage(data map[string]interface{}) {
 }
 
 func (a *QQOfficeAdapter) handleGroupAtMessage(data map[string]interface{}) {
+	a.handleGroupMessage("GROUP_AT_MESSAGE_CREATE", data)
+}
+
+func (a *QQOfficeAdapter) handleGroupMessage(eventType string, data map[string]interface{}) {
 	content := strings.TrimSpace(stringValue(data["content"]))
 	if content == "" {
 		log.Printf("[INFO][QQ官方] 忽略空群聊消息: id=%s group=%s", stringValue(data["id"]), stringValue(data["group_openid"]))
@@ -699,13 +874,160 @@ func (a *QQOfficeAdapter) handleGroupAtMessage(data map[string]interface{}) {
 		Content:  content,
 		Metadata: map[string]string{
 			"message_type":            "group",
+			"qq_office_event_type":    eventType,
+			"qq_office_message_event": eventType,
 			"qq_office_msg_id":        messageID,
 			"qq_office_group_openid":  groupOpenID,
 			"qq_office_member_openid": memberOpenID,
-			"reply_target":            "group_" + groupOpenID + "|msg_" + messageID,
+			"reply_target":            "group_" + groupOpenID + "|msg_" + messageID + "|at_" + memberOpenID,
 		},
 	}
 	log.Printf("[接收][QQ官方][%s(群 %s)]：%s", memberOpenID, groupOpenID, content)
+	a.dispatchMessage(msg)
+}
+
+func (a *QQOfficeAdapter) handleInteractionCreate(data map[string]interface{}) {
+	eventID := stringValue(data["id"])
+	if err := a.ackInteraction(eventID); err != nil {
+		log.Printf("[WARN][QQ官方] 按钮交互 ACK 失败: id=%s err=%v", eventID, err)
+	}
+	content := qqOfficeInteractionData(data)
+	if strings.TrimSpace(content) == "" {
+		log.Printf("[INFO][QQ官方] 忽略空按钮交互: id=%s summary=%s", eventID, qqOfficeMapSummary(data))
+		return
+	}
+	groupOpenID := stringValue(data["group_openid"])
+	if groupOpenID == "" {
+		groupOpenID = stringValue(data["group_id"])
+	}
+	userID := qqOfficeInteractionUserID(data)
+	if userID == "" {
+		log.Printf("[WARN][QQ官方] 忽略缺少用户标识的按钮交互: id=%s summary=%s", eventID, qqOfficeMapSummary(data))
+		return
+	}
+	metadata := map[string]string{
+		"message_type":               "button",
+		"qq_office_event_type":       "INTERACTION_CREATE",
+		"qq_office_interaction_id":   eventID,
+		"qq_office_interaction_data": content,
+		"reply_target":               "user_" + userID + "|msg_" + eventID,
+	}
+	if groupOpenID != "" {
+		metadata["qq_office_group_openid"] = groupOpenID
+		metadata["qq_office_member_openid"] = userID
+		metadata["reply_target"] = "group_" + groupOpenID + "|msg_" + eventID + "|at_" + userID
+	}
+	msg := &types.Message{
+		ID:       eventID,
+		Platform: qqOfficePlatform,
+		UserID:   userID,
+		GroupID:  groupOpenID,
+		Content:  strings.TrimSpace(content),
+		Metadata: metadata,
+	}
+	log.Printf("[交互][QQ官方][%s(按钮 %s)]：%s", userID, groupOpenID, msg.Content)
+	a.dispatchMessage(msg)
+}
+
+func qqOfficeInteractionUserID(data map[string]interface{}) string {
+	for _, key := range []string{"user_openid", "member_openid", "group_member_openid", "op_member_openid", "user_id", "member_id", "openid"} {
+		if value := strings.TrimSpace(stringValue(data[key])); value != "" {
+			return value
+		}
+	}
+	for _, source := range qqOfficeInteractionNestedMaps(data) {
+		for _, key := range []string{"user_openid", "member_openid", "group_member_openid", "op_member_openid", "user_id", "member_id", "openid", "id"} {
+			if value := strings.TrimSpace(stringValue(source[key])); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func qqOfficeInteractionNestedMaps(data map[string]interface{}) []map[string]interface{} {
+	maps := make([]map[string]interface{}, 0, 6)
+	for _, key := range []string{"user", "member", "author", "operator"} {
+		if value, ok := data[key].(map[string]interface{}); ok {
+			maps = append(maps, value)
+		}
+	}
+	if dataMap, ok := data["data"].(map[string]interface{}); ok {
+		for _, key := range []string{"resolved", "user", "member"} {
+			if value, ok := dataMap[key].(map[string]interface{}); ok {
+				maps = append(maps, value)
+			}
+		}
+	}
+	if resolved, ok := data["resolved"].(map[string]interface{}); ok {
+		maps = append(maps, resolved)
+	}
+	return maps
+}
+
+func qqOfficeInteractionData(data map[string]interface{}) string {
+	if value, ok := data["data"].(string); ok && strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	if dataMap, ok := data["data"].(map[string]interface{}); ok {
+		for _, key := range []string{"data", "value", "button_data"} {
+			if value := strings.TrimSpace(stringValue(dataMap[key])); value != "" {
+				return value
+			}
+		}
+		if resolved, ok := dataMap["resolved"].(map[string]interface{}); ok {
+			for _, key := range []string{"button_data", "data", "value"} {
+				if value := strings.TrimSpace(stringValue(resolved[key])); value != "" {
+					return value
+				}
+			}
+		}
+	}
+	if resolved, ok := data["resolved"].(map[string]interface{}); ok {
+		for _, key := range []string{"button_data", "data", "value"} {
+			if value := strings.TrimSpace(stringValue(resolved[key])); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func (a *QQOfficeAdapter) handleQQOfficeEvent(eventType string, data map[string]interface{}) {
+	groupOpenID := stringValue(data["group_openid"])
+	memberOpenID := stringValue(data["member_openid"])
+	opMemberOpenID := stringValue(data["op_member_openid"])
+	userID := memberOpenID
+	if userID == "" {
+		userID = opMemberOpenID
+	}
+	timestamp := stringValue(data["timestamp"])
+	if timestamp == "" {
+		timestamp = stringValue(data["event_ts"])
+	}
+	messageID := strings.Join([]string{eventType, groupOpenID, userID, timestamp}, ":")
+	metadata := map[string]string{
+		"message_type":           "event",
+		"event_name":             eventType,
+		"qq_office_event_type":   eventType,
+		"qq_office_group_openid": groupOpenID,
+		"qq_office_timestamp":    timestamp,
+	}
+	if memberOpenID != "" {
+		metadata["qq_office_member_openid"] = memberOpenID
+	}
+	if opMemberOpenID != "" {
+		metadata["qq_office_op_member_openid"] = opMemberOpenID
+	}
+	msg := &types.Message{
+		ID:       messageID,
+		Platform: qqOfficePlatform,
+		UserID:   userID,
+		GroupID:  groupOpenID,
+		Content:  eventType,
+		Metadata: metadata,
+	}
+	log.Printf("[事件][QQ官方][%s][群 %s][用户 %s]", eventType, groupOpenID, userID)
 	a.dispatchMessage(msg)
 }
 
@@ -908,9 +1230,10 @@ func qqOfficeMapSummary(result map[string]interface{}) string {
 }
 
 type qqOfficeMessageTarget struct {
-	kind  string
-	id    string
-	msgID string
+	kind   string
+	id     string
+	msgID  string
+	atUser string
 }
 
 func parseQQOfficeMessageTarget(target string) (qqOfficeMessageTarget, error) {
@@ -929,23 +1252,41 @@ func parseQQOfficeMessageTarget(target string) (qqOfficeMessageTarget, error) {
 		target = strings.TrimPrefix(target, "dms_")
 	}
 
-	parts := strings.SplitN(target, "|", 2)
+	parts := strings.Split(target, "|")
 	id := strings.TrimSpace(parts[0])
 	if id == "" {
 		return qqOfficeMessageTarget{}, fmt.Errorf("QQ 官方%s不能为空", qqOfficeTargetIDName(kind))
 	}
 	messageID := ""
-	if len(parts) == 2 {
-		messagePart := strings.TrimSpace(parts[1])
-		if !strings.HasPrefix(messagePart, "msg_") {
+	atUser := ""
+	for _, rawPart := range parts[1:] {
+		part := strings.TrimSpace(rawPart)
+		if part == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(part, "msg_"):
+			messageID = strings.TrimSpace(strings.TrimPrefix(part, "msg_"))
+			if messageID == "" {
+				return qqOfficeMessageTarget{}, fmt.Errorf("QQ 官方 msg_id 不能为空")
+			}
+		case strings.HasPrefix(part, "at_"):
+			atUser = strings.TrimSpace(strings.TrimPrefix(part, "at_"))
+			if atUser == "" {
+				return qqOfficeMessageTarget{}, fmt.Errorf("QQ 官方 at 用户不能为空")
+			}
+		default:
 			return qqOfficeMessageTarget{}, fmt.Errorf("QQ 官方回复目标格式无效")
 		}
-		messageID = strings.TrimSpace(strings.TrimPrefix(messagePart, "msg_"))
-		if messageID == "" {
-			return qqOfficeMessageTarget{}, fmt.Errorf("QQ 官方 msg_id 不能为空")
-		}
 	}
-	return qqOfficeMessageTarget{kind: kind, id: id, msgID: messageID}, nil
+	return qqOfficeMessageTarget{kind: kind, id: id, msgID: messageID, atUser: atUser}, nil
+}
+
+func qqOfficeGroupAtContent(target qqOfficeMessageTarget, content string) string {
+	if strings.TrimSpace(target.atUser) == "" {
+		return content
+	}
+	return fmt.Sprintf("<@%s>\n%s", strings.TrimSpace(target.atUser), content)
 }
 
 func parseQQOfficeDMSTarget(target string) (string, string, error) {

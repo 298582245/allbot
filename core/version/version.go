@@ -2,10 +2,10 @@ package version
 
 import "strings"
 
-var Version = "v1.0.1"
+var Version = "v1.0.2"
 var Commit = "unknown"
 var BuildTime = "unknown"
-var BuildChannel = "local"
+var BuildChannel = "release"
 
 func DisplayVersion() string {
 	current := strings.TrimSpace(Version)

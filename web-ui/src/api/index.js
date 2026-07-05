@@ -1,5 +1,41 @@
 import request from '@/utils/request'
 
+const webChatRequest = async (path, options = {}) => {
+  const response = await fetch(`/api/open/web-chat${path}`, {
+    credentials: 'include',
+    headers: options.body instanceof FormData ? options.headers : { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options
+  })
+  const contentType = response.headers.get('Content-Type') || ''
+  const data = contentType.includes('application/json') ? await response.json() : await response.text()
+  if (!response.ok || data?.error) {
+    throw new Error(data?.error || '请求失败')
+  }
+  return data
+}
+
+export const sendWebChatEmailCode = (email, purpose = 'register') => webChatRequest('/email-code', { method: 'POST', body: JSON.stringify({ email, purpose }) })
+export const registerWebChat = (data) => webChatRequest('/register', { method: 'POST', body: JSON.stringify(data) })
+export const resetWebChatPassword = (data) => webChatRequest('/reset-password', { method: 'POST', body: JSON.stringify(data) })
+export const loginWebChat = (data) => webChatRequest('/login', { method: 'POST', body: JSON.stringify(data) })
+export const loginWebChatByEmailCode = (data) => webChatRequest('/email-login', { method: 'POST', body: JSON.stringify(data) })
+export const logoutWebChat = (csrfToken) => webChatRequest('/logout', { method: 'POST', headers: { 'X-AllBot-WebChat-CSRF': csrfToken || '' }, body: '{}' })
+export const getWebChatMe = () => webChatRequest('/me')
+export const bindWebChatCode = (code, csrfToken) => webChatRequest('/bind-code', { method: 'POST', headers: { 'X-AllBot-WebChat-CSRF': csrfToken }, body: JSON.stringify({ code }) })
+export const getWebChatPlugins = () => webChatRequest('/plugins')
+export const getWebChatMessageCounts = () => webChatRequest('/message-counts')
+export const markWebChatRead = (data, csrfToken) => webChatRequest('/read-state', { method: 'POST', headers: { 'X-AllBot-WebChat-CSRF': csrfToken }, body: JSON.stringify(data || {}) })
+export const getWebChatMessages = (params = {}) => {
+  const search = new URLSearchParams(params).toString()
+  return webChatRequest(`/messages${search ? `?${search}` : ''}`)
+}
+export const sendWebChatMessage = (data, csrfToken) => webChatRequest('/messages', { method: 'POST', headers: { 'X-AllBot-WebChat-CSRF': csrfToken }, body: JSON.stringify(data) })
+export const uploadWebChatImage = (file, csrfToken) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  return webChatRequest('/images', { method: 'POST', headers: { 'X-AllBot-WebChat-CSRF': csrfToken }, body: formData })
+}
+
 // 登录
 export const login = (data) => {
   return request({
@@ -83,6 +119,15 @@ export const getPlugins = () => {
   return request({
     url: '/plugins',
     method: 'get'
+  })
+}
+
+// 获取插件 Web 面板列表
+export const getPluginWebPanels = () => {
+  return request({
+    url: '/plugin-web/panels',
+    method: 'get',
+    silent: true
   })
 }
 
@@ -197,6 +242,24 @@ export const deleteScriptEnv = (id) => {
   })
 }
 
+// 批量操作脚本环境变量
+export const batchScriptEnvs = (action, ids) => {
+  return request({
+    url: '/script-envs',
+    method: 'patch',
+    data: { action, ids }
+  })
+}
+
+// 导入脚本环境变量
+export const importScriptEnvs = (data) => {
+  return request({
+    url: '/script-envs/import',
+    method: 'post',
+    data
+  })
+}
+
 // 获取开放接口列表
 export const getOpenApis = (params = {}) => {
   return request({
@@ -271,6 +334,23 @@ export const saveRuntimeProfiles = (profiles) => {
     url: '/runtime-profiles',
     method: 'put',
     data: { profiles }
+  })
+}
+
+// 获取运行环境下载设置
+export const getRuntimeDownloadSettings = () => {
+  return request({
+    url: '/runtime-profiles/download-settings',
+    method: 'get'
+  })
+}
+
+// 保存运行环境下载设置
+export const saveRuntimeDownloadSettings = (data) => {
+  return request({
+    url: '/runtime-profiles/download-settings',
+    method: 'put',
+    data
   })
 }
 
@@ -372,18 +452,46 @@ export const deleteAdapter = (platform) => {
 }
 
 // 获取日志
-export const getLogs = () => {
+export const getLogs = (params = {}) => {
   return request({
     url: '/logs',
-    method: 'get'
+    method: 'get',
+    params
   })
 }
 
 // 清空日志
-export const clearLogs = () => {
+export const clearLogs = (params = {}) => {
   return request({
     url: '/logs',
-    method: 'delete'
+    method: 'delete',
+    params
+  })
+}
+
+// 获取日志设置
+export const getLogSettings = () => {
+  return request({
+    url: '/logs/settings',
+    method: 'get'
+  })
+}
+
+// 保存日志设置
+export const saveLogSettings = (data) => {
+  return request({
+    url: '/logs/settings',
+    method: 'put',
+    data
+  })
+}
+
+// 立即清理日志
+export const cleanupLogs = (data = {}) => {
+  return request({
+    url: '/logs/cleanup',
+    method: 'post',
+    data
   })
 }
 
@@ -410,6 +518,26 @@ export const createBackup = () => {
     url: '/backups',
     method: 'post',
     timeout: 10 * 60 * 1000
+  })
+}
+
+// 导入备份文件
+export const importBackup = (formData) => {
+  return request({
+    url: '/backups/import',
+    method: 'post',
+    data: formData,
+    timeout: 10 * 60 * 1000
+  })
+}
+
+// 恢复备份文件
+export const restoreBackup = (name, data) => {
+  return request({
+    url: `/backups/${encodeURIComponent(String(name))}/restore`,
+    method: 'post',
+    data,
+    timeout: 15 * 60 * 1000
   })
 }
 

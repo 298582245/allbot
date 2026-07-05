@@ -15,6 +15,7 @@ import (
 func TestDingTalkAdapterImplementsContracts(t *testing.T) {
 	adapter := NewDingTalkAdapter("client", "secret", "robot", "", "")
 	var _ contract.Adapter = adapter
+	var _ contract.MarkdownSender = adapter
 	var _ contract.ReplyTargetResolver = adapter
 	var _ contract.ReplyTextFormatter = adapter
 	var _ contract.SendTargetResolver = adapter
@@ -323,6 +324,31 @@ func TestSendMessageUnsupportedTargets(t *testing.T) {
 	}
 	if err := adapter.SendMessage("bad", "你好"); err == nil || !strings.Contains(err.Error(), "格式无效") {
 		t.Fatalf("invalid target error = %v", err)
+	}
+}
+
+func TestSendMarkdownUsesWebhookMarkdown(t *testing.T) {
+	adapter := NewDingTalkAdapter("client", "secret", "", "", "")
+	replier := &recordingDingTalkReplier{}
+	adapter.replier = replier
+	if err := adapter.SendMarkdown(dingTalkWebhookTarget("https://example.com/hook"), "## 标题\n内容"); err != nil {
+		t.Fatalf("SendMarkdown returned error: %v", err)
+	}
+	if replier.webhook != "https://example.com/hook" || replier.markdownTitle != "标题" || replier.markdownContent != "## 标题\n内容" || atomic.LoadInt32(&replier.markdownCalls) != 1 {
+		t.Fatalf("replier = %#v", replier)
+	}
+}
+
+func TestSendMarkdownUnsupportedTargets(t *testing.T) {
+	adapter := NewDingTalkAdapter("client", "secret", "", "", "")
+	if err := adapter.SendMarkdown(dingTalkWebhookTarget("https://example.com/hook"), " "); err == nil || !strings.Contains(err.Error(), "Markdown 内容不能为空") {
+		t.Fatalf("empty markdown error = %v", err)
+	}
+	for _, target := range []string{"conversation_cid", "user_uid"} {
+		err := adapter.SendMarkdown(target, "## 标题")
+		if err == nil || !strings.Contains(err.Error(), "暂未实现") || !strings.Contains(err.Error(), "session webhook") {
+			t.Fatalf("SendMarkdown(%q) error = %v", target, err)
+		}
 	}
 }
 

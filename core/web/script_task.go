@@ -99,20 +99,36 @@ func (s *Server) pauseScriptTask(w http.ResponseWriter, id int64) {
 		s.jsonError(w, "脚本任务不存在", http.StatusNotFound)
 		return
 	}
-	if item.Status != "running" {
+	if !isCancelableScriptTaskStatus(item.Status) {
 		s.jsonResponse(w, map[string]interface{}{"message": "脚本任务当前不可暂停", "status": item.Status})
+		return
+	}
+	if item.Status == "pausing" {
+		s.jsonResponse(w, map[string]interface{}{"message": "脚本任务暂停请求已发送", "status": "pausing"})
 		return
 	}
 	paused := s.pluginManager.PauseScriptRun(id)
 	if !paused {
+		if item.Status == "running" || item.Status == "pausing" {
+			if err := s.adapterManager.GetDatabase().UpdateScriptRunLog(id, "paused", item.Output, "脚本任务已失去运行进程，已标记为暂停", time.Now()); err != nil {
+				s.jsonError(w, "更新脚本任务失败: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			s.jsonResponse(w, map[string]interface{}{"message": "脚本任务已失去运行进程，已标记为暂停", "status": "paused"})
+			return
+		}
 		s.jsonResponse(w, map[string]interface{}{"message": "脚本任务已不在运行中", "status": item.Status})
+		return
+	}
+	if item.Status == config.ScriptRunStatusQueued {
+		s.jsonResponse(w, map[string]interface{}{"message": "脚本任务暂停请求已发送", "status": config.ScriptRunStatusQueued})
 		return
 	}
 	if err := s.adapterManager.GetDatabase().UpdateScriptRunLog(id, "pausing", item.Output, "正在暂停脚本任务", time.Now()); err != nil {
 		s.jsonError(w, "更新脚本任务失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.jsonResponse(w, map[string]interface{}{"message": "脚本任务暂停请求已发送"})
+	s.jsonResponse(w, map[string]interface{}{"message": "脚本任务暂停请求已发送", "status": "pausing"})
 }
 
 func (s *Server) deleteScriptTask(w http.ResponseWriter, id int64) {
@@ -125,7 +141,7 @@ func (s *Server) deleteScriptTask(w http.ResponseWriter, id int64) {
 		s.jsonError(w, "脚本任务不存在", http.StatusNotFound)
 		return
 	}
-	if item.Status == "running" {
+	if isCancelableScriptTaskStatus(item.Status) {
 		_ = s.pluginManager.PauseScriptRun(id)
 	}
 	if err := s.adapterManager.GetDatabase().DeleteScriptRunLog(id); err != nil {
@@ -156,7 +172,7 @@ func scriptRunLogFilterFromRequest(r *http.Request) config.ScriptRunLogFilter {
 		ScriptPath:     query.Get("script_path"),
 		RuntimeProfile: query.Get("runtime_profile"),
 		RunMode:        query.Get("run_mode"),
-		Status:         query.Get("status"),
+		Status:         normalizeScriptTaskStatus(query.Get("status")),
 		Limit:          limit,
 		Offset:         (page - 1) * limit,
 	}
@@ -167,6 +183,19 @@ func pageFromFilter(filter config.ScriptRunLogFilter) int {
 		return 1
 	}
 	return filter.Offset/filter.Limit + 1
+}
+
+func normalizeScriptTaskStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case "queued", "running", "pausing", "paused", "success", "failed", "error":
+		return strings.TrimSpace(status)
+	default:
+		return strings.TrimSpace(status)
+	}
+}
+
+func isCancelableScriptTaskStatus(status string) bool {
+	return status == config.ScriptRunStatusQueued || status == "running" || status == "pausing"
 }
 
 func (s *Server) scriptTaskRetentionDays() int {

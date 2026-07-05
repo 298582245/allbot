@@ -78,6 +78,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'OpenApiEditor' })
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'

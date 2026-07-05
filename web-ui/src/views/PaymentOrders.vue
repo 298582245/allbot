@@ -4,10 +4,17 @@
       <template #header>
         <div class="page-header">
           <div>
-            <h2>订单管理</h2>
-            <p>追踪支付订单、回调原文和状态事件，支持对易支付待支付订单手动查询。</p>
+            <div class="title-row">
+              <span class="title">订单管理</span>
+              <el-button class="mobile-info-button" type="primary" link aria-label="查看订单管理说明" @click="showPageDescription">
+                <el-icon><InfoFilled /></el-icon>
+              </el-button>
+            </div>
+            <div class="subtitle">{{ pageDescription }}</div>
           </div>
-          <el-button :loading="loading" @click="loadOrders">刷新</el-button>
+          <div class="header-actions">
+            <el-button :loading="loading" @click="loadOrders">刷新</el-button>
+          </div>
         </div>
       </template>
 
@@ -152,16 +159,12 @@
         <el-empty v-if="!loading && orders.length === 0" description="暂无支付订单" />
       </div>
 
-      <div class="pagination-row">
-        <el-pagination
-          v-model:current-page="currentPage"
-          :page-size="pageSize"
-          :total="total"
-          layout="total, prev, pager, next"
-          background
-          @current-change="loadOrders"
-        />
-      </div>
+      <StdPagination
+        v-model:current-page="currentPage"
+        :page-size="pageSize"
+        :total="total"
+        @current-change="loadOrders"
+      />
     </el-card>
 
     <el-drawer v-model="detailVisible" title="支付订单详情" size="58%" class="order-detail-drawer">
@@ -211,9 +214,12 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'PaymentOrders' })
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { InfoFilled } from '@element-plus/icons-vue'
 import request from '@/utils/request'
+import StdPagination from '@/components/StdPagination.vue'
 
 const loading = ref(false)
 const queryingOrder = ref('')
@@ -230,6 +236,11 @@ const pageSize = 20
 const detailVisible = ref(false)
 const detail = reactive({ order: null, events: [] })
 const filters = reactive({ order_no: '', union_id: '', plugin_id: '', status: '', provider: '', method: '' })
+
+const pageDescription = '追踪支付订单、回调原文和状态事件，支持对易支付待支付订单手动查询。'
+const showPageDescription = () => {
+  ElMessageBox.alert(pageDescription, '订单管理说明', { confirmButtonText: '知道了', type: 'info' })
+}
 
 const hasSelection = computed(() => selectedItems.value.length > 0)
 const selectedOrderNoSet = computed(() => new Set(selectedItems.value.map(orderKey)))
@@ -432,15 +443,16 @@ onMounted(loadOrders)
 .page-card { height: 100%; display: flex; flex-direction: column; }
 .page-card :deep(.el-card__body) { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.page-header h2 { margin: 0 0 6px; }
-.page-header p { margin: 0; color: #909399; }
+.title-row { display: flex; align-items: center; gap: 6px; }
+.title { font-size: 18px; font-weight: 600; }
+.mobile-info-button { display: none; padding: 0; font-size: 16px; }
+.subtitle { margin-top: 6px; color: #909399; font-size: 13px; line-height: 1.5; }
 .filter-panel { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
 .mobile-filter-panel { display: none; }
 .orders-action-bar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-bottom: 12px; flex-shrink: 0; }
 .selected-count { color: #909399; font-size: 13px; white-space: nowrap; }
 .orders-table-wrap { flex: 1; min-height: 0; }
 .mobile-orders-grid { display: none; }
-.pagination-row { display: flex; justify-content: flex-end; padding-top: 12px; }
 .detail-body { display: grid; gap: 16px; }
 .detail-section { padding: 14px; border: 1px solid #ebeef5; border-radius: 10px; background: #fff; }
 .section-title { margin-bottom: 12px; font-size: 15px; font-weight: 600; color: #303133; }
@@ -457,10 +469,11 @@ onMounted(loadOrders)
   .page-card { height: 100%; min-height: 0; }
   .page-card :deep(.el-card__header) { padding: 10px 12px; flex-shrink: 0; }
   .page-card :deep(.el-card__body) { min-height: 0; padding: 10px 12px; overflow: hidden; }
-  .page-header { align-items: center; flex-direction: row; gap: 8px; }
-  .page-header h2 { margin: 0; font-size: 18px; }
-  .page-header p { display: none; }
-  .page-header > .el-button { width: auto; margin-left: 0; padding-inline: 10px; }
+  .page-header { align-items: flex-start; flex-direction: column; }
+  .title { font-size: 16px; }
+  .mobile-info-button { display: inline-flex; }
+  .subtitle { display: none; }
+  .header-actions .el-button { width: auto; margin-left: 0; padding-inline: 10px; }
   .desktop-filter-panel { display: none; }
   .mobile-filter-panel { display: block; flex-shrink: 0; margin-bottom: 8px; }
   .mobile-search-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
@@ -482,10 +495,8 @@ onMounted(loadOrders)
   .mobile-order-fields strong { min-width: 0; color: #303133; font-weight: 500; text-align: right; word-break: break-word; overflow-wrap: anywhere; }
   .mobile-order-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #f0f2f5; }
   .mobile-order-actions .el-button { width: 100%; min-width: 0; margin-left: 0; padding-inline: 8px; }
-  .pagination-row { justify-content: flex-start; overflow-x: auto; flex-shrink: 0; }
   .payment-orders :deep(.el-drawer) { width: 94vw !important; }
   .detail-grid { grid-template-columns: 1fr; }
-  .mobile-orders-grid::-webkit-scrollbar,
-  .pagination-row::-webkit-scrollbar { display: none; }
+  .mobile-orders-grid::-webkit-scrollbar { display: none; }
 }
 </style>

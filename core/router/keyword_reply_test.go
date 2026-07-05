@@ -23,6 +23,7 @@ import (
 type keywordReplyFakeAdapter struct {
 	mu             sync.Mutex
 	messages       []sentKeywordReplyMessage
+	buttons        []sentKeywordReplyButtons
 	targetResolver adapter.ReplyTargetResolver
 	textFormatter  adapter.ReplyTextFormatter
 	sendResolver   adapter.SendTargetResolver
@@ -31,6 +32,12 @@ type keywordReplyFakeAdapter struct {
 type sentKeywordReplyMessage struct {
 	target string
 	text   string
+}
+
+type sentKeywordReplyButtons struct {
+	target  string
+	text    string
+	buttons [][]types.ButtonOption
 }
 
 type fakeReleaseClient struct {
@@ -130,8 +137,24 @@ func (a *keywordReplyFakeAdapter) sentMessages() []sentKeywordReplyMessage {
 	return append([]sentKeywordReplyMessage(nil), a.messages...)
 }
 
+func (a *keywordReplyFakeAdapter) sentButtons() []sentKeywordReplyButtons {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]sentKeywordReplyButtons(nil), a.buttons...)
+}
+
 func (a *keywordReplyFakeAdapter) SendImage(target string, imageURL string) error { return nil }
 func (a *keywordReplyFakeAdapter) SendFile(target string, filePath string) error  { return nil }
+
+type keywordReplyButtonFakeAdapter struct{ *keywordReplyFakeAdapter }
+
+func (a *keywordReplyButtonFakeAdapter) SendButtons(target string, text string, buttons [][]types.ButtonOption) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.buttons = append(a.buttons, sentKeywordReplyButtons{target: target, text: text, buttons: buttons})
+	a.messages = append(a.messages, sentKeywordReplyMessage{target: target, text: text})
+	return nil
+}
 func (a *keywordReplyFakeAdapter) GetUserInfo(userID string) (*adapter.UserInfo, error) {
 	return nil, nil
 }
@@ -143,7 +166,7 @@ func (a *keywordReplyFakeAdapter) Start() error                                 
 func (a *keywordReplyFakeAdapter) Stop() error                                    { return nil }
 func (a *keywordReplyFakeAdapter) SetMessageHandler(handler func(*types.Message)) {}
 
-func newKeywordReplyTestManager(t *testing.T, fake *keywordReplyFakeAdapter, admin bool) (*config.Database, *KeywordReplyManager) {
+func newKeywordReplyTestManager(t *testing.T, fake adapter.Adapter, admin bool) (*config.Database, *KeywordReplyManager) {
 	t.Helper()
 	db, err := config.NewDatabase(":memory:")
 	if err != nil {
@@ -196,16 +219,20 @@ func TestKeywordReplyVersionShowsLatestRelease(t *testing.T) {
 	defer db.Close()
 	manager.SetReleaseClient(fakeReleaseClient{release: &updater.ReleaseInfo{Version: "v1.0.1", Body: "1. 修复问题"}})
 
-	if !manager.Handle(&types.Message{Platform: "telegram", UserID: "7089240306", Content: "version"}) {
-		t.Fatal("Handle returned false")
+	for _, content := range []string{"version", "Version"} {
+		if !manager.Handle(&types.Message{Platform: "telegram", UserID: "7089240306", Content: content}) {
+			t.Fatalf("Handle returned false for %s", content)
+		}
 	}
 	messages := fake.sentMessages()
-	if len(messages) != 1 {
+	if len(messages) != 2 {
 		t.Fatalf("messages len = %d", len(messages))
 	}
-	for _, expected := range []string{"AllBot v1.0.0 (local)", "当前版本：v1.0.0", "最新版本：v1.0.1", "更新内容：", "1. 修复问题", "发送「更新」可升级到最新版本。"} {
-		if !strings.Contains(messages[0].text, expected) {
-			t.Fatalf("version message missing %q: %s", expected, messages[0].text)
+	for _, message := range messages {
+		for _, expected := range []string{"AllBot v1.0.0 (local)", "当前版本：v1.0.0", "最新版本：v1.0.1", "更新内容：", "1. 修复问题", "发送「更新」可升级到最新版本。"} {
+			if !strings.Contains(message.text, expected) {
+				t.Fatalf("version message missing %q: %s", expected, message.text)
+			}
 		}
 	}
 }
@@ -239,11 +266,85 @@ func TestKeywordReplyVersionReleaseFailure(t *testing.T) {
 	defer db.Close()
 	manager.SetReleaseClient(fakeReleaseClient{err: errors.New("网络失败")})
 
-	if !manager.Handle(&types.Message{Platform: "telegram", UserID: "7089240306", Content: "version"}) {
+	for _, content := range []string{"version", "Version"} {
+		if !manager.Handle(&types.Message{Platform: "telegram", UserID: "7089240306", Content: content}) {
+			t.Fatalf("Handle returned false for %s", content)
+		}
+	}
+	messages := fake.sentMessages()
+	if len(messages) != 2 {
+		t.Fatalf("messages len = %d", len(messages))
+	}
+	for _, message := range messages {
+		if !strings.Contains(message.text, "最新版本：获取失败") || !strings.Contains(message.text, "网络失败") {
+			t.Fatalf("messages = %#v", messages)
+		}
+	}
+}
+
+func TestKeywordReplyBuiltinKeywordsAreCaseInsensitive(t *testing.T) {
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+	if _, err := db.EnsureUserAccount("qq", "1001"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, content := range []string{"MYID", "myid", "GroupId", "groupid"} {
+		if !manager.Handle(&types.Message{Platform: "qq", UserID: "1001", GroupID: "2001", Content: content}) {
+			t.Fatalf("Handle returned false for %s", content)
+		}
+	}
+	messages := fake.sentMessages()
+	if len(messages) != 4 {
+		t.Fatalf("messages len = %d", len(messages))
+	}
+	if !strings.Contains(messages[0].text, "用户信息") || !strings.Contains(messages[1].text, "用户信息") {
+		t.Fatalf("myid messages unexpected: %#v", messages[:2])
+	}
+	if messages[2].text != "2001" || messages[3].text != "2001" {
+		t.Fatalf("groupid messages unexpected: %#v", messages[2:])
+	}
+}
+
+func TestKeywordReplyMyPlatformsListsBoundAccounts(t *testing.T) {
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+	account, err := db.EnsureUserAccount("qq", "1001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := db.CreateUserBindCode("qq", "1001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.BindUserByCode("telegram", "tg1", code.Code); err != nil {
+		t.Fatal(err)
+	}
+
+	if !manager.Handle(&types.Message{Platform: "qq", UserID: "1001", Content: "我的平台"}) {
 		t.Fatal("Handle returned false")
 	}
 	messages := fake.sentMessages()
-	if len(messages) != 1 || !strings.Contains(messages[0].text, "最新版本：获取失败") || !strings.Contains(messages[0].text, "网络失败") {
+	if len(messages) != 1 || !strings.Contains(messages[0].text, "UnionID："+account.UnionID) || !strings.Contains(messages[0].text, "qq：1001") || !strings.Contains(messages[0].text, "telegram：tg1") {
+		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestKeywordReplyMyPlatformsOnlyPrivate(t *testing.T) {
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+	if _, err := db.EnsureUserAccount("qq", "1001"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !manager.Handle(&types.Message{Platform: "qq", UserID: "1001", GroupID: "2001", Content: "我的平台"}) {
+		t.Fatal("Handle returned false")
+	}
+	messages := fake.sentMessages()
+	if len(messages) != 1 || !strings.Contains(messages[0].text, "我的平台只能私聊查看") {
 		t.Fatalf("messages = %#v", messages)
 	}
 }
@@ -315,6 +416,99 @@ func TestKeywordReplyUpdateDuplicateRequest(t *testing.T) {
 	messages := fake.sentMessages()
 	if len(messages) != 1 || !strings.Contains(messages[0].text, "更新已在执行") {
 		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestKeywordReplyUserSearchReturnsLinkedAccountsAndPoints(t *testing.T) {
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+
+	source, err := db.EnsureUserAccount("qq", "10001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := db.CreateUserBindCode("qq", "10001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = db.BindUserByCode("telegram", "20002", code.Code); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.AddUserPoints(source.UnionID, 88); err != nil {
+		t.Fatal(err)
+	}
+
+	if !manager.Handle(&types.Message{Platform: "qq", UserID: "admin", Content: "用户搜索 " + source.UnionID}) {
+		t.Fatal("Handle returned false")
+	}
+	messages := fake.sentMessages()
+	if len(messages) != 1 {
+		t.Fatalf("messages len = %d, expected 1", len(messages))
+	}
+	for _, expected := range []string{"用户搜索结果", "UnionID：" + source.UnionID, "积分：88", "关联账号（2个）：", "平台：qq 用户号：10001", "平台：telegram 用户号：20002"} {
+		if !strings.Contains(messages[0].text, expected) {
+			t.Fatalf("search message missing %q: %s", expected, messages[0].text)
+		}
+	}
+}
+
+func TestKeywordReplyUserSearchSupportsPlatformUserID(t *testing.T) {
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+
+	source, err := db.EnsureUserAccount("qq", "10001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.AddUserPoints(source.UnionID, 66); err != nil {
+		t.Fatal(err)
+	}
+
+	if !manager.Handle(&types.Message{Platform: "qq", UserID: "admin", Content: "用户搜索 qq:10001"}) {
+		t.Fatal("colon Handle returned false")
+	}
+	if !manager.Handle(&types.Message{Platform: "qq", UserID: "admin", Content: "用户搜索 qq 10001"}) {
+		t.Fatal("space Handle returned false")
+	}
+	messages := fake.sentMessages()
+	if len(messages) != 2 {
+		t.Fatalf("messages len = %d, expected 2", len(messages))
+	}
+	for _, message := range messages {
+		for _, expected := range []string{"用户搜索结果", "UnionID：" + source.UnionID, "积分：66", "平台：qq 用户号：10001"} {
+			if !strings.Contains(message.text, expected) {
+				t.Fatalf("search message missing %q: %s", expected, message.text)
+			}
+		}
+	}
+}
+
+func TestKeywordReplyUserSearchRequiresUnionID(t *testing.T) {
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+
+	if !manager.Handle(&types.Message{Platform: "qq", UserID: "admin", Content: "用户搜索"}) {
+		t.Fatal("Handle returned false")
+	}
+	messages := fake.sentMessages()
+	if len(messages) != 1 || !strings.Contains(messages[0].text, "用法：用户搜索 <unionId>") || !strings.Contains(messages[0].text, "用户搜索 <平台>:<用户号>") {
+		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestKeywordReplyUserSearchNonAdminIsConsumedWithoutReply(t *testing.T) {
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, false)
+	defer db.Close()
+
+	if !manager.Handle(&types.Message{Platform: "qq", UserID: "user", Content: "用户搜索 union-1"}) {
+		t.Fatal("Handle returned false")
+	}
+	if messages := fake.sentMessages(); len(messages) != 0 {
+		t.Fatalf("messages len = %d, expected 0", len(messages))
 	}
 }
 
@@ -426,7 +620,7 @@ func TestFormatSystemInfoShowsCoreThreadDescription(t *testing.T) {
 }
 
 func TestKeywordReplyPluginListTogglesSelectedPlugin(t *testing.T) {
-	fake := &keywordReplyFakeAdapter{}
+	fake := &keywordReplyButtonFakeAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{}}
 	db, manager := newKeywordReplyTestManager(t, fake, true)
 	defer db.Close()
 	store := &fakeKeywordPluginAdminStore{plugins: []*plugincore.PluginProcess{
@@ -450,13 +644,17 @@ func TestKeywordReplyPluginListTogglesSelectedPlugin(t *testing.T) {
 	if !strings.Contains(messages[0].text, "1. 测试插件(demo) ❌") {
 		t.Fatalf("list message missing disabled plugin: %s", messages[0].text)
 	}
+	buttons := fake.sentButtons()
+	if len(buttons) == 0 || buttons[0].buttons[0][0].Value != "1" {
+		t.Fatalf("plugin list buttons missing: %#v", buttons)
+	}
 	if !containsKeywordReplyMessage(messages, "已启动【测试插件】") {
 		t.Fatalf("toggle confirmation missing: %#v", messages)
 	}
 }
 
 func TestKeywordReplyPluginListUpdatesAccessControlIncrementally(t *testing.T) {
-	fake := &keywordReplyFakeAdapter{}
+	fake := &keywordReplyButtonFakeAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{}}
 	db, manager := newKeywordReplyTestManager(t, fake, true)
 	defer db.Close()
 	store := &fakeKeywordPluginAdminStore{plugins: []*plugincore.PluginProcess{
@@ -485,13 +683,17 @@ func TestKeywordReplyPluginListUpdatesAccessControlIncrementally(t *testing.T) {
 	if accessControl.InheritSystem {
 		t.Fatal("plugin-specific access rules should disable system inheritance")
 	}
+	buttons := fake.sentButtons()
+	if len(buttons) < 3 || buttons[1].buttons[0][1].Value != "2" || buttons[2].buttons[0][0].Value != "1" {
+		t.Fatalf("access control buttons missing: %#v", buttons)
+	}
 	if !containsKeywordReplyMessage(fake.sentMessages(), "当前值：123,456") {
 		t.Fatalf("update confirmation missing: %#v", fake.sentMessages())
 	}
 }
 
 func TestKeywordReplyPluginListUpdatesUnionIDAccessControl(t *testing.T) {
-	fake := &keywordReplyFakeAdapter{}
+	fake := &keywordReplyButtonFakeAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{}}
 	db, manager := newKeywordReplyTestManager(t, fake, true)
 	defer db.Close()
 	store := &fakeKeywordPluginAdminStore{plugins: []*plugincore.PluginProcess{
@@ -516,7 +718,7 @@ func TestKeywordReplyPluginListUpdatesUnionIDAccessControl(t *testing.T) {
 }
 
 func TestKeywordReplyPluginListPaginatesPlugins(t *testing.T) {
-	fake := &keywordReplyFakeAdapter{}
+	fake := &keywordReplyButtonFakeAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{}}
 	db, manager := newKeywordReplyTestManager(t, fake, true)
 	defer db.Close()
 	store := &fakeKeywordPluginAdminStore{}
@@ -540,9 +742,15 @@ func TestKeywordReplyPluginListPaginatesPlugins(t *testing.T) {
 	if !strings.Contains(messages[1].text, "1. 插件11(p11) ✅") {
 		t.Fatalf("second page missing plugin 11: %s", messages[1].text)
 	}
+	buttons := fake.sentButtons()
+	if len(buttons) < 2 || buttons[0].buttons[len(buttons[0].buttons)-2][1].Value != "下一页" {
+		t.Fatalf("pagination buttons missing: %#v", buttons)
+	}
 }
 
-func waitKeywordReplyMessages(t *testing.T, fake *keywordReplyFakeAdapter, count int) {
+func waitKeywordReplyMessages(t *testing.T, fake interface {
+	sentMessages() []sentKeywordReplyMessage
+}, count int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {

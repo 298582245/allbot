@@ -49,6 +49,60 @@ def redirect_stdout_to_stderr() -> None:
 redirect_stdout_to_stderr()
 
 
+def normalize_button_rows(buttons: Any) -> List[List[Dict[str, str]]]:
+    if not isinstance(buttons, list):
+        return []
+    rows: List[List[Dict[str, str]]] = []
+    for row in buttons:
+        if not isinstance(row, list):
+            continue
+        items: List[Dict[str, str]] = []
+        for item in row:
+            if isinstance(item, dict):
+                text = str(item.get("text") or item.get("Text") or "")
+                value = str(item.get("value") or item.get("Value") or "")
+                user_id = str(item.get("user_id") or item.get("userId") or item.get("UserID") or "").strip()
+            else:
+                text = ""
+                value = ""
+                user_id = ""
+            if text and value:
+                button = {"text": text, "value": value}
+                if user_id:
+                    button["user_id"] = user_id
+                items.append(button)
+        if items:
+            rows.append(items)
+    return rows
+
+
+def normalize_rich_parts(parts: Any) -> List[Dict[str, str]]:
+    if not isinstance(parts, list):
+        parts = [parts]
+    result: List[Dict[str, str]] = []
+    for part in parts:
+        if isinstance(part, str):
+            item = {"type": "text", "text": part}
+        elif isinstance(part, dict):
+            if "image" in part:
+                item = {"type": "image", "url": str(part.get("image") or ""), "alt": str(part.get("alt") or "")}
+            else:
+                part_type = str(part.get("type") or ("markdown" if "markdown" in part else "image" if "url" in part else "text")).lower()
+                if part_type == "text":
+                    item = {"type": "text", "text": str(part.get("text") or part.get("content") or "")}
+                elif part_type == "markdown":
+                    item = {"type": "markdown", "markdown": str(part.get("markdown") or part.get("text") or part.get("content") or "")}
+                elif part_type == "image":
+                    item = {"type": "image", "url": str(part.get("url") or ""), "alt": str(part.get("alt") or "")}
+                else:
+                    continue
+        else:
+            continue
+        if (item["type"] == "image" and item.get("url")) or (item["type"] == "text" and item.get("text")) or (item["type"] == "markdown" and item.get("markdown")):
+            result.append(item)
+    return result
+
+
 class Context:
     """消息上下文，提供插件开发常用 API。"""
 
@@ -74,6 +128,7 @@ class Context:
         self.admin = bool(data.get("is_admin", False))
         self.is_admin_value = self.admin
         self.metadata = data.get("metadata", {}) or {}
+        self.event = build_event(self.metadata)
         self.user_config = data.get("user_config", {}) or {}
         self.userConfig = self.user_config
         self.access_control = data.get("access_control", {}) or {}
@@ -83,6 +138,7 @@ class Context:
         _current_context = self
         self.db = Database(self)
         self.pay = PAY(self)
+        self.web = WebRouter()
 
     def is_group(self) -> bool:
         """是否群聊消息。"""
@@ -116,10 +172,52 @@ class Context:
         """reply 的别名，贴近常见机器人 SDK。"""
         return await self.reply(text)
 
+    async def send_markdown(self, markdown: Any) -> bool:
+        """回复当前消息，内容按 Markdown 发送。"""
+        return self._send({"action": "send_markdown", "markdown": str(markdown)})
+
+    async def sendMarkdown(self, markdown: Any) -> bool:
+        """send_markdown 的 camelCase 别名。"""
+        return await self.send_markdown(markdown)
+
+    async def send_rich(self, parts: Any, **options: Any) -> bool:
+        return self._send({
+            "action": "send_rich",
+            "parts": normalize_rich_parts(parts),
+            "fallback_text": str(options.get("fallback_text") or options.get("fallbackText") or ""),
+            "prefer": str(options.get("prefer") or "auto"),
+        })
+
+    async def sendRich(self, parts: Any, **options: Any) -> bool:
+        return await self.send_rich(parts, **options)
+
+    async def reply_rich(self, parts: Any, **options: Any) -> bool:
+        return await self.send_rich(parts, **options)
+
+    async def replyRich(self, parts: Any, **options: Any) -> bool:
+        return await self.reply_rich(parts, **options)
+
+    async def send_rich_message(self, **options: Any) -> Dict[str, Any]:
+        target_platform = str(options.get("platform") or self.platform)
+        return self._request({
+            "action": "send_rich_message",
+            "platform": target_platform,
+            "adapter_id": self._adapter_id_for(options, target_platform),
+            "user_id": str(options.get("user_id") or options.get("userId") or self.user_id),
+            "group_id": str(options.get("group_id") or options.get("groupId") or ""),
+            "union_id": str(options.get("union_id") or options.get("unionId") or ""),
+            "parts": normalize_rich_parts(options.get("parts") or options.get("content") or []),
+            "fallback_text": str(options.get("fallback_text") or options.get("fallbackText") or ""),
+            "prefer": str(options.get("prefer") or "auto"),
+        }, "send_rich_message_response")
+
+    async def sendRichMessage(self, **options: Any) -> Dict[str, Any]:
+        return await self.send_rich_message(**options)
+
     async def send_message(self, **options: Any) -> Dict[str, Any]:
         """主动发送私聊或群聊消息，用于定时通知。"""
         target_platform = str(options.get("platform") or self.platform)
-        return self._request({
+        payload = {
             "action": "send_message",
             "platform": target_platform,
             "adapter_id": self._adapter_id_for(options, target_platform),
@@ -127,7 +225,19 @@ class Context:
             "group_id": str(options.get("group_id") or options.get("groupId") or ""),
             "union_id": str(options.get("union_id") or options.get("unionId") or ""),
             "text": str(options.get("text") or options.get("content") or ""),
-        }, "send_message_response")
+        }
+        buttons = normalize_button_rows(options.get("buttons") or options.get("buttonRows") or [])
+        if buttons:
+            payload["buttons"] = buttons
+        return self._request(payload, "send_message_response")
+
+    async def send_buttons(self, text: Any, buttons: Any = None) -> bool:
+        """发送按钮消息。"""
+        return self._send({"action": "send_buttons", "text": str(text), "buttons": normalize_button_rows(buttons or [])})
+
+    async def sendButtons(self, text: Any, buttons: Any = None) -> bool:
+        """send_buttons 的 camelCase 别名。"""
+        return await self.send_buttons(text, buttons)
 
     async def sendMessage(self, **options: Any) -> Dict[str, Any]:
         """send_message 的 camelCase 别名。"""
@@ -142,7 +252,7 @@ class Context:
         text = options["content"] if "content" in options else options.get("text", content)
         target_platform = options["platform"] if "platform" in options else platform
         adapter_id = options["adapter_id"] if "adapter_id" in options else options.get("adapterId", adapterId)
-        return self._request({
+        payload = {
             "action": "send_message",
             "platform": str(target_platform or self.platform),
             "adapter_id": str(adapter_id or ""),
@@ -150,7 +260,11 @@ class Context:
             "group_id": str(group_id or ""),
             "union_id": str(union_id or ""),
             "text": str(text or ""),
-        }, "send_message_response")
+        }
+        buttons = normalize_button_rows(options.get("buttons") or options.get("buttonRows") or [])
+        if buttons:
+            payload["buttons"] = buttons
+        return self._request(payload, "send_message_response")
 
     async def send_image(self, image_url: str) -> bool:
         """发送图片 URL 或本地路径，具体支持取决于平台适配器。"""
@@ -345,7 +459,7 @@ class Context:
             "wait": bool(options.get("wait")),
             "run_mode": str(options.get("run_mode") or options.get("runMode") or ""),
             "union_id": str(options.get("union_id") or options.get("unionId") or self.union_id),
-        }, "script_response")
+        }, "script_response", allow_failure=True)
 
     async def runScript(self, **options: Any) -> Dict[str, Any]:
         """run_script 的 camelCase 别名。"""
@@ -367,7 +481,7 @@ class Context:
         """run_ql_script 的 camelCase 别名。"""
         return await self.run_ql_script(**options)
 
-    def _request(self, action: Dict[str, Any], expected_action: str = "db_response") -> Any:
+    def _request(self, action: Dict[str, Any], expected_action: str = "db_response", allow_failure: bool = False) -> Any:
         """发送需要后端回包的请求。"""
         self._request_seq += 1
         request_id = f"{self._request_seq}"
@@ -385,9 +499,16 @@ class Context:
             raise RuntimeError("响应类型不匹配")
         if response.get("request_id") != request_id:
             raise RuntimeError("响应 ID 不匹配")
-        if not response.get("success"):
+        if not response.get("success") and not allow_failure:
             raise RuntimeError(response.get("error") or "请求失败")
-        return response.get("data")
+        data = response.get("data")
+        if allow_failure and not response.get("success"):
+            if not isinstance(data, dict):
+                data = {}
+            data = dict(data)
+            data.setdefault("status", "failed")
+            data.setdefault("error", response.get("error") or "请求失败")
+        return data
 
     def _send(self, action: Dict[str, Any]) -> bool:
         write_protocol_action(action)
@@ -498,6 +619,28 @@ class Database:
     async def setView(self, table: str, **options: Any) -> bool:
         """set_view 的 camelCase 别名。"""
         return await self.set_view(table, **options)
+
+
+def build_event(metadata: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    is_event = metadata.get("message_type") == "event" or bool(metadata.get("event_name"))
+    if not is_event:
+        return None
+    name = metadata.get("event_name") or metadata.get("qq_office_event_type") or ""
+    if not name:
+        return None
+    return {
+        "name": name,
+        "eventName": name,
+        "type": metadata.get("qq_office_event_type") or name,
+        "timestamp": metadata.get("qq_office_timestamp") or "",
+        "groupOpenid": metadata.get("qq_office_group_openid") or "",
+        "group_openid": metadata.get("qq_office_group_openid") or "",
+        "memberOpenid": metadata.get("qq_office_member_openid") or "",
+        "member_openid": metadata.get("qq_office_member_openid") or "",
+        "opMemberOpenid": metadata.get("qq_office_op_member_openid") or "",
+        "op_member_openid": metadata.get("qq_office_op_member_openid") or "",
+        "metadata": metadata,
+    }
 
 
 def normalize_env(env: Dict[str, Any]) -> Dict[str, str]:
@@ -626,6 +769,99 @@ def normalize_access_control(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+class WebRouter:
+    def __init__(self) -> None:
+        self.routes: List[Dict[str, Any]] = []
+
+    def get(self, path: str):
+        return self.add("GET", path)
+
+    def post(self, path: str):
+        return self.add("POST", path)
+
+    def put(self, path: str):
+        return self.add("PUT", path)
+
+    def delete(self, path: str):
+        return self.add("DELETE", path)
+
+    def add(self, method: str, path: str):
+        def decorator(handler: Callable[..., Any]):
+            self.routes.append({"method": str(method or "").upper(), "path": normalize_web_path(path), "handler": handler})
+            return handler
+        return decorator
+
+    def match(self, method: str, path: str) -> Optional[Dict[str, Any]]:
+        normalized_method = str(method or "").upper()
+        normalized_path = normalize_web_path(path)
+        for route in self.routes:
+            if route["method"] == normalized_method and route["path"] == normalized_path:
+                return route
+        return None
+
+
+class WebRequest:
+    def __init__(self, data: Dict[str, Any]) -> None:
+        request = data.get("request") or {}
+        self.method = str(data.get("method") or "").upper()
+        self.path = normalize_web_path(data.get("path") or request.get("path") or "/")
+        self.query = flatten_single_value(data.get("query") or request.get("query") or {})
+        self.headers = flatten_single_value(data.get("headers") or request.get("headers") or {})
+        self.body = data.get("body", request.get("body", ""))
+        self.data = data.get("json") or data.get("form") or request.get("json") or request.get("form")
+
+    async def json(self) -> Any:
+        if self.data is not None:
+            return self.data
+        text = self.body if isinstance(self.body, str) else ""
+        if not text.strip():
+            return {}
+        return json.loads(text)
+
+    def json_response(self, data: Any, status: int = 200, headers: Optional[Dict[str, Any]] = None) -> "WebResponse":
+        return WebResponse(data, status, headers or {})
+
+    def jsonResponse(self, data: Any, status: int = 200, headers: Optional[Dict[str, Any]] = None) -> "WebResponse":
+        return self.json_response(data, status, headers)
+
+
+class WebResponse:
+    def __init__(self, data: Any, status: int = 200, headers: Optional[Dict[str, Any]] = None) -> None:
+        self.status_code = int(status or 200)
+        self.headers = {"Content-Type": "application/json; charset=utf-8"}
+        self.headers.update({str(key): str(value) for key, value in (headers or {}).items()})
+        self.body = data
+
+    def to_action(self) -> Dict[str, Any]:
+        action = {"action": "web_response", "status": self.status_code, "headers": self.headers}
+        if isinstance(self.body, str):
+            action["body"] = self.body
+        else:
+            action["json"] = self.body
+        return action
+
+
+def normalize_web_path(path: Any) -> str:
+    text = str(path or "/").strip()
+    normalized = text if text.startswith("/") else f"/{text}"
+    while "//" in normalized:
+        normalized = normalized.replace("//", "/")
+    normalized = normalized.rstrip("/") or "/"
+    return normalized
+
+
+def to_web_response_action(result: Any) -> Dict[str, Any]:
+    if isinstance(result, WebResponse):
+        return result.to_action()
+    if isinstance(result, HTTPResponse):
+        action = result.to_action()
+        action["action"] = "web_response"
+        return action
+    if isinstance(result, dict) and result.get("action") == "web_response":
+        return result
+    return WebResponse(result if result is not None else {}).to_action()
+
+
 class HTTPResponse:
     def __init__(self) -> None:
         self.status_code = 200
@@ -668,6 +904,25 @@ class HTTPResponse:
         if self.has_json:
             action["json"] = self.json_data
         return action
+
+
+async def run_web_api_action(handler: Callable[..., Any], data: Dict[str, Any]) -> Dict[str, Any]:
+    ctx = Context(data)
+    result = handler(ctx)
+    if inspect.isawaitable(result):
+        await result
+    req = WebRequest(data)
+    route = ctx.web.match(req.method, req.path)
+    if route is None:
+        return WebResponse({"error": "插件 Web API 路由不存在"}, 404).to_action()
+    route_handler = route["handler"]
+    if len(inspect.signature(route_handler).parameters) >= 2:
+        response = route_handler(req, ctx)
+    else:
+        response = route_handler(req)
+    if inspect.isawaitable(response):
+        response = await response
+    return to_web_response_action(response)
 
 
 async def run_openapi_action(handler: Callable[..., Any], data: Dict[str, Any]) -> HTTPResponse:
@@ -740,9 +995,15 @@ def run_direct(handler: Callable[[Context], Any]) -> None:
         input_line = sys.stdin.readline()
         if not input_line:
             sys.exit(1)
-        ctx = Context(json.loads(input_line))
-        asyncio.run(handler(ctx))
-        write_protocol_action({"action": "done", "success": True})
+        data = json.loads(input_line)
+        if data.get("event_type") == "web_api":
+            write_protocol_action(asyncio.run(run_web_api_action(handler, data)))
+        else:
+            ctx = Context(data)
+            result = handler(ctx)
+            if inspect.isawaitable(result):
+                asyncio.run(result)
+            write_protocol_action({"action": "done", "success": True})
     except Exception as error:
         write_protocol_action({"action": "done", "success": False, "error": str(error)})
         sys.exit(1)

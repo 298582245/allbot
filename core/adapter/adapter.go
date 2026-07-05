@@ -5,6 +5,15 @@ import "github.com/allbot/allbot/core/adapter/_contract"
 // Adapter 平台适配器接口。
 type Adapter = contract.Adapter
 
+// MarkdownSender 由适配器按自身能力发送 Markdown 消息。
+type MarkdownSender = contract.MarkdownSender
+
+// RichMessageSender 由适配器按自身能力发送富文本消息。
+type RichMessageSender = contract.RichMessageSender
+
+// ButtonSender 由适配器按自身能力发送按钮消息。
+type ButtonSender = contract.ButtonSender
+
 // ReplyTargetResolver 由适配器按自身目标格式解析回复目标。
 type ReplyTargetResolver = contract.ReplyTargetResolver
 

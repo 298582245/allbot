@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/deps"
 )
 
@@ -36,6 +37,41 @@ func (s *Server) handleRuntimeProfiles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.jsonResponse(w, profiles)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleRuntimeProfileDownloadSettings(w http.ResponseWriter, r *http.Request) {
+	database := s.runtimeProfilesDatabase()
+	if database == nil {
+		s.jsonError(w, "数据库不可用", http.StatusInternalServerError)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		settings, err := database.GetRuntimeDownloadSettings()
+		if err != nil {
+			s.jsonError(w, "读取下载设置失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.jsonResponse(w, settings)
+	case http.MethodPut:
+		var settings config.RuntimeDownloadSettings
+		if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+			s.jsonError(w, "请求数据无效", http.StatusBadRequest)
+			return
+		}
+		if err := database.SaveRuntimeDownloadSettings(settings); err != nil {
+			s.jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		saved, err := database.GetRuntimeDownloadSettings()
+		if err != nil {
+			s.jsonError(w, "读取下载设置失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.jsonResponse(w, map[string]interface{}{"message": "保存成功", "settings": saved})
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -113,7 +149,11 @@ func (s *Server) handleRuntimeProfileInit(w http.ResponseWriter, r *http.Request
 	}
 	store := s.runtimeProfileInitJobs()
 	job := store.start(profileID, func(progress deps.RuntimeProfileInitProgressFunc) (deps.RuntimeProfileInitResult, error) {
-		return manager.InitializeRuntimeProfile(profileID, deps.RuntimeProfileInitOptions{ProfileID: profileID, Force: req.Force, AutoDownload: autoDownload, Progress: progress})
+		downloadOptions, err := s.runtimeDownloadOptionsSnapshot()
+		if err != nil {
+			return deps.RuntimeProfileInitResult{}, err
+		}
+		return manager.InitializeRuntimeProfile(profileID, deps.RuntimeProfileInitOptions{ProfileID: profileID, Force: req.Force, AutoDownload: autoDownload, DownloadOptions: downloadOptions, Progress: progress})
 	})
 	s.jsonResponse(w, job)
 }
@@ -173,6 +213,25 @@ func (s *Server) runtimeDepsManager() *deps.Manager {
 		return nil
 	}
 	return s.pluginManager.GetDepsManager()
+}
+
+func (s *Server) runtimeProfilesDatabase() *config.Database {
+	if s.adapterManager != nil {
+		return s.adapterManager.GetDatabase()
+	}
+	return nil
+}
+
+func (s *Server) runtimeDownloadOptionsSnapshot() (deps.RuntimeDownloadOptions, error) {
+	database := s.runtimeProfilesDatabase()
+	if database == nil {
+		return deps.RuntimeDownloadOptions{}, nil
+	}
+	settings, err := database.GetRuntimeDownloadSettings()
+	if err != nil {
+		return deps.RuntimeDownloadOptions{}, err
+	}
+	return deps.RuntimeDownloadOptions{ProxyURL: settings.ProxyURL, NodeMirrorURL: settings.NodeMirrorURL, PythonPackageMirrorURL: settings.PythonPackageMirrorURL, PythonMetadataURL: settings.PythonMetadataURL}, nil
 }
 
 func (s *Server) runtimeProfileInitJobs() *runtimeProfileInitJobStore {

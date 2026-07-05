@@ -223,6 +223,31 @@ func (a *DingTalkAdapter) SendMessage(target string, text string) error {
 	}
 }
 
+func (a *DingTalkAdapter) SendMarkdown(target string, markdown string) error {
+	markdown = strings.TrimSpace(markdown)
+	if markdown == "" {
+		return fmt.Errorf("钉钉 Markdown 内容不能为空")
+	}
+	targetInfo, err := parseDingTalkMessageTarget(target)
+	if err != nil {
+		return err
+	}
+	switch targetInfo.kind {
+	case dingTalkTargetWebhook:
+		if a.replier == nil {
+			a.replier = chatbot.NewChatbotReplier()
+		}
+		log.Printf("[发送][钉钉][%s]：[Markdown] %s", target, markdown)
+		return a.replier.SimpleReplyMarkdown(context.Background(), targetInfo.id, []byte(dingTalkMarkdownTitle(markdown)), []byte(markdown))
+	case dingTalkTargetConversation:
+		return fmt.Errorf("钉钉 Stream 适配器暂未实现会话主动发送 Markdown，请使用最近消息的 session webhook 回复目标")
+	case dingTalkTargetUser:
+		return fmt.Errorf("钉钉 Stream 适配器暂未实现用户主动发送 Markdown，请使用最近消息的 session webhook 回复目标")
+	default:
+		return fmt.Errorf("钉钉消息目标类型无效: %s", targetInfo.kind)
+	}
+}
+
 func (a *DingTalkAdapter) SendImage(target string, imageURL string) error {
 	imageURL = strings.TrimSpace(imageURL)
 	if imageURL == "" {
@@ -441,6 +466,16 @@ func dingTalkAtUsersMetadata(atUsers []chatbot.BotCallbackDataAtUserModel) (stri
 
 func dingTalkWebhookTarget(sessionWebhook string) string {
 	return "webhook_b64_" + base64.RawURLEncoding.EncodeToString([]byte(sessionWebhook))
+}
+
+func dingTalkMarkdownTitle(markdown string) string {
+	for _, line := range strings.Split(markdown, "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "#"))
+		if line != "" {
+			return line
+		}
+	}
+	return "Markdown"
 }
 
 func parseDingTalkMessageTarget(target string) (dingTalkMessageTarget, error) {

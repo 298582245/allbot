@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	webadapter "github.com/allbot/allbot/core/adapter/web"
 )
 
 func TestHandleAdapterPlatforms(t *testing.T) {
@@ -32,7 +34,7 @@ func TestHandleAdapterPlatforms(t *testing.T) {
 			byPlatform[platform] = item
 		}
 	}
-	for _, platform := range []string{"dingtalk", "qq", "telegram", "qq_office", "wechat_official"} {
+	for _, platform := range []string{"dingtalk", "qq", "telegram", "qq_office", "wechat_official", "web"} {
 		if byPlatform[platform] == nil {
 			t.Fatalf("missing platform %s in %#v", platform, items)
 		}
@@ -98,6 +100,32 @@ func TestHandleAdapterPlatforms(t *testing.T) {
 	}
 	if !wechatKeys["app_id"] || !wechatKeys["app_secret"] || !wechatKeys["token"] || !wechatKeys["callback_path"] {
 		t.Fatalf("wechat_official schema keys = %#v", wechatKeys)
+	}
+
+	web := byPlatform["web"]
+	webSchema, ok := web["config_schema"].([]interface{})
+	if !ok || len(webSchema) == 0 {
+		t.Fatalf("web config_schema = %#v", web["config_schema"])
+	}
+	var subjectField map[string]interface{}
+	for _, field := range webSchema {
+		fieldMap, ok := field.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if fieldMap["key"] == "smtp_subject" {
+			subjectField = fieldMap
+			break
+		}
+	}
+	if subjectField == nil {
+		t.Fatalf("missing smtp_subject in web schema: %#v", webSchema)
+	}
+	if required, _ := subjectField["required"].(bool); required {
+		t.Fatalf("smtp_subject should not be required: %#v", subjectField)
+	}
+	if subjectField["default"] != webadapter.DefaultSMTPSubject {
+		t.Fatalf("smtp_subject default = %#v, want %q", subjectField["default"], webadapter.DefaultSMTPSubject)
 	}
 }
 

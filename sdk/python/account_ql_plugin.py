@@ -157,7 +157,7 @@ class AccountQLPlugin:
             await ctx.reply(f"暂无账号，请发送【{self.prefix}登录】添加。")
             return
         lines = [f"{i + 1}. {self.account_name(item)}｜{format_auth_status(account_expires_at(item))}" for i, item in enumerate(accounts)]
-        await ctx.reply(f"====={self.prefix}账号管理=====\n" + "\n".join(lines) + "\n------------------\n回复序号可操作账号，回复 q 退出：")
+        await self.send_buttons(ctx, f"====={self.prefix}账号管理=====\n" + "\n".join(lines) + "\n------------------\n回复序号可操作账号，回复 q 退出：", self.account_choice_buttons(accounts))
         choice = (await ctx.listen(60)).strip().lower()
         if choice == "q":
             await ctx.reply("已退出账号管理")
@@ -167,7 +167,11 @@ class AccountQLPlugin:
             await ctx.reply("❌账号序号错误")
             return
         account = accounts[index]
-        await ctx.reply(f"当前账号：{self.account_name(account)}\n[1] 授权账号\n[2] 删除账号\n[3] 运行当前账号\n回复 q 退出：")
+        await self.send_buttons(ctx, f"当前账号：{self.account_name(account)}\n[1] 授权账号\n[2] 删除账号\n[3] 运行当前账号\n回复 q 退出：", [
+            [self.user_button(ctx, "授权账号", "1"), self.user_button(ctx, "运行当前账号", "3")],
+            [self.user_button(ctx, "删除账号", "2")],
+            [self.user_button(ctx, "退出", "q")],
+        ])
         action = (await ctx.listen(60)).strip().lower()
         if action == "1":
             await self.authorize_account(ctx, account)
@@ -186,7 +190,7 @@ class AccountQLPlugin:
         if not accounts:
             await ctx.reply("暂无账号可删除。")
             return
-        await ctx.reply("请选择要删除的账号：\n" + "\n".join([f"{i + 1}. {self.account_name(item)}" for i, item in enumerate(accounts)]) + "\n回复 q 退出：")
+        await self.send_buttons(ctx, "请选择要删除的账号：\n" + "\n".join([f"{i + 1}. {self.account_name(item)}" for i, item in enumerate(accounts)]) + "\n回复 q 退出：", self.account_choice_buttons(accounts))
         choice = (await ctx.listen(60)).strip().lower()
         if choice == "q":
             await ctx.reply("已取消删除")
@@ -198,7 +202,7 @@ class AccountQLPlugin:
         await self.delete_account(ctx, accounts[index])
 
     async def delete_account(self, ctx: Context, account: Dict[str, Any]) -> None:
-        await ctx.reply(f"确认删除账号【{self.account_name(account)}】吗？回复 y 确认：")
+        await self.send_buttons(ctx, f"确认删除账号【{self.account_name(account)}】吗？回复 y 确认：", [[self.user_button(ctx, "确认删除", "y")], [self.user_button(ctx, "取消", "q")]])
         if (await ctx.listen(30)).strip().lower() != "y":
             await ctx.reply("已取消删除")
             return
@@ -213,7 +217,7 @@ class AccountQLPlugin:
         if len(accounts) == 1:
             await self.authorize_account(ctx, accounts[0])
             return
-        await ctx.reply("请选择要授权的账号：\n" + "\n".join([f"{i + 1}. {self.account_name(item)}｜{format_auth_status(account_expires_at(item))}" for i, item in enumerate(accounts)]))
+        await self.send_buttons(ctx, "请选择要授权的账号：\n" + "\n".join([f"{i + 1}. {self.account_name(item)}｜{format_auth_status(account_expires_at(item))}" for i, item in enumerate(accounts)]), self.account_choice_buttons(accounts))
         index = parse_int((await ctx.listen(60)).strip(), 0) - 1
         if index < 0 or index >= len(accounts):
             await ctx.reply("❌账号序号错误")
@@ -224,7 +228,7 @@ class AccountQLPlugin:
         provider = self.auth.get("provider") or builtin_points_auth()
         price = max(0, parse_int(ctx.config(provider.get("price_config", "auth_price_per_month"), 0), 0))
         unit = ctx.points_unit or "积分"
-        await ctx.reply(f"请输入授权月数（必须大于 0）{'（' + str(price) + unit + '/月）' if price > 0 else '（免费）'}：")
+        await self.send_buttons(ctx, f"请输入授权月数（必须大于 0）{'（' + str(price) + unit + '/月）' if price > 0 else '（免费）'}：", [[self.user_button(ctx, "1个月", "1"), self.user_button(ctx, "3个月", "3"), self.user_button(ctx, "12个月", "12")], [self.user_button(ctx, "取消", "q")]])
         months = parse_int((await ctx.listen(60)).strip(), 0)
         if months <= 0:
             await ctx.reply("❌授权月数必须大于 0")
@@ -237,7 +241,7 @@ class AccountQLPlugin:
                 amount_rmb = cost / points_per_rmb
                 timeout = max(1, parse_int(ctx.config("auth_payment_timeout", 300), 300))
                 methods = [item.strip() for item in str(ctx.config("auth_payment_methods", "")).split(",") if item.strip()]
-                await ctx.reply(f"本次授权需要支付 {amount_rmb:.2f} 元（{cost}{unit}），请输入 y 发起支付：")
+                await self.send_buttons(ctx, f"本次授权需要支付 {amount_rmb:.2f} 元（{cost}{unit}），请输入 y 发起支付：", [[self.user_button(ctx, "发起支付", "y")], [self.user_button(ctx, "取消", "q")]])
                 if (await ctx.listen(30)).strip().lower() != "y":
                     await ctx.reply("已取消授权")
                     return
@@ -246,7 +250,7 @@ class AccountQLPlugin:
                     await ctx.reply("❌支付未完成，授权已取消。")
                     return
             else:
-                await ctx.reply(f"本次授权需要扣除 {cost}{unit}，当前 {ctx.points}{unit}，回复 y 确认：")
+                await self.send_buttons(ctx, f"本次授权需要扣除 {cost}{unit}，当前 {ctx.points}{unit}，回复 y 确认：", [[self.user_button(ctx, "确认授权", "y")], [self.user_button(ctx, "取消", "q")]])
                 if (await ctx.listen(30)).strip().lower() != "y":
                     await ctx.reply("已取消授权")
                     return
@@ -271,6 +275,45 @@ class AccountQLPlugin:
             return
         await self.reply_queries(ctx, selected["accounts"], separate=selected["all"])
 
+    def supports_buttons(self, ctx: Context) -> bool:
+        sender = getattr(ctx, "sendButtons", None) or getattr(ctx, "send_buttons", None)
+        return bool(getattr(ctx, "platform", "") in ["telegram", "qq_office"] and callable(sender))
+
+    def build_query_selection_buttons(self, page_accounts: List[Dict[str, Any]], start: int, total_pages: int, page: int, user_id: str = "") -> List[List[Dict[str, str]]]:
+        restrict_user_id = str(user_id or "").strip()
+
+        def button(text: str, value: str) -> Dict[str, str]:
+            item = {"text": text, "value": value}
+            if restrict_user_id:
+                item["user_id"] = restrict_user_id
+            return item
+
+        rows: List[List[Dict[str, str]]] = [[button("[0] 全部查询", "0")]]
+        for index in range(0, len(page_accounts), 4):
+            row: List[Dict[str, str]] = []
+            for offset, account in enumerate(page_accounts[index:index + 4]):
+                number = start + index + offset + 1
+                row.append(button(f"[{number}] {self.account_name(account)}", str(number)))
+            if row:
+                rows.append(row)
+        if total_pages > 1:
+            rows.append([
+                button("上一页", "p"),
+                button(f"第 {page + 1}/{total_pages} 页", "page"),
+                button("下一页", "n"),
+            ])
+            rows.append([button("退出", "q")])
+        else:
+            rows.append([button("退出", "q")])
+        return rows
+
+    async def send_query_selection_prompt(self, ctx: Context, text: str, buttons: List[List[Dict[str, str]]]) -> None:
+        if self.supports_buttons(ctx):
+            sender = getattr(ctx, "sendButtons", None) or getattr(ctx, "send_buttons", None)
+            await sender(text, buttons)
+            return
+        await ctx.reply(text)
+
     async def select_accounts_for_query(self, ctx: Context, accounts: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         page_size = 20
         total_pages = (len(accounts) + page_size - 1) // page_size
@@ -282,12 +325,14 @@ class AccountQLPlugin:
             lines.extend([f"[{start + i + 1}] {self.account_name(item)}" for i, item in enumerate(page_accounts)])
             if total_pages > 1:
                 lines.extend(["--------------------", f"第 {page + 1}/{total_pages} 页，回复 n 下一页，p 上一页，q 退出"])
-            await ctx.reply("\n".join(lines))
+            await self.send_query_selection_prompt(ctx, "\n".join(lines), self.build_query_selection_buttons(page_accounts, start, total_pages, page, getattr(ctx, "userId", "") or getattr(ctx, "user_id", "")))
             choice = (await ctx.listen(60)).strip().lower()
             if not choice or choice == "q":
                 return None
             if choice == "0":
                 return {"all": True, "accounts": accounts}
+            if choice == "page":
+                continue
             if total_pages > 1 and choice == "n":
                 page = (page + 1) % total_pages
                 continue
@@ -299,6 +344,31 @@ class AccountQLPlugin:
                 await ctx.reply("❌账号序号错误")
                 return None
             return {"all": False, "accounts": [accounts[index]]}
+
+    async def send_buttons(self, ctx: Context, text: str, buttons: List[List[Dict[str, str]]]) -> None:
+        sender = getattr(ctx, "send_buttons", None) or getattr(ctx, "sendButtons", None)
+        if callable(sender):
+            await sender(text, buttons)
+            return
+        await ctx.reply(text)
+
+    def user_button(self, ctx: Context, text: str, value: str) -> Dict[str, str]:
+        button = {"text": text, "value": value}
+        user_id = str(getattr(ctx, "user_id", "") or getattr(ctx, "userId", "") or "").strip()
+        if user_id:
+            button["user_id"] = user_id
+        return button
+
+    def account_choice_buttons(self, accounts: List[Dict[str, Any]]) -> List[List[Dict[str, str]]]:
+        rows: List[List[Dict[str, str]]] = []
+        for start in range(0, len(accounts), 4):
+            row: List[Dict[str, str]] = []
+            for offset, account in enumerate(accounts[start:start + 4]):
+                number = start + offset + 1
+                row.append({"text": f"{number}. {short_text(self.account_name(account), 12)}", "value": str(number)})
+            rows.append(row)
+        rows.append([{"text": "退出", "value": "q"}])
+        return rows
 
     async def reply_queries(self, ctx: Context, accounts: List[Dict[str, Any]], separate: bool) -> None:
         query = self.account.get("query")
@@ -359,23 +429,39 @@ class AccountQLPlugin:
         if result.get("timeout"):
             await ctx.reply(script_task_message(result, f"{title}仍在运行"))
             return
+        if result.get("status") != "success":
+            elapsed_ms = (datetime.datetime.now(datetime.timezone.utc) - started_at).total_seconds() * 1000
+            await ctx.reply(self.run_summary_message(result, len(accounts), elapsed_ms))
+            return
         if run_mode == "all_authorized":
             await self.call_after_run(ctx, accounts, result, run_mode, title, is_scheduled)
-        if result.get("status") == "success":
-            await self.check_ck_after_run(ctx, accounts)
+        await self.check_ck_after_run(ctx, accounts)
         if run_mode != "all_authorized" and self.account.get("query"):
             await self.reply_queries(ctx, accounts, separate=True)
         elif run_mode == "all_authorized":
             elapsed_ms = (datetime.datetime.now(datetime.timezone.utc) - started_at).total_seconds() * 1000
             await ctx.reply(self.run_summary_message(result, len(accounts), elapsed_ms))
         else:
-            await ctx.reply(f"{'✅执行完成' if result.get('status') == 'success' else '❌执行失败'}：{title}")
+            await ctx.reply(f"✅执行完成：{title}")
 
     def run_summary_message(self, result: Dict[str, Any], account_count: int, elapsed_ms: float) -> str:
+        task_id = result.get("task_id") or result.get("log_id") or result.get("id") or ""
         if result.get("status") != "success":
             error = result.get("error") or ""
-            return f"❌{self.prefix}生活运行失败！共运行{account_count}个账号，耗时{format_duration_seconds(elapsed_ms)}{f'，错误：{error}' if error else ''}"
-        return f"✅{self.prefix}生活运行完成！共运行{account_count}个账号，耗时{format_duration_seconds(elapsed_ms)}"
+            lines = [f"❌{self.prefix}生活运行失败！共运行{account_count}个账号，耗时{format_duration_seconds(elapsed_ms)}"]
+            if task_id:
+                lines.append(f"任务ID：{task_id}")
+            if error:
+                lines.append(f"错误：{error}")
+            output = script_output_tail(result.get("output"))
+            if output:
+                lines.append(f"最后输出：\n{output}")
+            lines.append("请到后台【脚本任务】查看完整日志。")
+            return "\n".join(lines)
+        text = f"✅{self.prefix}生活运行完成！共运行{account_count}个账号，耗时{format_duration_seconds(elapsed_ms)}"
+        if task_id:
+            text += f"\n任务ID：{task_id}"
+        return text
 
     async def call_after_run(self, ctx: Context, accounts: List[Dict[str, Any]], result: Dict[str, Any], run_mode: str, title: str, is_scheduled: bool) -> None:
         after_run = self.ql.get("after_run") or self.ql.get("afterRun")
@@ -658,6 +744,19 @@ def script_task_message(result: Dict[str, Any], fallback: str) -> str:
     return text + "\n请到后台【脚本任务】查看运行状态和日志。"
 
 
+def script_output_tail(output: Any, max_lines: int = 8, max_chars: int = 800) -> str:
+    text = str(output or "").strip()
+    if not text:
+        return ""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:]
+    text = "\n".join(lines).strip()
+    if len(text) > max_chars:
+        text = "..." + text[-max_chars:]
+    return text
+
+
 def normalize_schedules(prefix: str, schedules: Dict[str, Any]) -> List[Dict[str, Any]]:
     result = []
     run_items = []
@@ -675,6 +774,11 @@ def normalize_schedules(prefix: str, schedules: Dict[str, Any]) -> List[Dict[str
     if ck_item:
         result.append({"task_key": ck_item.get("task_key") or ck_item.get("taskKey") or f"{prefix}-ck-check", "name": ck_item.get("name", f"{prefix} CK 检测"), "description": ck_item.get("description", "检测账号 CK 是否失效"), "cron_config": ck_item.get("cron_config") or ck_item.get("cronConfig") or "ck_check_cron", "cron": ck_item.get("cron", "25 9 * * *"), "content": ck_item.get("content", f"{prefix}CK检测"), "max_count": ck_item.get("max_count") or ck_item.get("maxCount") or 3})
     return result
+
+
+def short_text(value: Any, max_length: int) -> str:
+    text = str(value or "")
+    return text[:max_length] + "…" if len(text) > max_length else text
 
 
 def parse_int(value: Any, default: int = 0) -> int:
@@ -730,7 +834,7 @@ def is_authorized(value: str) -> bool:
 
 def format_time(value: str) -> str:
     date = parse_time(value)
-    return "无" if is_min_time(date) else date.strftime("%Y/%m/%d %H:%M:%S")
+    return "无" if is_min_time(date) else date.strftime("%Y-%m-%d")
 
 
 def format_duration_seconds(ms: float) -> str:

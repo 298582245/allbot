@@ -5,12 +5,12 @@
         <div class="page-header">
           <div>
             <div class="title-row">
-              <h2>系统设置</h2>
+              <span class="title">系统设置</span>
               <el-button class="mobile-info-button" type="primary" link aria-label="查看系统设置说明" @click="showPageDescription">
                 <el-icon><InfoFilled /></el-icon>
               </el-button>
             </div>
-            <p>{{ pageDescription }}</p>
+            <div class="subtitle">{{ pageDescription }}</div>
           </div>
         </div>
       </template>
@@ -52,6 +52,10 @@
           <el-form-item label="自动加载">
             <el-switch v-model="form.auto_load_plugins" />
             <span class="hint">启动时自动加载所有插件</span>
+          </el-form-item>
+          <el-form-item label="脚本并发上限">
+            <el-input-number v-model="form.script_task_concurrent_limit" :min="1" :max="100" controls-position="right" />
+            <span class="hint">同一时间最多运行的脚本任务数，超过后自动排队</span>
           </el-form-item>
           <el-form-item label="积分单位">
             <el-input v-model="form.points_unit" placeholder="积分" />
@@ -147,6 +151,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Settings' })
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -178,6 +183,7 @@ const form = reactive({
   access_code: '',
   plugin_dir: './plugins',
   auto_load_plugins: true,
+  script_task_concurrent_limit: 1,
   points_unit: '积分',
   access_control: createAccessControl()
 })
@@ -271,6 +277,7 @@ const loadSettings = async () => {
       access_code: data.access_code || '',
       plugin_dir: data.plugin_dir,
       auto_load_plugins: data.auto_load_plugins,
+      script_task_concurrent_limit: Number(data.script_task_concurrent_limit || 1),
       points_unit: data.points_unit || '积分',
       access_control: normalizeAccessControl(data.access_control)
     })
@@ -381,6 +388,7 @@ const handleChangePassword = async () => {
 
 const handleSave = async () => {
   form.access_code = String(form.access_code || '').trim()
+  form.script_task_concurrent_limit = Math.max(1, Number(form.script_task_concurrent_limit || 1))
   if (form.access_code_enabled && !form.access_code) {
     ElMessage.warning('开启安全访问入口时必须填写访问码')
     return
@@ -388,10 +396,15 @@ const handleSave = async () => {
   saving.value = true
   try {
     await request.put('/settings', {
-      ...form,
+      admin_username: form.admin_username,
+      auto_refresh: form.auto_refresh,
+      refresh_interval: form.refresh_interval,
+      access_code_enabled: form.access_code_enabled,
       access_code: form.access_code,
-      platform_admins: form.platform_admins.filter(item => item.platform && item.user_id),
-      access_control: normalizeAccessControl(form.access_control)
+      plugin_dir: form.plugin_dir,
+      auto_load_plugins: form.auto_load_plugins,
+      script_task_concurrent_limit: form.script_task_concurrent_limit,
+      points_unit: form.points_unit
     })
     authStore.username = form.admin_username
     localStorage.setItem('username', form.admin_username)
@@ -494,7 +507,9 @@ function createAccessControl() {
     whitelist_groups: [],
     blocked_groups: [],
     whitelist_user_ids: [],
-    blocked_user_ids: []
+    blocked_user_ids: [],
+    whitelist_union_ids: [],
+    blocked_union_ids: []
   }
 }
 
@@ -506,7 +521,9 @@ function normalizeAccessControl(value) {
     whitelist_groups: list(source.whitelist_groups),
     blocked_groups: list(source.blocked_groups),
     whitelist_user_ids: list(source.whitelist_user_ids),
-    blocked_user_ids: list(source.blocked_user_ids)
+    blocked_user_ids: list(source.blocked_user_ids),
+    whitelist_union_ids: list(source.whitelist_union_ids),
+    blocked_union_ids: list(source.blocked_union_ids)
   }
 }
 </script>
@@ -517,15 +534,15 @@ function normalizeAccessControl(value) {
 .page-card :deep(.el-card__body) { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .title-row { display: flex; align-items: center; gap: 6px; }
-.page-header h2 { margin: 0 0 6px; }
-.title-row h2 { margin: 0 0 6px; }
+.title { font-size: 18px; font-weight: 600; }
 .mobile-info-button { display: none; padding: 0; font-size: 16px; }
-.page-header p { margin: 0; color: #909399; }
+.subtitle { margin-top: 6px; color: #909399; font-size: 13px; line-height: 1.5; }
 
 .settings-form {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 4px;
 }
 
@@ -572,6 +589,7 @@ function normalizeAccessControl(value) {
 
 .info-item {
   padding: 12px;
+  min-width: 0;
   border-radius: 8px;
   background: #f8fafc;
 }
@@ -579,6 +597,8 @@ function normalizeAccessControl(value) {
 .info-item.wide { grid-column: 1 / -1; }
 .info-item span { display: block; margin-bottom: 6px; color: #909399; font-size: 12px; }
 .info-item strong { color: #303133; font-weight: 600; word-break: break-all; }
+.info-item :deep(.el-link) { word-break: break-all; overflow-wrap: anywhere; }
+.info-item :deep(.el-link__inner) { word-break: break-all; overflow-wrap: anywhere; }
 
 .info-tip {
   margin: 8px 0 0;
@@ -591,6 +611,7 @@ function normalizeAccessControl(value) {
 
 .release-body {
   max-height: 220px;
+  max-width: 100%;
   margin: 0;
   overflow: auto;
   color: #303133;
@@ -621,8 +642,9 @@ function normalizeAccessControl(value) {
   .page-card :deep(.el-card__body) { padding: 12px; }
   .page-header { align-items: flex-start; flex-direction: column; }
   .mobile-info-button { display: inline-flex; }
-  .page-header p { display: none; font-size: 12px; line-height: 1.5; }
-  .settings-form { padding-right: 0; }
+  .subtitle { display: none; }
+  .title { font-size: 16px; }
+  .settings-form { padding-right: 0; overflow-x: hidden; }
   .form-section { padding: 12px; border-radius: 12px; }
   .section-header { display: block; }
   .section-actions {

@@ -81,6 +81,7 @@
           placeholder="状态"
           @change="searchItems"
         >
+          <el-option label="排队中" value="queued" />
           <el-option label="运行中" value="running" />
           <el-option label="暂停中" value="pausing" />
           <el-option label="已暂停" value="paused" />
@@ -148,6 +149,7 @@
             placeholder="状态"
             @change="searchItems"
           >
+            <el-option label="排队中" value="queued" />
             <el-option label="运行中" value="running" />
             <el-option label="暂停中" value="pausing" />
             <el-option label="已暂停" value="paused" />
@@ -160,14 +162,12 @@
 
       <div class="table-area desktop-script-table">
         <el-table
-          ref="desktopTableRef"
           v-loading="loading"
           class="desktop-data-table"
           :data="items"
           row-key="id"
           stripe
           height="100%"
-          @scroll="syncDesktopActionScroll"
         >
           <el-table-column prop="id" label="ID" width="80" />
           <el-table-column
@@ -228,32 +228,31 @@
           </el-table-column>
           <el-table-column label="结束时间" min-width="170">
             <template #default="{ row }">{{
-              isRunning(row.status) ? "-" : formatTime(row.finished_at)
+              isActiveTask(row.status) ? "-" : formatTime(row.finished_at)
             }}</template>
           </el-table-column>
+          <el-table-column label="操作" width="250" fixed="right">
+            <template #default="{ row }">
+              <div class="table-actions">
+                <el-button size="small" @click="openLog(row)">日志</el-button>
+                <el-button
+                  size="small"
+                  :disabled="!canPauseTask(row.status)"
+                  :loading="pausingId === row.id"
+                  @click="pauseItem(row)"
+                  >暂停</el-button
+                >
+                <el-button
+                  size="small"
+                  type="danger"
+                  :loading="deletingId === row.id"
+                  @click="deleteItem(row)"
+                  >删除</el-button
+                >
+              </div>
+            </template>
+          </el-table-column>
         </el-table>
-        <div class="desktop-action-panel">
-          <div class="desktop-action-header">操作</div>
-          <div ref="desktopActionBodyRef" class="desktop-action-body">
-            <div v-for="row in items" :key="row.id" class="desktop-action-row">
-              <el-button size="small" @click="openLog(row)">日志</el-button>
-              <el-button
-                size="small"
-                :disabled="!isRunning(row.status)"
-                :loading="pausingId === row.id"
-                @click="pauseItem(row)"
-                >暂停</el-button
-              >
-              <el-button
-                size="small"
-                type="danger"
-                :loading="deletingId === row.id"
-                @click="deleteItem(row)"
-                >删除</el-button
-              >
-            </div>
-          </div>
-        </div>
 
         <el-empty
           v-if="!loading && items.length === 0"
@@ -299,7 +298,7 @@
             <div>
               <span>结束时间</span
               ><strong>{{
-                isRunning(row.status) ? "-" : formatTime(row.finished_at)
+                isActiveTask(row.status) ? "-" : formatTime(row.finished_at)
               }}</strong>
             </div>
           </div>
@@ -307,7 +306,7 @@
             <el-button size="small" @click="openLog(row)">日志</el-button>
             <el-button
               size="small"
-              :disabled="!isRunning(row.status)"
+              :disabled="!canPauseTask(row.status)"
               :loading="pausingId === row.id"
               @click="pauseItem(row)"
               >暂停</el-button
@@ -326,17 +325,14 @@
           description="暂无脚本任务"
         />
       </div>
-      <div class="pagination-bar">
-        <el-pagination
-          v-model:current-page="page"
-          v-model:page-size="pageSize"
-          :total="total"
-          :page-sizes="[10, 20, 50, 100]"
-          layout="total, sizes, prev, pager, next, jumper"
-          @current-change="loadItems"
-          @size-change="handlePageSizeChange"
-        />
-      </div>
+      <StdPagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :total="total"
+        :page-sizes="[10, 20, 50, 100]"
+        @current-change="loadItems"
+        @size-change="handlePageSizeChange"
+      />
     </el-card>
 
     <el-dialog
@@ -383,10 +379,12 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'ScriptTasks' })
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { InfoFilled } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import request from "@/utils/request";
+import StdPagination from '@/components/StdPagination.vue'
 
 const loading = ref(false);
 const logLoading = ref(false);
@@ -396,8 +394,6 @@ const savingCleanup = ref(false);
 const autoRefresh = ref(true);
 const showMobileFilters = ref(false);
 const items = ref([]);
-const desktopTableRef = ref(null);
-const desktopActionBodyRef = ref(null);
 const currentLog = ref(null);
 const logDialogVisible = ref(false);
 const retentionDays = ref(0);
@@ -565,15 +561,13 @@ const deleteItem = async (item) => {
   }
 };
 
-const syncDesktopActionScroll = ({ scrollTop }) => {
-  if (desktopActionBodyRef.value)
-    desktopActionBodyRef.value.scrollTop = scrollTop || 0;
-};
+const isActiveTask = (status) => ["queued", "running", "pausing"].includes(status);
 
-const isRunning = (status) => ["running", "pausing"].includes(status);
+const canPauseTask = (status) => ["queued", "running", "pausing"].includes(status);
 
 const statusText = (status) =>
   ({
+    queued: "排队中",
     running: "运行中",
     pausing: "暂停中",
     paused: "已暂停",
@@ -585,6 +579,7 @@ const statusText = (status) =>
 
 const statusType = (status) =>
   ({
+    queued: "info",
     running: "primary",
     pausing: "warning",
     paused: "warning",
@@ -617,7 +612,7 @@ const startTimer = () => {
     if (
       logDialogVisible.value &&
       currentLog.value?.id &&
-      isRunning(currentLog.value.status) &&
+      isActiveTask(currentLog.value.status) &&
       !logLoading.value
     )
       await loadLog(currentLog.value.id);
@@ -729,63 +724,19 @@ onBeforeUnmount(stopTimer);
   align-items: center;
   justify-content: center;
 }
-.desktop-script-table {
-  padding-right: 250px;
-}
 .desktop-data-table {
   width: 100%;
 }
-.desktop-action-panel {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 4;
-  width: 250px;
-  display: flex;
-  flex-direction: column;
-  background: #fff;
-  border-left: 1px solid #ebeef5;
-  box-shadow: -6px 0 10px rgba(15, 23, 42, 0.06);
-}
-.desktop-action-header {
-  height: 48px;
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  color: #909399;
-  font-weight: 600;
-  border-bottom: 1px solid #ebeef5;
-  background: #fff;
-}
-.desktop-action-body {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-.desktop-action-row {
-  height: 48px;
+.table-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 12px;
-  border-bottom: 1px solid #ebeef5;
-  box-sizing: border-box;
 }
-.desktop-action-row .el-button + .el-button {
+.table-actions .el-button + .el-button {
   margin-left: 0;
 }
 .mobile-script-list {
   display: none;
-}
-.pagination-bar {
-  display: flex;
-  justify-content: flex-end;
-  flex-shrink: 0;
-  min-width: 0;
-}
-.pagination-bar :deep(.el-pagination) {
-  max-width: 100%;
 }
 .log-dialog-body {
   min-height: 480px;
@@ -965,19 +916,7 @@ pre {
     margin-left: 0;
     padding-inline: 8px;
   }
-  .pagination-bar {
-    justify-content: flex-start;
-    width: 100%;
-    overflow-x: auto;
-    padding-bottom: 2px;
-    flex-shrink: 0;
-  }
-  .pagination-bar :deep(.el-pagination) {
-    flex-wrap: nowrap;
-    min-width: max-content;
-  }
-  .mobile-script-list::-webkit-scrollbar,
-  .pagination-bar::-webkit-scrollbar {
+  .mobile-script-list::-webkit-scrollbar {
     display: none;
   }
   .script-tasks-page :deep(.el-dialog) {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,10 +24,14 @@ type Manager struct {
 	plugins        map[string]*PluginProcess
 	runningScripts map[int64]context.CancelFunc
 	scriptDone     map[int64]chan ScriptRunResult
+	queuedScripts  map[int64]*queuedScriptRun
+	queueWake      chan struct{}
+	schedulerOnce  sync.Once
 	mu             sync.RWMutex
 	pluginDir      string
 	depsManager    *deps.Manager
 	database       *config.Database
+	scriptLimit    int
 }
 
 type PluginProcess struct {
@@ -73,6 +78,26 @@ type SendMessageAction struct {
 	GroupID   string
 	UnionID   string
 	Text      string
+	Buttons   [][]types.ButtonOption
+}
+
+type RichMessageAction struct {
+	Platform     string
+	AdapterID    string
+	UserID       string
+	GroupID      string
+	UnionID      string
+	Parts        []types.RichMessagePart
+	FallbackText string
+	Prefer       string
+}
+
+type PluginWebResponse struct {
+	Status  int
+	Headers map[string]string
+	Body    string
+	JSON    interface{}
+	Data    map[string]interface{}
 }
 
 type PluginConfigAction struct {
@@ -133,6 +158,19 @@ type ScriptRunResult struct {
 	FinishedAt time.Time `json:"finished_at"`
 }
 
+type queuedScriptRun struct {
+	logID       int64
+	pluginPath  string
+	runtimeName string
+	fullScript  string
+	workDir     string
+	resolved    deps.ResolvedRuntime
+	action      ScriptRunAction
+	done        chan ScriptRunResult
+	startedAt   time.Time
+	createdAt   time.Time
+}
+
 type ScriptRunTask struct {
 	ID             int64     `json:"id"`
 	PluginID       string    `json:"plugin_id"`
@@ -170,7 +208,7 @@ type PaymentWaitAction struct {
 }
 
 func NewManager(pluginDir string, depsManager *deps.Manager) *Manager {
-	return &Manager{plugins: make(map[string]*PluginProcess), runningScripts: make(map[int64]context.CancelFunc), scriptDone: make(map[int64]chan ScriptRunResult), pluginDir: pluginDir, depsManager: depsManager}
+	return &Manager{plugins: make(map[string]*PluginProcess), runningScripts: make(map[int64]context.CancelFunc), scriptDone: make(map[int64]chan ScriptRunResult), pluginDir: pluginDir, depsManager: depsManager, scriptLimit: 1}
 }
 
 func (m *Manager) PluginDir() string {
@@ -186,10 +224,31 @@ func (m *Manager) SetDatabase(database *config.Database) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.database = database
+	if database != nil {
+		if limit, err := database.GetSetting("script_tasks.concurrent_limit"); err == nil {
+			if parsed, parseErr := strconv.Atoi(strings.TrimSpace(limit)); parseErr == nil && parsed > 0 {
+				m.scriptLimit = parsed
+			}
+		}
+	}
+}
+
+func (m *Manager) SetScriptLimit(limit int) {
+	if limit <= 0 {
+		limit = 1
+	}
+	m.mu.Lock()
+	m.scriptLimit = limit
+	m.mu.Unlock()
+	m.signalScriptQueue()
 }
 
 func (m *Manager) GetDepsManager() *deps.Manager {
 	return m.depsManager
+}
+
+func (m *Manager) PluginPath(pluginID string) string {
+	return filepath.Join(m.pluginDir, pluginID)
 }
 
 func (m *Manager) LoadPlugin(pluginPath string) (*types.Plugin, error) {
@@ -225,6 +284,7 @@ func (m *Manager) LoadAllPlugins() ([]*types.Plugin, error) {
 		}
 		plugins = append(plugins, plugin)
 	}
+	m.restoreQueuedScriptRuns()
 	return plugins, nil
 }
 
@@ -388,7 +448,7 @@ func (b *pluginProcessLogBatch) Flush() {
 
 func isPluginProtocolAction(action string) bool {
 	switch action {
-	case "reply", "send_image", "send_file", "listen", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "get_union_id", "list_platform_admins", "set_access_control", "set_scheduled_task", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "done":
+	case "reply", "send_markdown", "send_rich", "send_buttons", "send_image", "send_file", "listen", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "send_rich_message", "get_union_id", "list_platform_admins", "set_access_control", "set_scheduled_task", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "web_response", "done":
 		return true
 	default:
 		return false
@@ -481,7 +541,31 @@ func waitPluginProcess(cmd *exec.Cmd, stderrDone <-chan struct{}) error {
 	return err
 }
 
-func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte, replyFunc func(string) error, imageFunc func(string) error, fileFunc func(string) error, listenFunc func(timeout int) string, dataViewFunc func(config.DataViewConfig) error, dbFunc func(pluginID string, action PluginDBAction) PluginDBResult, fakeMessageFunc func(pluginID string, action FakeMessageAction) error, sendMessageFunc func(pluginID string, action SendMessageAction) PluginUserResult, userFunc func() PluginUserResult, adminFunc func(platform string) PluginUserResult, configFunc func(pluginID string, action PluginConfigAction) PluginUserResult, scheduleFunc func(pluginID string, action ScheduledTaskAction) PluginUserResult, accountFunc func(pluginID string, action PluginAccountAction) PluginUserResult, authFunc func(pluginID string, action PluginAuthorizationAction) PluginUserResult, scriptFunc func(pluginID string, action ScriptRunAction) PluginUserResult, paymentFunc func(pluginID string, action PaymentWaitAction) PluginUserResult) error {
+func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte, replyFunc func(string) error, imageFunc func(string) error, fileFunc func(string) error, listenFunc func(timeout int) string, dataViewFunc func(config.DataViewConfig) error, dbFunc func(pluginID string, action PluginDBAction) PluginDBResult, fakeMessageFunc func(pluginID string, action FakeMessageAction) error, sendMessageFunc func(pluginID string, action SendMessageAction) PluginUserResult, userFunc func() PluginUserResult, adminFunc func(platform string) PluginUserResult, configFunc func(pluginID string, action PluginConfigAction) PluginUserResult, scheduleFunc func(pluginID string, action ScheduledTaskAction) PluginUserResult, accountFunc func(pluginID string, action PluginAccountAction) PluginUserResult, authFunc func(pluginID string, action PluginAuthorizationAction) PluginUserResult, scriptFunc func(pluginID string, action ScriptRunAction) PluginUserResult, paymentFunc func(pluginID string, action PaymentWaitAction) PluginUserResult, callbacks ...interface{}) error {
+	var replyMarkdownFunc func(string) error
+	var replyRichFunc func(types.RichMessage) error
+	var sendRichMessageFunc func(string, RichMessageAction) PluginUserResult
+	var sendButtonsFunc func(string, [][]types.ButtonOption) error
+	for _, callback := range callbacks {
+		switch fn := callback.(type) {
+		case func(string) error:
+			if replyMarkdownFunc == nil {
+				replyMarkdownFunc = fn
+			}
+		case func(types.RichMessage) error:
+			if replyRichFunc == nil {
+				replyRichFunc = fn
+			}
+		case func(string, RichMessageAction) PluginUserResult:
+			if sendRichMessageFunc == nil {
+				sendRichMessageFunc = fn
+			}
+		case func(string, [][]types.ButtonOption) error:
+			if sendButtonsFunc == nil {
+				sendButtonsFunc = fn
+			}
+		}
+	}
 	cmd, err := m.newDirectCommand(plugin, pluginPath)
 	if err != nil {
 		return err
@@ -528,6 +612,11 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			Action         string                     `json:"action"`
 			RequestID      string                     `json:"request_id"`
 			Text           string                     `json:"text"`
+			Markdown       string                     `json:"markdown"`
+			Buttons        [][]types.ButtonOption     `json:"buttons"`
+			Parts          []types.RichMessagePart    `json:"parts"`
+			FallbackText   string                     `json:"fallback_text"`
+			Prefer         string                     `json:"prefer"`
 			URL            string                     `json:"url"`
 			Path           string                     `json:"path"`
 			Timeout        int                        `json:"timeout"`
@@ -595,13 +684,50 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			if replyFunc != nil && action.Text != "" {
 				_ = replyFunc(action.Text)
 			}
+		case "send_markdown":
+			if replyMarkdownFunc != nil {
+				markdown := action.Markdown
+				if markdown == "" {
+					markdown = action.Content
+				}
+				if markdown == "" {
+					markdown = action.Text
+				}
+				if markdown != "" {
+					_ = replyMarkdownFunc(markdown)
+				}
+			}
+		case "send_rich":
+			if replyRichFunc != nil {
+				message := types.RichMessage{Parts: action.Parts, FallbackText: action.FallbackText, Prefer: action.Prefer}
+				if len(message.Parts) > 0 || message.FallbackText != "" {
+					_ = replyRichFunc(message)
+				}
+			}
+		case "send_buttons":
+			if sendButtonsFunc != nil {
+				text := action.Text
+				if text == "" {
+					text = action.Content
+				}
+				if text == "" {
+					text = action.Markdown
+				}
+				if text != "" {
+					_ = sendButtonsFunc(text, action.Buttons)
+				}
+			}
 		case "send_image":
 			if imageFunc != nil && action.URL != "" {
-				_ = imageFunc(action.URL)
+				if err := imageFunc(action.URL); err != nil {
+					log.Printf("[SYSTEM] Plugin %s send image failed: %v", plugin.ID, err)
+				}
 			}
 		case "send_file":
 			if fileFunc != nil && action.Path != "" {
-				_ = fileFunc(action.Path)
+				if err := fileFunc(action.Path); err != nil {
+					log.Printf("[SYSTEM] Plugin %s send file failed: %v", plugin.ID, err)
+				}
 			}
 		case "listen":
 			timeout := action.Timeout
@@ -655,6 +781,14 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 				result = sendMessageFunc(plugin.ID, SendMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, Text: text})
 			}
 			response, _ := json.Marshal(map[string]interface{}{"action": "send_message_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
+			response = append(response, '\n')
+			_, _ = stdin.Write(response)
+		case "send_rich_message":
+			result := PluginUserResult{Success: false, Error: "富文本消息发送器不可用"}
+			if sendRichMessageFunc != nil {
+				result = sendRichMessageFunc(plugin.ID, RichMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, Parts: action.Parts, FallbackText: action.FallbackText, Prefer: action.Prefer})
+			}
+			response, _ := json.Marshal(map[string]interface{}{"action": "send_rich_message_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
 			response = append(response, '\n')
 			_, _ = stdin.Write(response)
 		case "get_union_id":
@@ -723,8 +857,9 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 		case "run_script":
 			result := PluginUserResult{Success: false, Error: "脚本执行器不可用"}
 			if scriptFunc != nil {
+				runtimeName := normalizePluginRuntime(action.Runtime)
 				runtimeProfile := strings.TrimSpace(action.RuntimeProfile)
-				if runtimeProfile == "" {
+				if runtimeProfile == "" && (runtimeName == "" || runtimeName == normalizePluginRuntime(plugin.Runtime)) {
 					runtimeProfile = strings.TrimSpace(plugin.RuntimeProfile)
 				}
 				result = scriptFunc(plugin.ID, ScriptRunAction{RequestID: action.RequestID, PluginID: plugin.ID, Runtime: action.Runtime, RuntimeProfile: runtimeProfile, Script: action.Script, Cwd: action.Cwd, Env: action.Env, Timeout: action.Timeout, Wait: action.Wait, RunMode: action.RunMode, UnionID: action.UnionID})
@@ -782,6 +917,133 @@ func (m *Manager) ExecutePluginOpenAPI(plugin *types.Plugin, pluginPath string, 
 	}
 	endpoint := types.OpenAPIEndpoint{ID: plugin.ID, Name: plugin.Name, Path: plugin.OpenAPI.Path, Method: plugin.OpenAPI.Method, Enabled: plugin.OpenAPI.Enabled, Token: plugin.OpenAPI.Token, Runtime: plugin.Runtime, RuntimeProfile: runtimeProfile, Entry: plugin.Entry}
 	return m.ExecuteOpenAPI(endpoint, pluginPath, request, nil, nil)
+}
+
+func (m *Manager) ExecutePluginWeb(plugin *types.Plugin, pluginPath string, payload []byte, dbFunc func(string, PluginDBAction) PluginDBResult, sendMessageFunc func(string, SendMessageAction) PluginUserResult) (PluginWebResponse, error) {
+	response, err := m.executePluginWebViaDirect(plugin, pluginPath, payload, dbFunc, sendMessageFunc)
+	return response, err
+}
+
+func (m *Manager) executePluginWebViaDirect(plugin *types.Plugin, pluginPath string, payload []byte, dbFunc func(string, PluginDBAction) PluginDBResult, sendMessageFunc func(string, SendMessageAction) PluginUserResult) (PluginWebResponse, error) {
+	cmd, err := m.newDirectCommand(plugin, pluginPath)
+	if err != nil {
+		return PluginWebResponse{}, err
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return PluginWebResponse{}, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return PluginWebResponse{}, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return PluginWebResponse{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return PluginWebResponse{}, err
+	}
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		scanPluginProcessStderr(stderr, "WEBAPI", plugin.ID)
+	}()
+	if _, err := stdin.Write(append(payload, '\n')); err != nil {
+		_ = cmd.Process.Kill()
+		_ = waitPluginProcess(cmd, stderrDone)
+		return PluginWebResponse{}, err
+	}
+	response := PluginWebResponse{Status: 200, Headers: map[string]string{"Content-Type": "application/json; charset=utf-8"}}
+	stdoutBatch := newPluginProcessLogBatch("WEBAPI", plugin.ID, "STDOUT")
+	scanner := newPluginOutputScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		var action struct {
+			Action    string                     `json:"action"`
+			RequestID string                     `json:"request_id"`
+			Status    int                        `json:"status"`
+			Headers   map[string]string          `json:"headers"`
+			Body      string                     `json:"body"`
+			JSON      interface{}                `json:"json"`
+			Data      map[string]interface{}     `json:"data"`
+			Success   bool                       `json:"success"`
+			Error     string                     `json:"error"`
+			Platform  string                     `json:"platform"`
+			AdapterID string                     `json:"adapter_id"`
+			UserID    string                     `json:"user_id"`
+			GroupID   string                     `json:"group_id"`
+			UnionID   string                     `json:"union_id"`
+			Text      string                     `json:"text"`
+			Content   string                     `json:"content"`
+			DBTable   string                     `json:"table"`
+			DBColumns []config.PluginTableColumn `json:"db_columns"`
+			Values    map[string]interface{}     `json:"values"`
+			RowID     int64                      `json:"row_id"`
+			Query     config.PluginDBQuery       `json:"query"`
+		}
+		if err := json.Unmarshal([]byte(line), &action); err != nil {
+			stdoutBatch.Add(line)
+			continue
+		}
+		if action.Action == "" || !isPluginProtocolAction(action.Action) {
+			stdoutBatch.Add(line)
+			continue
+		}
+		stdoutBatch.Flush()
+		switch action.Action {
+		case "web_response":
+			if action.Status > 0 {
+				response.Status = action.Status
+			}
+			if action.Headers != nil {
+				response.Headers = action.Headers
+			}
+			response.Body = action.Body
+			response.JSON = action.JSON
+			response.Data = action.Data
+			_ = stdin.Close()
+			_ = waitPluginProcess(cmd, stderrDone)
+			return response, nil
+		case "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear":
+			result := PluginDBResult{Success: false, Error: "数据库执行器不可用"}
+			if dbFunc != nil {
+				result = dbFunc(plugin.ID, PluginDBAction{Action: action.Action, RequestID: action.RequestID, Table: action.DBTable, Columns: action.DBColumns, Values: action.Values, RowID: action.RowID, Query: action.Query})
+			}
+			reply, _ := json.Marshal(map[string]interface{}{"action": "db_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
+			reply = append(reply, '\n')
+			_, _ = stdin.Write(reply)
+		case "send_message":
+			result := PluginUserResult{Success: false, Error: "消息发送器不可用"}
+			if sendMessageFunc != nil {
+				text := action.Text
+				if text == "" {
+					text = action.Content
+				}
+				result = sendMessageFunc(plugin.ID, SendMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, Text: text})
+			}
+			reply, _ := json.Marshal(map[string]interface{}{"action": "send_message_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
+			reply = append(reply, '\n')
+			_, _ = stdin.Write(reply)
+		case "done":
+			if !action.Success && action.Error != "" {
+				_ = waitPluginProcess(cmd, stderrDone)
+				return PluginWebResponse{}, fmt.Errorf("%s", action.Error)
+			}
+		}
+	}
+	stdoutBatch.Flush()
+	if err := scanner.Err(); err != nil {
+		_ = cmd.Process.Kill()
+		_ = waitPluginProcess(cmd, stderrDone)
+		return PluginWebResponse{}, err
+	}
+	_ = stdin.Close()
+	_ = waitPluginProcess(cmd, stderrDone)
+	return PluginWebResponse{}, fmt.Errorf("插件 Web API 未返回 web_response")
 }
 
 func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string, request types.OpenAPIRequest, dbFunc func(string, PluginDBAction) PluginDBResult, sendMessageFunc func(string, SendMessageAction) PluginUserResult) (types.OpenAPIResponse, error) {
@@ -1007,34 +1269,31 @@ func (m *Manager) RunPluginScript(pluginPath string, action ScriptRunAction) Plu
 	if runMode == "" {
 		runMode = "manual"
 	}
-	m.mu.Lock()
-	if existing, err := database.FindRunningScriptRunLog(action.PluginID, scriptPath, runMode, action.UnionID, actualProfile); err != nil {
-		m.mu.Unlock()
+	existingLog, err := database.FindLatestScriptRunLog(action.PluginID, scriptPath, runMode, action.UnionID, actualProfile)
+	if err != nil {
 		return PluginUserResult{Success: false, Error: err.Error()}
-	} else if existing != nil {
-		data := map[string]interface{}{"log_id": existing.ID, "task_id": existing.ID, "status": existing.Status, "runtime": existing.Runtime, "runtime_profile": existing.RuntimeProfile, "script": existing.ScriptPath, "already_running": true}
-		m.mu.Unlock()
+	}
+	if existingLog != nil && isScriptRunActiveStatus(existingLog.Status) {
+		data := map[string]interface{}{"log_id": existingLog.ID, "task_id": existingLog.ID, "status": existingLog.Status, "runtime": existingLog.Runtime, "runtime_profile": existingLog.RuntimeProfile, "script": existingLog.ScriptPath, "already_running": existingLog.Status != config.ScriptRunStatusQueued, "reused": true}
+		if existingLog.Status == config.ScriptRunStatusQueued {
+			data["queued"] = true
+		}
 		if action.Wait {
-			return m.waitScriptRun(existing.ID, data, action.Timeout)
+			return m.waitScriptRun(existingLog.ID, data, action.Timeout)
 		}
 		return PluginUserResult{Success: true, Data: data}
 	}
 	startedAt := time.Now()
-	logID, reused, err := database.UpsertScriptRunLog(config.ScriptRunLog{PluginID: action.PluginID, UnionID: action.UnionID, ScriptPath: scriptPath, Runtime: runtimeName, RuntimeProfile: actualProfile, RunMode: runMode, Status: "running", StartedAt: startedAt, FinishedAt: startedAt})
+	logID, reused, err := database.UpsertScriptRunLog(config.ScriptRunLog{PluginID: action.PluginID, UnionID: action.UnionID, ScriptPath: scriptPath, Runtime: runtimeName, RuntimeProfile: actualProfile, RunMode: runMode, Status: config.ScriptRunStatusQueued, StartedAt: startedAt})
 	if err != nil {
-		m.mu.Unlock()
 		return PluginUserResult{Success: false, Error: err.Error()}
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan ScriptRunResult, 1)
-	m.runningScripts[logID] = cancel
-	m.scriptDone[logID] = done
-	go m.runPluginScriptTask(ctx, logID, runtimeName, fullScript, workDir, resolved, action)
-	data := map[string]interface{}{"log_id": logID, "task_id": logID, "status": "running", "runtime": runtimeName, "runtime_profile": actualProfile, "script": scriptPath, "already_running": false, "reused": reused}
-	m.mu.Unlock()
+	data := map[string]interface{}{"log_id": logID, "task_id": logID, "status": config.ScriptRunStatusQueued, "runtime": runtimeName, "runtime_profile": actualProfile, "script": scriptPath, "already_running": false, "reused": reused}
+	m.enqueueScriptRun(logID, pluginPath, runtimeName, fullScript, workDir, resolved, action, startedAt)
 	if action.Wait {
 		return m.waitScriptRun(logID, data, action.Timeout)
 	}
+	data["queued"] = true
 	return PluginUserResult{Success: true, Data: data}
 }
 
@@ -1056,10 +1315,139 @@ func (m *Manager) waitScriptRun(logID int64, data map[string]interface{}, timeou
 		data["finished_at"] = result.FinishedAt
 		return PluginUserResult{Success: result.Status == "success", Error: result.Error, Data: data}
 	case <-time.After(time.Duration(timeoutSeconds) * time.Second):
-		data["status"] = "running"
+		if m.isQueuedScriptRun(logID) {
+			data["status"] = config.ScriptRunStatusQueued
+		} else {
+			data["status"] = "running"
+		}
 		data["timeout"] = true
 		return PluginUserResult{Success: true, Data: data}
 	}
+}
+
+func (m *Manager) enqueueScriptRun(logID int64, pluginPath, runtimeName, fullScript, workDir string, resolved deps.ResolvedRuntime, action ScriptRunAction, startedAt time.Time) bool {
+	m.mu.Lock()
+	if m.runningScripts == nil {
+		m.runningScripts = make(map[int64]context.CancelFunc)
+	}
+	if m.queuedScripts == nil {
+		m.queuedScripts = make(map[int64]*queuedScriptRun)
+	}
+	if _, ok := m.runningScripts[logID]; ok {
+		m.mu.Unlock()
+		return false
+	}
+	if _, ok := m.queuedScripts[logID]; ok {
+		m.mu.Unlock()
+		return false
+	}
+	if m.queueWake == nil {
+		m.queueWake = make(chan struct{}, 1)
+	}
+	done := make(chan ScriptRunResult, 1)
+	queueItem := &queuedScriptRun{logID: logID, pluginPath: pluginPath, runtimeName: runtimeName, fullScript: fullScript, workDir: workDir, resolved: resolved, action: action, done: done, startedAt: startedAt, createdAt: time.Now()}
+	m.queuedScripts[logID] = queueItem
+	m.scriptDone[logID] = done
+	m.mu.Unlock()
+	m.ensureScriptScheduler()
+	m.signalScriptQueue()
+	return true
+}
+
+func (m *Manager) ensureScriptScheduler() {
+	m.schedulerOnce.Do(func() {
+		go m.runScriptScheduler()
+	})
+}
+
+func (m *Manager) signalScriptQueue() {
+	m.mu.RLock()
+	wake := m.queueWake
+	m.mu.RUnlock()
+	if wake == nil {
+		return
+	}
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Manager) runScriptScheduler() {
+	for range m.scriptQueueSignal() {
+		for {
+			queueItem := m.nextQueuedScriptRun()
+			if queueItem == nil {
+				break
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			m.mu.Lock()
+			if _, ok := m.queuedScripts[queueItem.logID]; !ok {
+				m.mu.Unlock()
+				cancel()
+				continue
+			}
+			if _, ok := m.runningScripts[queueItem.logID]; ok {
+				m.mu.Unlock()
+				cancel()
+				continue
+			}
+			m.runningScripts[queueItem.logID] = cancel
+			m.scriptDone[queueItem.logID] = queueItem.done
+			delete(m.queuedScripts, queueItem.logID)
+			m.mu.Unlock()
+			if err := m.markScriptRunRunning(queueItem.logID); err != nil {
+				cancel()
+				m.finishScriptRun(queueItem.logID, "failed", "", err.Error(), time.Now())
+				continue
+			}
+			if ctx.Err() != nil {
+				m.finishScriptRun(queueItem.logID, "paused", "", "脚本任务已暂停", time.Now())
+				continue
+			}
+			go m.runPluginScriptTask(ctx, queueItem.logID, queueItem.runtimeName, queueItem.fullScript, queueItem.workDir, queueItem.resolved, queueItem.action)
+		}
+	}
+}
+
+func (m *Manager) scriptQueueSignal() <-chan struct{} {
+	m.mu.Lock()
+	if m.queueWake == nil {
+		m.queueWake = make(chan struct{}, 1)
+	}
+	wake := m.queueWake
+	m.mu.Unlock()
+	return wake
+}
+
+func (m *Manager) nextQueuedScriptRun() *queuedScriptRun {
+	m.mu.RLock()
+	runningCount := len(m.runningScripts)
+	limit := m.scriptLimit
+	if limit <= 0 {
+		limit = 1
+	}
+	if runningCount >= limit {
+		m.mu.RUnlock()
+		return nil
+	}
+	database := m.database
+	m.mu.RUnlock()
+	if database == nil {
+		return nil
+	}
+	items, err := database.ListQueuedScriptRunLogs(500)
+	if err != nil || len(items) == 0 {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, item := range items {
+		if queued := m.queuedScripts[item.ID]; queued != nil {
+			return queued
+		}
+	}
+	return nil
 }
 
 func (m *Manager) preparePluginScript(pluginPath string, action ScriptRunAction) (string, string, string, error) {
@@ -1077,8 +1465,8 @@ func (m *Manager) preparePluginScript(pluginPath string, action ScriptRunAction)
 	if runtimeName == "py" || runtimeName == "python3" {
 		runtimeName = "python"
 	}
-	if runtimeName != "nodejs" && runtimeName != "python" {
-		return "", "", "", fmt.Errorf("仅支持 nodejs/python 脚本运行时")
+	if runtimeName != "nodejs" && runtimeName != "python" && runtimeName != "shell" {
+		return "", "", "", fmt.Errorf("仅支持 nodejs/python/shell 脚本运行时")
 	}
 	fullScript, err := safeRelativePath(pluginPath, action.Script)
 	if err != nil {
@@ -1116,12 +1504,15 @@ func (m *Manager) runPluginScriptTask(ctx context.Context, logID int64, runtimeN
 	if runtimeName == "python" {
 		cmdArgs = []string{"-u", fullScript}
 	}
+	if runtimeName == "shell" {
+		cmdArgs = []string{fullScript}
+	}
 	cmd := exec.CommandContext(ctx, resolved.Executable, cmdArgs...)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(), "ALLBOT_SCRIPT_RUN=1", fmt.Sprintf("ALLBOT_RUNTIME_PROFILE=%s", resolved.Profile.ID))
 	if runtimeName == "nodejs" {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("NODE_PATH=%s", resolved.NodePath))
-	} else {
+	} else if runtimeName == "python" {
 		cmd.Env = append(cmd.Env, "PYTHONUTF8=1", "PYTHONUNBUFFERED=1")
 	}
 	for key, value := range action.Env {
@@ -1169,6 +1560,40 @@ finished:
 	m.finishScriptRun(logID, status, outputText, errorText, finishedAt)
 }
 
+func (m *Manager) markScriptRunRunning(logID int64) error {
+	m.mu.RLock()
+	database := m.database
+	m.mu.RUnlock()
+	if database == nil {
+		return nil
+	}
+	return database.UpdateScriptRunLog(logID, "running", "", "", time.Time{})
+}
+
+func (m *Manager) removeQueuedScriptRun(logID int64) {
+	m.mu.Lock()
+	if queued := m.queuedScripts[logID]; queued != nil {
+		delete(m.queuedScripts, logID)
+	}
+	if done := m.scriptDone[logID]; done != nil {
+		close(done)
+		delete(m.scriptDone, logID)
+	}
+	m.mu.Unlock()
+	m.signalScriptQueue()
+}
+
+func (m *Manager) isQueuedScriptRun(logID int64) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.queuedScripts[logID]
+	return ok
+}
+
+func isScriptRunActiveStatus(status string) bool {
+	return status == config.ScriptRunStatusQueued || status == "running" || status == "pausing"
+}
+
 func (m *Manager) updateScriptRunOutput(logID int64, outputText string) {
 	m.mu.RLock()
 	database := m.database
@@ -1195,7 +1620,9 @@ func (m *Manager) finishScriptRun(logID int64, status, outputText, errorText str
 		delete(m.scriptDone, logID)
 	}
 	delete(m.runningScripts, logID)
+	delete(m.queuedScripts, logID)
 	m.mu.Unlock()
+	m.signalScriptQueue()
 }
 
 type scriptOutputBuffer struct {
@@ -1219,8 +1646,11 @@ func (b *scriptOutputBuffer) String() string {
 func (m *Manager) PauseScriptRun(logID int64) bool {
 	m.mu.Lock()
 	cancel := m.runningScripts[logID]
-	if cancel != nil {
-		delete(m.runningScripts, logID)
+	if _, queued := m.queuedScripts[logID]; queued {
+		delete(m.queuedScripts, logID)
+		m.mu.Unlock()
+		m.finishScriptRun(logID, "paused", "", "脚本任务已暂停", time.Now())
+		return true
 	}
 	m.mu.Unlock()
 	if cancel == nil {
@@ -1228,6 +1658,88 @@ func (m *Manager) PauseScriptRun(logID int64) bool {
 	}
 	cancel()
 	return true
+}
+
+func (m *Manager) restoreQueuedScriptRuns() {
+	m.mu.RLock()
+	database := m.database
+	m.mu.RUnlock()
+	if database == nil {
+		return
+	}
+	items, err := database.ListQueuedScriptRunLogs(500)
+	if err != nil {
+		return
+	}
+	for _, item := range items {
+		m.mu.RLock()
+		if _, ok := m.queuedScripts[item.ID]; ok {
+			m.mu.RUnlock()
+			continue
+		}
+		m.mu.RUnlock()
+		queuedItem, err := m.buildQueuedScriptRun(item)
+		if err != nil {
+			continue
+		}
+		m.mu.Lock()
+		if m.queuedScripts == nil {
+			m.queuedScripts = make(map[int64]*queuedScriptRun)
+		}
+		if m.scriptDone == nil {
+			m.scriptDone = make(map[int64]chan ScriptRunResult)
+		}
+		if m.queueWake == nil {
+			m.queueWake = make(chan struct{}, 1)
+		}
+		m.queuedScripts[item.ID] = queuedItem
+		m.scriptDone[item.ID] = queuedItem.done
+		m.mu.Unlock()
+	}
+	m.signalScriptQueue()
+	m.ensureScriptScheduler()
+}
+
+func (m *Manager) buildQueuedScriptRun(item *config.ScriptRunLog) (*queuedScriptRun, error) {
+	pluginPath := filepath.Join(m.pluginDir, item.PluginID)
+	action := ScriptRunAction{
+		PluginID:       item.PluginID,
+		Runtime:        item.Runtime,
+		RuntimeProfile: item.RuntimeProfile,
+		Script:         item.ScriptPath,
+		RunMode:        item.RunMode,
+		UnionID:        item.UnionID,
+	}
+	m.mu.RLock()
+	process := m.plugins[item.PluginID]
+	database := m.database
+	m.mu.RUnlock()
+	if process != nil && process.Plugin != nil && process.Plugin.ScriptEnv.Enabled && database != nil {
+		env, err := database.ScriptEnvMap(process.Plugin.ScriptEnv.Names)
+		if err == nil {
+			action.Env = mergeScriptEnv(env, action.Env)
+		}
+	}
+	runtimeName, fullScript, workDir, err := m.preparePluginScript(pluginPath, action)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := m.depsManager.ResolveRuntime(runtimeName, action.RuntimeProfile)
+	if err != nil {
+		return nil, err
+	}
+	return &queuedScriptRun{
+		logID:       item.ID,
+		pluginPath:  pluginPath,
+		runtimeName: runtimeName,
+		fullScript:  fullScript,
+		workDir:     workDir,
+		resolved:    resolved,
+		action:      action,
+		done:        make(chan ScriptRunResult, 1),
+		startedAt:   item.StartedAt,
+		createdAt:   item.CreatedAt,
+	}, nil
 }
 
 func safeRelativePath(root, relative string) (string, error) {
@@ -1292,6 +1804,11 @@ func validatePluginEntryExt(runtimeName, entry string) error {
 			return nil
 		}
 		return fmt.Errorf("Node.js 插件入口文件必须是 .js、.mjs 或 .cjs")
+	case "shell":
+		if strings.EqualFold(filepath.Ext(entry), ".sh") {
+			return nil
+		}
+		return fmt.Errorf("Shell 插件入口文件必须是 .sh")
 	default:
 		return fmt.Errorf("不支持的运行时: %s", runtimeName)
 	}
@@ -1338,6 +1855,8 @@ func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
 		AccessControl:     pluginAccessControl(config.AccessControl),
 		OpenAPI:           normalizeOpenAPIConfig(config.OpenAPI, config.Runtime),
 		ScriptEnv:         normalizeScriptEnvConfig(config.ScriptEnv),
+		WebUI:             normalizePluginWebUIConfig(config.WebUI),
+		WebChat:           normalizePluginWebChatConfig(config.WebChat),
 		Template:          config.Template,
 		TemplateVersion:   config.TemplateVersion,
 		TemplateMetadata:  config.TemplateMetadata,
@@ -1382,6 +1901,45 @@ func normalizeScriptEnvConfig(config types.ScriptEnvConfig) types.ScriptEnvConfi
 		names = append(names, name)
 	}
 	config.Names = names
+	return config
+}
+
+func normalizePluginWebUIConfig(config types.PluginWebUIConfig) types.PluginWebUIConfig {
+	config.Title = strings.TrimSpace(config.Title)
+	config.Entry = strings.TrimSpace(strings.ReplaceAll(config.Entry, "\\", "/"))
+	config.Icon = strings.TrimSpace(config.Icon)
+	return config
+}
+
+func normalizePluginWebChatConfig(config types.PluginWebChatConfig) types.PluginWebChatConfig {
+	config.Title = strings.TrimSpace(config.Title)
+	config.Description = strings.TrimSpace(config.Description)
+	config.Placeholder = strings.TrimSpace(config.Placeholder)
+	config.EntryText = strings.TrimSpace(config.EntryText)
+	quickActions := make([]types.PluginWebChatQuickAction, 0, len(config.QuickActions))
+	for _, action := range config.QuickActions {
+		action.Label = strings.TrimSpace(action.Label)
+		action.Text = strings.TrimSpace(action.Text)
+		if action.Label == "" {
+			action.Label = action.Text
+		}
+		if action.Label == "" || action.Text == "" {
+			continue
+		}
+		quickActions = append(quickActions, action)
+	}
+	config.QuickActions = quickActions
+	keywords := make([]string, 0, len(config.Keywords))
+	seen := map[string]bool{}
+	for _, keyword := range config.Keywords {
+		keyword = strings.TrimSpace(keyword)
+		if keyword == "" || seen[keyword] {
+			continue
+		}
+		seen[keyword] = true
+		keywords = append(keywords, keyword)
+	}
+	config.Keywords = keywords
 	return config
 }
 
