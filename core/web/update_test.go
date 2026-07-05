@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -24,6 +25,7 @@ func (f fakeReleaseClient) LatestRelease(ctx context.Context) (*updater.ReleaseI
 
 func TestHandleSystemUpdateDetectsNewVersion(t *testing.T) {
 	withVersionValues(t, "v1.0.0", "abc123", "2026-06-03T10:00:00+08:00")
+	assetName := currentPlatformAssetName()
 	server := &Server{}
 	server.SetReleaseClient(fakeReleaseClient{release: &updater.ReleaseInfo{
 		Version: "v1.0.1",
@@ -31,7 +33,7 @@ func TestHandleSystemUpdateDetectsNewVersion(t *testing.T) {
 		Body:    "修复问题",
 		URL:     "https://github.com/298582245/allbot/releases/tag/v1.0.1",
 		Assets: []updater.ReleaseAsset{
-			{Name: "allbot-windows-amd64.exe", DownloadURL: "https://example.com/allbot.exe", Size: 123},
+			{Name: assetName, DownloadURL: "https://example.com/allbot", Size: 123},
 			{Name: "checksums-v1.0.1.txt", DownloadURL: "https://example.com/checksums-v1.0.1.txt", Size: 64},
 		},
 	}})
@@ -50,13 +52,13 @@ func TestHandleSystemUpdateDetectsNewVersion(t *testing.T) {
 	if response.ReleaseName != "v1.0.1" || response.ReleaseBody != "修复问题" || response.ReleaseURL == "" {
 		t.Fatalf("release info = %#v", response)
 	}
-	if len(response.Assets) != 2 || response.Assets[0].DownloadURL != "https://example.com/allbot.exe" || response.Assets[0].Size != 123 {
+	if len(response.Assets) != 2 || response.Assets[0].DownloadURL != "https://example.com/allbot" || response.Assets[0].Size != 123 {
 		t.Fatalf("assets = %#v", response.Assets)
 	}
 	if !response.UpgradeSupported || !strings.Contains(response.UpgradeMessage, "可一键升级") {
 		t.Fatalf("upgrade = %v, message = %q", response.UpgradeSupported, response.UpgradeMessage)
 	}
-	if response.MatchedAsset.Name != "allbot-windows-amd64.exe" {
+	if response.MatchedAsset.Name != assetName {
 		t.Fatalf("matched asset = %#v", response.MatchedAsset)
 	}
 	if response.ChecksumAsset.Name != "checksums-v1.0.1.txt" {
@@ -73,7 +75,7 @@ func TestHandleSystemUpdateReportsUnsupportedWhenChecksumMissing(t *testing.T) {
 	server.SetReleaseClient(fakeReleaseClient{release: &updater.ReleaseInfo{
 		Version: "v1.0.1",
 		Name:    "v1.0.1",
-		Assets:  []updater.ReleaseAsset{{Name: "allbot-windows-amd64.exe", DownloadURL: "https://example.com/allbot.exe", Size: 123}},
+		Assets:  []updater.ReleaseAsset{{Name: currentPlatformAssetName(), DownloadURL: "https://example.com/allbot", Size: 123}},
 	}})
 
 	response := performSystemUpdateRequest(t, server, http.MethodGet)
@@ -252,4 +254,12 @@ func withVersionValues(t *testing.T, current string, commit string, buildTime st
 		version.Commit = oldCommit
 		version.BuildTime = oldBuildTime
 	})
+}
+
+func currentPlatformAssetName() string {
+	name := "allbot-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return name
 }
