@@ -1,7 +1,9 @@
 package deps
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -381,6 +383,20 @@ func TestRuntimeProfileStatusDistinguishesStates(t *testing.T) {
 	}
 }
 
+func TestDefaultProfilesUseHostArchitecture(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	profiles, err := manager.ListRuntimeProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := defaultRuntimeArchitecture()
+	for _, profile := range profiles {
+		if profile.Architecture != expected {
+			t.Fatalf("expected default architecture %s, got %#v", expected, profiles)
+		}
+	}
+}
+
 func TestManagedProfileValidationRejectsInvalidVersionAndArchitecture(t *testing.T) {
 	manager := NewManager(t.TempDir())
 	_, err := manager.SaveRuntimeProfiles([]RuntimeProfile{
@@ -393,7 +409,7 @@ func TestManagedProfileValidationRejectsInvalidVersionAndArchitecture(t *testing
 	}
 	_, err = manager.SaveRuntimeProfiles([]RuntimeProfile{
 		{ID: "node-default", Name: "默认 Node.js", Runtime: "nodejs", Executable: "node", Enabled: true, Default: true},
-		{ID: "managed-node", Name: "Managed Node", Runtime: "nodejs", Source: "managed", RequestedVersion: "18.20.4", Architecture: "linux-x64", Enabled: true},
+		{ID: "managed-node", Name: "Managed Node", Runtime: "nodejs", Source: "managed", RequestedVersion: "18.20.4", Architecture: "linux-riscv64", Enabled: true},
 		{ID: "python-default", Name: "默认 Python", Runtime: "python", Executable: "python", Enabled: true, Default: true},
 	})
 	if err == nil || !strings.Contains(err.Error(), "架构") {
@@ -488,6 +504,13 @@ func TestRuntimeDownloadSpecsUseMirrors(t *testing.T) {
 	if nodeSpec.URL != "https://npmmirror.com/mirrors/node/v18.20.4/node-v18.20.4-win-x64.zip" || nodeSpec.SHA256URL != "https://npmmirror.com/mirrors/node/v18.20.4/SHASUMS256.txt" {
 		t.Fatalf("unexpected node urls: %#v", nodeSpec)
 	}
+	linuxNodeSpec, err := downloader.nodeDownloadSpec("18.20.4", "linux-x64", RuntimeDownloadOptions{NodeMirrorURL: "https://npmmirror.com/mirrors/node/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linuxNodeSpec.URL != "https://npmmirror.com/mirrors/node/v18.20.4/node-v18.20.4-linux-x64.tar.gz" || linuxNodeSpec.Executable != filepath.Join(linuxNodeSpec.RootDir, "bin", "node") {
+		t.Fatalf("unexpected linux node spec: %#v", linuxNodeSpec)
+	}
 	if !containsString(nodeSpec.TrustedHosts, "npmmirror.com") || !containsString(nodeSpec.HashTrustedHosts, "npmmirror.com") {
 		t.Fatalf("node trusted hosts missing mirror: %#v %#v", nodeSpec.TrustedHosts, nodeSpec.HashTrustedHosts)
 	}
@@ -510,7 +533,7 @@ func TestRuntimeDownloadSpecsKeepDefaultURLs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nodeSpec.URL != "https://nodejs.org/dist/v18.20.4/node-v18.20.4-win-x64.zip" || nodeSpec.SHA256URL != "https://nodejs.org/dist/v18.20.4/SHASUMS256.txt" {
+	if nodeSpec.URL != "https://nodejs.org/dist/v18.20.4/node-v18.20.4-win-x64.zip" || nodeSpec.SHA256URL != "https://nodejs.org/dist/v18.20.4/SHASUMS256.txt" || nodeSpec.Executable != filepath.Join(nodeSpec.RootDir, "node.exe") {
 		t.Fatalf("unexpected default node urls: %#v", nodeSpec)
 	}
 	pythonSpec, err := downloader.pythonDownloadSpec("3.10.11", "win-x64", RuntimeDownloadOptions{})
@@ -566,6 +589,13 @@ func TestDownloaderRejectsUntrustedURLAndZipSlip(t *testing.T) {
 	if err := unzipSafe(zipPath, filepath.Join(t.TempDir(), "out")); err == nil {
 		t.Fatal("expected zip slip archive to be rejected")
 	}
+	tarPath := filepath.Join(t.TempDir(), "bad.tar.gz")
+	if err := writeTarGzipForTest(tarPath, "../evil.txt", []byte("evil")); err != nil {
+		t.Fatal(err)
+	}
+	if err := untarGzipSafe(tarPath, filepath.Join(t.TempDir(), "out")); err == nil {
+		t.Fatal("expected tar slip archive to be rejected")
+	}
 }
 
 func writeZipForTest(path, name string, data []byte) error {
@@ -585,6 +615,23 @@ func writeZipForTest(path, name string, data []byte) error {
 		return err
 	}
 	return writer.Close()
+}
+
+func writeTarGzipForTest(path, name string, data []byte) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	gzipWriter := gzip.NewWriter(file)
+	defer gzipWriter.Close()
+	writer := tar.NewWriter(gzipWriter)
+	defer writer.Close()
+	if err := writer.WriteHeader(&tar.Header{Name: name, Mode: 0644, Size: int64(len(data))}); err != nil {
+		return err
+	}
+	_, err = writer.Write(data)
+	return err
 }
 
 type mockRuntimeDownloader struct {

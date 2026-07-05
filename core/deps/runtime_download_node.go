@@ -6,10 +6,16 @@ import (
 )
 
 func (d *HTTPRuntimeDownloader) nodeDownloadSpec(version, architecture string, options RuntimeDownloadOptions) (runtimeDownloadSpec, error) {
-	if architecture != "win-x64" && architecture != "win-arm64" {
+	if !isSupportedRuntimeArchitecture(architecture) {
 		return runtimeDownloadSpec{}, fmt.Errorf("Node.js 架构不支持: %s", architecture)
 	}
-	archiveName := fmt.Sprintf("node-v%s-%s.zip", version, architecture)
+	archiveExt := ".zip"
+	executable := "node.exe"
+	if !isWindowsRuntimeArchitecture(architecture) {
+		archiveExt = ".tar.gz"
+		executable = filepath.Join("bin", "node")
+	}
+	archiveName := fmt.Sprintf("node-v%s-%s%s", version, architecture, archiveExt)
 	rootDir := filepath.Join(d.rootDir, "nodejs", fmt.Sprintf("%s-%s", version, architecture))
 	mirrorURL := runtimeOptionOrDefault(options.NodeMirrorURL, "https://nodejs.org/dist")
 	sourceURL := fmt.Sprintf("%s/v%s/%s", mirrorURL, version, archiveName)
@@ -23,7 +29,7 @@ func (d *HTTPRuntimeDownloader) nodeDownloadSpec(version, architecture string, o
 		SHA256URL:        hashURL,
 		ArchiveName:      archiveName,
 		RootDir:          rootDir,
-		Executable:       filepath.Join(rootDir, "node.exe"),
+		Executable:       filepath.Join(rootDir, executable),
 		TrustedHosts:     trustedHosts,
 		HashTrustedHosts: trustedHosts,
 	}, nil

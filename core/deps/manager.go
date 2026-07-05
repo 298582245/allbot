@@ -942,14 +942,14 @@ func (m *Manager) normalizeRuntimeProfiles(profiles []RuntimeProfile) ([]Runtime
 			return nil, fmt.Errorf("运行环境来源只支持 manual/managed: %s", profile.Source)
 		}
 		profile.Architecture = strings.ToLower(strings.TrimSpace(profile.Architecture))
-		if profile.Architecture == "" {
+		if profile.Architecture == "" || shouldRefreshDefaultRuntimeArchitecture(profile) {
 			profile.Architecture = defaultRuntimeArchitecture()
 		}
 		if !isSupportedRuntimeArchitecture(profile.Architecture) {
 			return nil, fmt.Errorf("运行环境架构不支持: %s", profile.Architecture)
 		}
 		if profile.Source == "managed" && profile.Runtime == "python" && profile.Architecture != "win-x64" {
-			return nil, fmt.Errorf("Python 自动下载暂只支持 win-x64")
+			return nil, fmt.Errorf("Python 自动下载暂只支持 Windows x64")
 		}
 		profile.RequestedVersion = strings.TrimSpace(profile.RequestedVersion)
 		if profile.Source == "managed" && profile.RequestedVersion == "" && profile.Version != "" {
@@ -1055,7 +1055,7 @@ func (m *Manager) managedRuntimeRoot(runtimeName, version, architecture string) 
 }
 
 func (m *Manager) managedRuntimeExecutable(profile RuntimeProfile) string {
-	return managedRuntimeExecutableInRoot(profile.Runtime, m.managedRuntimeRoot(profile.Runtime, profile.RequestedVersion, profile.Architecture))
+	return managedRuntimeExecutableInRoot(profile.Runtime, profile.Architecture, m.managedRuntimeRoot(profile.Runtime, profile.RequestedVersion, profile.Architecture))
 }
 
 func (m *Manager) setRuntimeDownloader(downloader RuntimeDownloader) {
@@ -1147,14 +1147,35 @@ func isCommandName(value string) bool {
 }
 
 func defaultRuntimeArchitecture() string {
+	arch := "x64"
 	if runtime.GOARCH == "arm64" {
-		return "win-arm64"
+		arch = "arm64"
 	}
-	return "win-x64"
+	switch runtime.GOOS {
+	case "windows":
+		return "win-" + arch
+	case "linux":
+		return "linux-" + arch
+	default:
+		return "linux-" + arch
+	}
 }
 
 func isSupportedRuntimeArchitecture(architecture string) bool {
-	return architecture == "win-x64" || architecture == "win-arm64"
+	switch architecture {
+	case "win-x64", "win-arm64", "linux-x64", "linux-arm64":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWindowsRuntimeArchitecture(architecture string) bool {
+	return strings.HasPrefix(architecture, "win-")
+}
+
+func shouldRefreshDefaultRuntimeArchitecture(profile *RuntimeProfile) bool {
+	return profile != nil && isDefaultProfile(*profile) && runtime.GOOS == "linux" && isWindowsRuntimeArchitecture(profile.Architecture)
 }
 
 func isSafeRuntimeVersion(version string) bool {

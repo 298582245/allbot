@@ -1,7 +1,9 @@
 package deps
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
@@ -129,7 +131,7 @@ func (d *HTTPRuntimeDownloader) EnsureRuntime(runtimeName, version, architecture
 
 	reportRuntimeInitProgress(progress, "extract", "正在解压解释器", 60)
 	extractDir := filepath.Join(stagingDir, "extract")
-	if err := unzipSafe(archivePath, extractDir); err != nil {
+	if err := extractRuntimeArchive(archivePath, extractDir); err != nil {
 		return RuntimeDownloadResult{}, err
 	}
 	payloadRoot, err := singleChildDirOrSelf(extractDir)
@@ -531,6 +533,13 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+func extractRuntimeArchive(archivePath, targetDir string) error {
+	if strings.HasSuffix(strings.ToLower(archivePath), ".tar.gz") || strings.HasSuffix(strings.ToLower(archivePath), ".tgz") {
+		return untarGzipSafe(archivePath, targetDir)
+	}
+	return unzipSafe(archivePath, targetDir)
+}
+
 func unzipSafe(zipPath, targetDir string) error {
 	reader, err := zip.OpenReader(zipPath)
 	if err != nil {
@@ -601,6 +610,81 @@ func unzipSafe(zipPath, targetDir string) error {
 	return nil
 }
 
+func untarGzipSafe(archivePath, targetDir string) error {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	gzipReader, err := gzip.NewReader(file)
+	if err != nil {
+		return err
+	}
+	defer gzipReader.Close()
+	reader := tar.NewReader(gzipReader)
+	absTarget, err := filepath.Abs(targetDir)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(absTarget, 0755); err != nil {
+		return err
+	}
+	var totalSize int64
+	var entries int
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		entries++
+		if entries > maxRuntimeZipEntries {
+			return fmt.Errorf("压缩包文件数量超过限制")
+		}
+		cleanName := filepath.Clean(header.Name)
+		if filepath.IsAbs(cleanName) || strings.HasPrefix(cleanName, "..") {
+			return fmt.Errorf("压缩包包含非法路径: %s", header.Name)
+		}
+		path := filepath.Join(absTarget, cleanName)
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+		if absPath != absTarget && !strings.HasPrefix(absPath, absTarget+string(filepath.Separator)) {
+			return fmt.Errorf("压缩包路径越界: %s", header.Name)
+		}
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(absPath, os.FileMode(header.Mode)&0755); err != nil {
+				return err
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			totalSize += header.Size
+			if totalSize > maxRuntimeExtractedSize {
+				return fmt.Errorf("压缩包解压体积超过限制")
+			}
+			if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
+				return err
+			}
+			output, err := os.OpenFile(absPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(header.Mode)&0755)
+			if err != nil {
+				return err
+			}
+			_, copyErr := io.Copy(output, io.LimitReader(reader, header.Size))
+			closeErr := output.Close()
+			if copyErr != nil {
+				return copyErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+		}
+	}
+	return nil
+}
+
 func singleChildDirOrSelf(path string) (string, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
@@ -644,9 +728,12 @@ func copyDir(sourceDir, targetDir string) error {
 	})
 }
 
-func managedRuntimeExecutableInRoot(runtimeName, root string) string {
+func managedRuntimeExecutableInRoot(runtimeName, architecture, root string) string {
 	if runtimeName == "python" {
 		return filepath.Join(root, "tools", "python.exe")
 	}
-	return filepath.Join(root, "node.exe")
+	if isWindowsRuntimeArchitecture(architecture) {
+		return filepath.Join(root, "node.exe")
+	}
+	return filepath.Join(root, "bin", "node")
 }

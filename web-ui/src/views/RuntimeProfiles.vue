@@ -159,13 +159,13 @@
         </el-form-item>
         <el-form-item label="架构">
           <el-select v-model="form.architecture" style="width: 100%">
-            <el-option label="Windows x64" value="win-x64" />
-            <el-option v-if="form.runtime !== 'python' || form.source !== 'managed'" label="Windows ARM64" value="win-arm64" />
+            <el-option v-for="option in architectureOptions" :key="option.value" :label="option.label" :value="option.value" />
           </el-select>
+          <div v-if="form.source === 'managed' && form.runtime === 'python'" class="field-tip">Python 自动下载当前仅支持 Windows x64；Linux 服务器请使用手动路径，例如 python3。</div>
         </el-form-item>
         <el-form-item v-if="form.source === 'manual'" label="解释器路径" required>
-          <el-input v-model="form.executable" :placeholder="form.runtime === 'python' ? '例如 D:/Python310/python.exe' : '例如 D:/node-v18/node.exe，或 node'" />
-          <div class="field-tip">可填写绝对路径；Node.js 也可以填写 PATH 中的命令名 node。</div>
+          <el-input v-model="form.executable" :placeholder="executablePlaceholder" />
+          <div class="field-tip">可填写绝对路径；Node.js/Python 也可以填写 PATH 中的命令名 node 或 python3。</div>
         </el-form-item>
         <el-form-item v-else label="解释器路径">
           <el-input v-model="form.executable" disabled placeholder="保存并初始化后由后端写入" />
@@ -251,6 +251,22 @@ const showPageDescription = () => {
 
 const filteredProfiles = computed(() => profiles.value)
 
+const architectureOptions = computed(() => {
+  const options = [
+    { label: 'Linux x64', value: 'linux-x64' },
+    { label: 'Linux ARM64', value: 'linux-arm64' },
+    { label: 'Windows x64', value: 'win-x64' },
+    { label: 'Windows ARM64', value: 'win-arm64' }
+  ]
+  if (form.source === 'managed' && form.runtime === 'python') return options.filter(option => option.value === 'win-x64')
+  return options
+})
+
+const executablePlaceholder = computed(() => {
+  if (form.runtime === 'python') return '例如 python3、/usr/bin/python3 或 D:/Python310/python.exe'
+  return '例如 node、/usr/bin/node 或 D:/node-v18/node.exe'
+})
+
 const paginatedProfiles = computed(() => {
   const start = (currentPage.value - 1) * pageSize
   return filteredProfiles.value.slice(start, start + pageSize)
@@ -274,12 +290,19 @@ function assignDownloadSettings(settings) {
 }
 
 function defaultArchitecture() {
+  const supported = ['linux-x64', 'linux-arm64', 'win-x64', 'win-arm64']
+  const existing = profiles.value.find(profile => profile.default && supported.includes(profile.architecture))?.architecture || profiles.value.find(profile => supported.includes(profile.architecture))?.architecture
+  if (existing) return existing
   const platform = String(navigator.platform || '').toLowerCase()
-  return platform.includes('arm') ? 'win-arm64' : 'win-x64'
+  const userAgent = String(navigator.userAgent || '').toLowerCase()
+  const isArm = platform.includes('arm') || userAgent.includes('aarch64') || userAgent.includes('arm64')
+  if (platform.includes('win')) return isArm ? 'win-arm64' : 'win-x64'
+  return isArm ? 'linux-arm64' : 'linux-x64'
 }
 
 function normalizeArchitectureForRuntime() {
-  if (form.source === 'managed' && form.runtime === 'python') form.architecture = 'win-x64'
+  const options = architectureOptions.value.map(option => option.value)
+  if (!options.includes(form.architecture)) form.architecture = options[0] || defaultArchitecture()
 }
 
 watch(() => [form.runtime, form.source], normalizeArchitectureForRuntime)
