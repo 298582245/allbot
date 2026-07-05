@@ -1,5 +1,9 @@
 ----PS：此句话不用添加：记得更新core/version/version.go里面的版本 号
 
+AllBot v1.0.3
+1. 上个版本忘记说了支持docker和docker-compose了
+2. 
+
 AllBot v1.0.2
 1. 更新内置指令存储逻辑与实现，新增部分内置指令
 2. 新增脚本环境变量

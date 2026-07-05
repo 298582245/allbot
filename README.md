@@ -4,9 +4,9 @@ AllBot 是一个基于 Go 的多平台机器人框架，内置 Web 管理后台�
 
 ## 功能概览
 
-- 多平台机器人接入：支持 QQ、Telegram、QQ 官方机器人等适配器，同一平台可配置多个机器人实例。
+- 多平台机器人接入：支持 QQ、Telegram、QQ 官方机器人、钉钉、飞书、微信公众号、Web 聊天室等适配器，同一平台可配置多个机器人实例。
 - 插件系统：支持 Node.js 与 Python 插件，按正则触发、平台限制、机器人实例限制、优先级和访问控制执行。
-- Web 管理后台：提供插件、适配器、定时任务、脚本任务、数据、依赖、日志、权限、设置等页面。
+- Web 管理后台：提供插件、适配器、Web 聊天、定时任务、脚本任务、数据、依赖、日志、权限、设置等页面。
 - Direct SDK：为插件提供消息回复、监听、主动发送、数据库、定时任务、脚本运行、积分、管理员身份列表等能力。
 - 定时任务：可伪造用户消息触发插件指令，支持手动任务、插件声明任务、多行 cron 表达式。
 - Open API：可在后台创建 HTTP 接口，用 Node.js/Python 脚本处理外部请求。
@@ -96,9 +96,89 @@ $env:ALLBOT_WEB_MODE = "external"
 
 `ALLBOT_WEB_MODE` 仅支持 `embedded` 和 `external`。启用 `external` 后，外部 `web/` 不会随自动更新维护，需要用户自行更新并保证 `web/index.html` 存在。
 
-### 5. 在线升级
+## Docker Compose 部署
 
-管理后台的“系统设置”页面会检查 GitHub Release，并在发现当前平台可用资产时启用“一键升级”。升级流程会下载新版二进制到 `runtime/update/`，启动临时更新器，关闭当前进程后备份旧程序并替换为新版程序，然后自动重新启动。
+Linux 服务器可直接使用 Docker Compose 构建和运行。Dockerfile 会自动构建 `web-ui/`，再把前端产物嵌入 Go 二进制，不需要手动执行前端构建。
+
+### 1. 准备环境
+
+服务器需要安装 Docker 和 Docker Compose 插件，并放行对外访问端口，默认端口为 `3000`。
+
+### 2. 启动服务
+
+在项目根目录执行：
+
+```bash
+docker compose up -d --build
+```
+
+查看状态和日志：
+
+```bash
+docker compose ps
+docker compose logs -f allbot
+```
+
+启动后访问：
+
+```text
+http://服务器公网IP:3000
+```
+
+首次启动会在容器日志中输出管理员密码，默认管理员账号为 `admin`。
+
+### 3. 修改端口
+
+可以通过环境变量修改 Web 端口：
+
+```bash
+ALLBOT_WEB_PORT=3001 docker compose up -d --build
+```
+
+`docker-compose.yml` 默认绑定 `0.0.0.0`，可从服务器外部访问；如果云服务器还有安全组或防火墙，需要同步放行对应端口。
+
+### 4. 数据持久化
+
+默认使用命名卷 `allbot_data` 挂载到容器内 `/data`。容器重建后以下数据会保留：
+
+```text
+/data/config.db      SQLite 配置数据库
+/data/allbot         Docker 模式实际运行的程序文件
+/data/plugins/       插件目录
+/data/runtime/       插件运行时依赖和升级临时文件
+/data/openapis/      Open API 脚本与配置目录
+/data/sdk/           插件 SDK 文件
+/data/logs/          日志目录
+/data/backups/       备份目录
+```
+
+查看命名卷位置：
+
+```bash
+docker volume inspect allbot_allbot_data
+```
+
+如果希望直接在宿主机编辑插件或 Open API，可把 `docker-compose.yml` 中的命名卷改成 bind mount，例如：
+
+```yaml
+volumes:
+  - ./data:/data
+```
+
+### 5. Docker 模式升级
+
+Compose 默认设置 `ALLBOT_UPDATE_MODE=docker`。管理员在系统设置页点击“一键升级”或向机器人发送「更新」时，程序会下载 Release 资产并写入升级请求；容器入口脚本检测到请求后，会备份旧的 `/data/allbot`，替换为新版程序并自动重启应用。
+
+也可以通过重新构建镜像更新：
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+## 在线升级
+
+管理后台的“系统设置”页面会检查 GitHub Release，并在发现当前平台可用资产时启用“一键升级”。平台管理员也可以向机器人发送「更新」触发升级。非 Docker 运行时，升级流程会下载新版二进制到 `runtime/update/`，启动临时更新器，关闭当前进程后备份旧程序并替换为新版程序，然后自动重新启动。Docker 运行时默认使用 `ALLBOT_UPDATE_MODE=docker`，由容器入口脚本替换 `/data/allbot` 并重启应用。
 
 Release 资产名称需要包含 `allbot`、目标系统和架构，例如：
 
@@ -115,7 +195,7 @@ Release 必须同时提供校验文件，命名为 `checksums-v版本号.txt`，
 8a2d...  allbot-linux-amd64
 ```
 
-一键升级会先下载目标二进制和 checksum 文件，只有 SHA256 校验通过后才会备份旧程序并替换新版程序。升级失败时可查看 `runtime/update/backup/` 中的旧程序备份。
+一键升级会先下载目标二进制和 checksum 文件，只有 SHA256 校验通过后才会备份旧程序并替换新版程序。升级失败时可查看 `runtime/update/backup/` 中的旧程序备份。Docker 模式下旧程序备份默认位于 `/data/runtime/update/backup/`。
 
 ## 命令参数与运行文件
 
@@ -129,12 +209,16 @@ Release 必须同时提供校验文件，命名为 `checksums-v版本号.txt`，
 
 ```text
 config.db      SQLite 配置数据库
-runtime/       插件运行时依赖目录
+runtime/       插件运行时依赖、脚本环境和升级临时文件目录
 plugins/       插件目录
 openapis/      Open API 脚本与配置目录
+sdk/           插件 SDK 文件
 logs/          日志目录
+backups/       备份目录
 web/           管理后台构建产物，默认仅用于 Go 构建嵌入；运行时需 ALLBOT_WEB_MODE=external 才会读取
 ```
+
+Docker 部署时，上述运行期文件位于容器内 `/data`，并通过 `allbot_data` 命名卷持久化。
 
 ## 管理后台
 
@@ -144,6 +228,8 @@ web/           管理后台构建产物，默认仅用于 Go 构建嵌入；运�
 - 插件管理：查看、启用、禁用、重载、删除插件，编辑插件配置与代码。
 - 平台配置：添加和维护机器人实例，按平台 schema 动态展示配置项。
 - 开放接口：创建 HTTP API，使用 Node.js/Python 脚本处理外部请求。
+- Web 聊天：浏览器用户通过 Web 聊天室适配器调用插件。
+- 插件面板：查看和访问插件提供的 Web 面板。
 - SDK 管理：查看 SDK 文件和开发参考。
 - 数据管理：查看插件数据表、编辑数据视图、导入导出数据。
 - 依赖管理：维护 Node.js/Python 运行时依赖。
@@ -163,6 +249,10 @@ AllBot 使用适配器注册表提供平台能力和配置 schema。当前内置
 | `qq` | QQ | `server_url`、`access_token` | 基于 NapCat/OneBot HTTP API |
 | `telegram` | Telegram | `bot_token`、`proxy_url` | 基于 Telegram Bot API |
 | `qq_office` | QQ 官方机器人 | `app_id`、`client_secret`、`api_base_url`、`token_url` | 腾讯 QQ 官方机器人接口 |
+| `dingtalk` | 钉钉机器人（Stream） | `client_id`、`client_secret`、`robot_code`、`open_api_host`、`proxy_url` | 钉钉 Stream 模式，无需公网回调地址 |
+| `feishu` | 飞书机器人 | `app_id`、`app_secret`、`verification_token`、`encrypt_key`、`callback_path` | 飞书长连接事件订阅与消息发送 |
+| `wechat_official` | 微信公众号 | `app_id`、`app_secret`、`token`、`callback_path` | 微信公众号明文模式回调与客服消息 |
+| `web` | Web 聊天室 | `smtp_host`、`smtp_port`、`smtp_username`、`smtp_password`、`smtp_from` | 浏览器用户通过 Web 聊天室调用插件 |
 
 配置入口：后台 `平台配置` 页面。
 
@@ -482,8 +572,12 @@ myid
 绑定码
 绑定
 groupId
+用户搜索
+我的平台
+插件列表
 system
 version
+更新
 重启
 ```
 
@@ -553,6 +647,9 @@ allbot/
   sdk/
     nodejs/                Node.js Direct SDK 与账号青龙封装
     python/                Python Direct SDK 与账号青龙封装
+  Dockerfile               Docker 镜像构建文件
+  docker-compose.yml       Docker Compose 部署文件
+  docker-entrypoint.sh     Docker 容器入口脚本
   web-ui/                  Vue 管理后台源码
   web/                     管理后台构建产物
   plugins/                 插件目录
@@ -567,6 +664,10 @@ allbot/
 ### 登录密码在哪里？
 
 首次启动时会在控制台输出自动生成的管理员密码。登录后可在后台修改密码。
+
+### Docker 部署后数据在哪里？
+
+默认在 Docker 命名卷 `allbot_data` 中，容器内路径为 `/data`。可以通过 `docker volume inspect allbot_allbot_data` 查看宿主机实际位置；如果需要直接编辑文件，可改用 `./data:/data` 形式的 bind mount。
 
 ### 为什么修改了前端但页面没有变化？
 
