@@ -200,7 +200,36 @@ func (a *WeChatOfficialAdapter) SendImage(target string, imageURL string) error 
 	if imageURL == "" {
 		return fmt.Errorf("微信公众号图片链接不能为空")
 	}
-	return a.SendMessage(target, imageURL)
+	return a.SendMessage(target, "暂不支持图片，点击链接->"+imageURL)
+}
+
+func (a *WeChatOfficialAdapter) SendRichMessage(target string, message types.RichMessage) error {
+	parts := make([]string, 0, len(message.Parts))
+	for _, part := range message.Parts {
+		switch strings.TrimSpace(part.Type) {
+		case "text":
+			if text := strings.TrimSpace(part.Text); text != "" {
+				parts = append(parts, text)
+			}
+		case "markdown":
+			if text := strings.TrimSpace(part.Markdown); text != "" {
+				parts = append(parts, text)
+			}
+		case "image":
+			if imageURL := strings.TrimSpace(part.URL); imageURL != "" {
+				parts = append(parts, "暂不支持图片，点击链接->"+imageURL)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		if text := strings.TrimSpace(message.FallbackText); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	if len(parts) == 0 {
+		return fmt.Errorf("微信公众号富文本消息内容不能为空")
+	}
+	return a.SendMessage(target, strings.Join(parts, "\n\n"))
 }
 
 func (a *WeChatOfficialAdapter) SendFile(target string, filePath string) error {

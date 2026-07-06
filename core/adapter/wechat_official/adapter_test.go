@@ -274,10 +274,41 @@ func TestPostCallbackMergesPassiveReplies(t *testing.T) {
 	adapter.HandleHTTPCallback("callback", response, request)
 
 	body := response.Body.String()
-	for _, want := range []string{"正在加载二维码，请稍候...", "https://example.com/qrcode.png"} {
+	for _, want := range []string{"正在加载二维码，请稍候...", "暂不支持图片，点击链接-&gt;https://example.com/qrcode.png"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("passive reply missing %q in %s", want, body)
 		}
+	}
+}
+
+func TestSendRichMessageUsesImageURLPrompt(t *testing.T) {
+	adapter := NewWeChatOfficialAdapter("app", "secret", "token", "callback", "", "")
+	adapter.SetMessageHandler(func(msg *types.Message) {
+		err := adapter.SendRichMessage(msg.UserID, types.RichMessage{Parts: []types.RichMessagePart{
+			{Type: "text", Text: "请使用微信扫描二维码登录"},
+			{Type: "image", URL: "https://example.com/qrcode.png", Alt: "朴朴微信登录二维码"},
+		}})
+		if err != nil {
+			t.Errorf("SendRichMessage returned error: %v", err)
+		}
+	})
+	query := url.Values{}
+	query.Set("timestamp", "123")
+	query.Set("nonce", "nonce")
+	query.Set("signature", testWeChatSignature("token", "123", "nonce"))
+	request := httptest.NewRequest(http.MethodPost, "/?"+query.Encode(), strings.NewReader(`<xml><ToUserName><![CDATA[gh_app]]></ToUserName><FromUserName><![CDATA[openid]]></FromUserName><CreateTime>1</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[ping]]></Content><MsgId>9</MsgId></xml>`))
+	response := httptest.NewRecorder()
+
+	adapter.HandleHTTPCallback("callback", response, request)
+
+	body := response.Body.String()
+	for _, want := range []string{"请使用微信扫描二维码登录", "暂不支持图片，点击链接-&gt;https://example.com/qrcode.png"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("rich reply missing %q in %s", want, body)
+		}
+	}
+	if strings.Contains(body, "朴朴微信登录二维码") {
+		t.Fatalf("rich reply should not use image alt as fallback: %s", body)
 	}
 }
 
@@ -297,7 +328,7 @@ func TestSendImageSendsImageURLAsText(t *testing.T) {
 
 	adapter.HandleHTTPCallback("callback", response, request)
 
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "<Content>https://example.com/a.png</Content>") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "<Content>暂不支持图片，点击链接-&gt;https://example.com/a.png</Content>") {
 		t.Fatalf("status = %d body = %q", response.Code, response.Body.String())
 	}
 }
