@@ -48,6 +48,7 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh /opt/allbot/allbot \
     && sha256sum /opt/allbot/allbot | cut -d ' ' -f 1 > /opt/allbot/allbot.sha256 \
+    && (cd /opt/allbot/sdk && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1 > /opt/allbot/sdk.sha256) \
     && mkdir -p /data /opt/allbot/runtime
 
 EXPOSE 3000

@@ -165,6 +165,8 @@ volumes:
   - ./data:/data
 ```
 
+`/data/sdk` 是持久化的插件 SDK 目录。镜像重新构建后，容器入口脚本会对比镜像 SDK 指纹和 `/data/sdk` 当前内容：如果确认 `/data/sdk` 未被用户修改，会自动同步镜像内新版 SDK；如果检测到用户修改过 `/data/sdk`，会跳过覆盖并在日志中提示。首次引入该同步机制时，如果已有 `/data/sdk` 与镜像内容不一致，也会保守跳过覆盖。如需强制使用镜像新版 SDK，请先备份 `/data/sdk`，再删除 `/data/sdk` 并重启容器。
+
 ### 5. Docker 模式升级
 
 Compose 默认设置 `ALLBOT_UPDATE_MODE=docker`。管理员在系统设置页点击“一键升级”或向机器人发送「更新」时，程序会下载 Release 资产并写入升级请求；容器入口脚本检测到请求后，会备份旧的 `/data/allbot`，替换为新版程序并自动重启应用。
@@ -175,6 +177,8 @@ Compose 默认设置 `ALLBOT_UPDATE_MODE=docker`。管理员在系统设置页�
 git pull
 docker compose up -d --build
 ```
+
+重新构建镜像时，未被用户修改的 `/data/sdk` 会随镜像内 SDK 自动更新；如果日志提示 `/data/sdk` 已被修改，需要手动备份并删除 `/data/sdk` 后重启容器，才会重新初始化为镜像新版 SDK。
 
 ## 在线升级
 
