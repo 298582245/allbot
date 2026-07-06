@@ -3,6 +3,8 @@ package web
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"html/template"
 	"net/http"
 	"strconv"
 	"strings"
@@ -214,6 +216,85 @@ func (s *Server) writeQRCodePNG(w http.ResponseWriter, content string) {
 	_, _ = w.Write(png)
 }
 
+func (s *Server) handleAlipayBillCashier(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	orderNo := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/open/payments/alipay-bill/cashier/"), "/")
+	if orderNo == "" || strings.Contains(orderNo, "/") {
+		s.jsonError(w, "订单号不能为空", http.StatusBadRequest)
+		return
+	}
+	db := s.adapterManager.GetDatabase()
+	order, err := db.GetPaymentOrder(orderNo)
+	if err == sql.ErrNoRows {
+		s.jsonError(w, "订单不存在", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.jsonError(w, "获取支付订单失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	settings, err := db.GetPaymentSettings()
+	if err != nil {
+		s.jsonError(w, "获取支付设置失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !strings.EqualFold(order.Provider, "alipay_bill") || order.Status != "pending" {
+		s.jsonError(w, "订单不可支付", http.StatusBadRequest)
+		return
+	}
+	userID := strings.TrimSpace(settings.AlipayBill.TransferUserID)
+	if userID == "" {
+		s.jsonError(w, "支付宝收款 UID 未配置", http.StatusBadRequest)
+		return
+	}
+	data := struct {
+		UserID string
+		Amount string
+		Remark string
+	}{UserID: userID, Amount: fmt.Sprintf("%d.%02d", order.AmountCents/100, order.AmountCents%100), Remark: "订单:" + order.OrderNo}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = alipayBillCashierTemplate.Execute(w, data)
+}
+
+var alipayBillCashierTemplate = template.Must(template.New("alipay-bill-cashier").Parse(`<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>支付宝付款</title>
+<script src="https://gw.alipayobjects.com/as/g/h5-lib/alipayjsapi/3.1.1/alipayjsapi.min.js"></script>
+</head>
+<body>
+<p style="font-family:sans-serif;text-align:center;margin-top:40px;color:#1677ff;">正在打开支付宝付款...</p>
+<script>
+(function(){
+  var userId = {{printf "%q" .UserID}};
+  var money = {{printf "%q" .Amount}};
+  var remark = {{printf "%q" .Remark}};
+  function closePage(){ try { AlipayJSBridge.call('exitApp'); } catch(e) {} }
+  function ready(fn){ window.AlipayJSBridge ? fn() : document.addEventListener('AlipayJSBridgeReady', fn, false); }
+  ready(function(){
+    AlipayJSBridge.call('startApp', {
+      appId: '20000123',
+      param: {
+        actionType: 'scan',
+        u: userId,
+        a: money,
+        m: remark,
+        biz_data: { s: 'money', u: userId, a: money, m: remark }
+      }
+    }, function(){});
+  });
+  document.addEventListener('resume', closePage, false);
+})();
+</script>
+</body>
+</html>`))
+
 func (s *Server) confirmEpayRequest(r *http.Request, writeOrder bool) bool {
 	db := s.adapterManager.GetDatabase()
 	settings, err := db.GetPaymentSettings()
@@ -271,28 +352,41 @@ func (s *Server) handlePaymentOrderQuery(w http.ResponseWriter, r *http.Request)
 		s.jsonError(w, "获取支付订单失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if !strings.EqualFold(order.Provider, "epay") {
-		s.jsonError(w, "仅支持查询易支付订单", http.StatusBadRequest)
-		return
-	}
 	settings, err := db.GetPaymentSettings()
 	if err != nil {
 		s.jsonError(w, "获取支付设置失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	provider, err := payment.NewEpayProvider(settings.Epay, nil)
-	if err != nil {
-		s.jsonError(w, "易支付配置无效: "+err.Error(), http.StatusBadRequest)
+	var queryResult *payment.ProviderQueryResult
+	switch strings.ToLower(strings.TrimSpace(order.Provider)) {
+	case "epay":
+		provider, err := payment.NewEpayProvider(settings.Epay, nil)
+		if err != nil {
+			s.jsonError(w, "易支付配置无效: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		queryResult, err = provider.QueryOrder(order.OrderNo, order.ProviderOrderNo)
+	case "alipay_bill":
+		provider, err := payment.NewAlipayBillProvider(settings.AlipayBill, nil)
+		if err != nil {
+			s.jsonError(w, "支付宝账单配置无效: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		queryResult, err = provider.QueryOrderWithAmount(order.OrderNo, order.ProviderOrderNo, order.AmountCents)
+	default:
+		s.jsonError(w, "仅支持查询可主动查询的第三方订单", http.StatusBadRequest)
 		return
 	}
-	queryResult, err := provider.QueryOrder(order.OrderNo, order.ProviderOrderNo)
 	if err != nil {
-		s.jsonError(w, "查询易支付订单失败: "+err.Error(), http.StatusBadRequest)
+		s.jsonError(w, "查询第三方订单失败: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	if queryResult.Status == "paid" {
 		amount := queryResult.AmountCents
 		method := strings.TrimSpace(queryResult.Method)
+		if method == "" {
+			method = order.Method
+		}
 		if amount <= 0 || method == "" {
 			s.jsonError(w, "查询结果缺少金额或支付方式", http.StatusBadRequest)
 			return
@@ -301,12 +395,15 @@ func (s *Server) handlePaymentOrderQuery(w http.ResponseWriter, r *http.Request)
 		if paidAt.IsZero() {
 			paidAt = time.Now()
 		}
-		confirmed, _, confirmErr := db.ConfirmProviderPayment(config.ProviderPaymentConfirmation{OrderNo: order.OrderNo, Provider: "epay", Method: method, AmountCents: amount, ProviderOrderNo: queryResult.ProviderOrderNo, Raw: queryResult.Raw, PaidAt: paidAt})
+		confirmed, _, confirmErr := db.ConfirmProviderPayment(config.ProviderPaymentConfirmation{OrderNo: order.OrderNo, Provider: order.Provider, Method: method, AmountCents: amount, ProviderOrderNo: queryResult.ProviderOrderNo, Raw: queryResult.Raw, PaidAt: paidAt})
 		if confirmErr != nil {
 			s.jsonError(w, "确认支付失败: "+confirmErr.Error(), http.StatusBadRequest)
 			return
 		}
 		order = confirmed
+		if strings.EqualFold(order.Provider, "alipay_bill") {
+			_, _ = db.MarkAlipayBillRecordMatched(queryResult.ProviderOrderNo, order.OrderNo)
+		}
 		payment.DefaultWaitHub.Resolve(order.OrderNo, payment.PaymentResult{Status: "paid", OrderNo: order.OrderNo, Provider: order.Provider, Method: order.Method, Subject: order.Subject, AmountCents: order.AmountCents, PointsAmount: order.PointsAmount, PayURL: order.PayURL, QRCode: order.QRCode, ProviderOrderNo: order.ProviderOrderNo, Message: "支付成功"})
 	}
 	s.jsonResponse(w, map[string]interface{}{"order": order, "query": queryResult})
@@ -320,6 +417,12 @@ func publicPaymentSettings(settings *config.PaymentSettings) config.PaymentSetti
 	result.Epay.Key = ""
 	result.Epay.PlatformPublicKey = ""
 	result.Epay.MerchantPrivateKey = ""
+	result.AlipayBill.HasPrivateKey = strings.TrimSpace(result.AlipayBill.PrivateKey) != ""
+	result.AlipayBill.HasAlipayPublicKey = strings.TrimSpace(result.AlipayBill.AlipayPublicKey) != ""
+	result.AlipayBill.HasAppAuthToken = strings.TrimSpace(result.AlipayBill.AppAuthToken) != ""
+	result.AlipayBill.PrivateKey = ""
+	result.AlipayBill.AlipayPublicKey = ""
+	result.AlipayBill.AppAuthToken = ""
 	return result
 }
 

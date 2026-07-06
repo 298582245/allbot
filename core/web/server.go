@@ -122,6 +122,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/open/payments/notify/epay", s.handlePaymentNotifyEpay)
 	mux.HandleFunc("/api/open/payments/return/epay", s.handlePaymentReturnEpay)
 	mux.HandleFunc("/api/open/payments/qrcode/", s.handlePaymentQRCode)
+	mux.HandleFunc("/api/open/payments/alipay-bill/cashier/", s.handleAlipayBillCashier)
 	mux.HandleFunc("/api/open/images/", s.handleOpenImage)
 	mux.HandleFunc("/api/open/web-chat/", s.handleWebChatAPI)
 	mux.HandleFunc("/api/open/adapters/feishu/", s.handleFeishuAdapterCallback)

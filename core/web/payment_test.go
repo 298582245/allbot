@@ -33,7 +33,7 @@ func TestHandlePaymentSettingsGetDefault(t *testing.T) {
 	}
 	var response config.PaymentSettings
 	decodePaymentResponse(t, recorder, &response)
-	if response.PointsPerRMB != 100 || response.CurrencyUnit != "RMB" || response.HidePayURL || len(response.Methods) != 1 || response.Methods[0].Code != "points" {
+	if response.PointsPerRMB != 100 || response.CurrencyUnit != "RMB" || response.HidePayURL || len(response.Methods) != 2 || response.Methods[0].Code != "points" || response.Methods[1].Provider != "alipay_bill" {
 		t.Fatalf("unexpected response: %#v", response)
 	}
 	if !strings.Contains(recorder.Body.String(), "\"hide_pay_url\"") {

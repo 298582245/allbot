@@ -115,7 +115,8 @@ func enabledRechargePaymentMethods(settings *config.PaymentSettings) []config.Pa
 	all := payment.EnabledMethods(settings, nil)
 	methods := make([]config.PaymentMethodSetting, 0, len(all))
 	for _, method := range all {
-		if strings.EqualFold(strings.TrimSpace(method.Provider), "epay") {
+		provider := strings.TrimSpace(method.Provider)
+		if strings.EqualFold(provider, "epay") || strings.EqualFold(provider, "alipay_bill") {
 			methods = append(methods, method)
 		}
 	}

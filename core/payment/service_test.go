@@ -213,6 +213,42 @@ func TestWaitPayInsufficientPoints(t *testing.T) {
 	}
 }
 
+func TestWaitPayAlipayBillOffsetsDuplicateAmount(t *testing.T) {
+	db := newServiceTestDatabase(t)
+	settings, err := db.GetPaymentSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Methods = []config.PaymentMethodSetting{{Code: "alipay_transfer", Label: "支付宝转账", Provider: "alipay_bill", Enabled: true}}
+	settings.AlipayBill = testAlipayBillSettings("https://openapi.alipay.com/gateway.do")
+	settings.AlipayBill.ReceiptQRURL = "https://qr.alipay.com/fkx11224piym1km7a20uka5"
+	settings.QRCodeBaseURL = "https://qr.example.com/base"
+	if err := db.SavePaymentSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateProviderPaymentOrder(config.ProviderPaymentOrderInput{UnionID: "union-existing-alipay", Subject: "已有支付", AmountCents: 100, PointsAmount: 100, Provider: "alipay_bill", Method: "alipay_transfer", ExpiredAt: time.Now().Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewService(db).WaitPay(WaitPayRequest{UnionID: "union-new-alipay", Subject: "支付宝金额偏移", AmountRaw: json.RawMessage(`"1.00"`), Timeout: 1, Methods: []string{"alipay_transfer"}}, Interaction{Reply: func(text string) error {
+		return nil
+	}, SendImage: func(imageURL string) error {
+		return nil
+	}, Listen: func(timeout int) string { return "alipay_transfer" }})
+	if err != nil {
+		t.Fatalf("WaitPay alipay bill should expire without error: %v", err)
+	}
+	if result.AmountCents != 101 || result.PointsAmount != 100 || result.Status != "expired" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	order, err := db.GetPaymentOrder(result.OrderNo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order.AmountCents != 101 || order.PointsAmount != 100 || !strings.Contains(order.Metadata, `"match_mode":"amount_unique"`) || !strings.Contains(order.Metadata, `"amount_offset_cents":1`) {
+		t.Fatalf("unexpected offset order: %#v", order)
+	}
+}
+
 func TestWaitPayEpayCreatesOrderAndExpires(t *testing.T) {
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/mapi.php" {

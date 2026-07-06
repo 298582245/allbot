@@ -37,6 +37,7 @@ type PaymentSettings struct {
 	EpayQueryIntervalSeconds int                    `json:"epay_query_interval_seconds"`
 	Methods                  []PaymentMethodSetting `json:"methods"`
 	Epay                     EpaySettings           `json:"epay"`
+	AlipayBill               AlipayBillSettings     `json:"alipay_bill"`
 }
 
 type PaymentMethodSetting struct {
@@ -59,6 +60,27 @@ type EpaySettings struct {
 	HasKey             bool   `json:"has_key"`
 	HasPlatformKey     bool   `json:"has_platform_public_key"`
 	HasMerchantKey     bool   `json:"has_merchant_private_key"`
+}
+
+type AlipayBillSettings struct {
+	Enabled              bool   `json:"enabled"`
+	GatewayURL           string `json:"gateway_url"`
+	AppID                string `json:"app_id"`
+	PrivateKey           string `json:"private_key,omitempty"`
+	AlipayPublicKey      string `json:"alipay_public_key,omitempty"`
+	AppAuthToken         string `json:"app_auth_token,omitempty"`
+	HasPrivateKey        bool   `json:"has_private_key"`
+	HasAlipayPublicKey   bool   `json:"has_alipay_public_key"`
+	HasAppAuthToken      bool   `json:"has_app_auth_token"`
+	TransferUserID       string `json:"transfer_user_id"`
+	TransferUserName     string `json:"transfer_user_name"`
+	ReceiptQRURL         string `json:"receipt_qr_url"`
+	CashierBaseURL       string `json:"cashier_base_url"`
+	QueryMinutesBack     int    `json:"query_minutes_back"`
+	CheckIntervalSeconds int    `json:"check_interval_seconds"`
+	OrderTimeoutSeconds  int    `json:"order_timeout_seconds"`
+	BillPageSize         int    `json:"bill_page_size"`
+	MatchMode            string `json:"match_mode"`
 }
 
 type PaymentOrder struct {
@@ -116,6 +138,22 @@ type PaymentEvent struct {
 	Message   string    `json:"message"`
 	Payload   string    `json:"payload"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type AlipayBillRecord struct {
+	ID              int64      `json:"id"`
+	ProviderOrderNo string     `json:"provider_order_no"`
+	AccountLogID    string     `json:"account_log_id"`
+	OrderNo         string     `json:"order_no"`
+	AmountCents     int64      `json:"amount_cents"`
+	Direction       string     `json:"direction"`
+	Remark          string     `json:"remark"`
+	Summary         string     `json:"summary"`
+	OppositeAccount string     `json:"opposite_account"`
+	PaidAt          time.Time  `json:"paid_at"`
+	Raw             string     `json:"raw"`
+	MatchedAt       *time.Time `json:"matched_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 
 type PointTransaction struct {
@@ -196,9 +234,57 @@ func DefaultPaymentSettings() PaymentSettings {
 		EpayQueryIntervalSeconds: 5,
 		Methods: []PaymentMethodSetting{
 			{Code: "points", Label: "积分支付", Provider: "points", Enabled: true},
+			{Code: "alipay_transfer", Label: "支付宝转账", Provider: "alipay_bill", Enabled: false},
 		},
-		Epay: EpaySettings{Enabled: false, Version: "v1", SignType: "MD5"},
+		Epay:       EpaySettings{Enabled: false, Version: "v1", SignType: "MD5"},
+		AlipayBill: defaultAlipayBillSettings(),
 	}
+}
+
+func defaultAlipayBillSettings() AlipayBillSettings {
+	return AlipayBillSettings{
+		Enabled:              false,
+		GatewayURL:           "https://openapi.alipay.com/gateway.do",
+		QueryMinutesBack:     30,
+		CheckIntervalSeconds: 15,
+		OrderTimeoutSeconds:  300,
+		BillPageSize:         100,
+		MatchMode:            "amount_unique",
+	}
+}
+
+func normalizePaymentMethodSettings(methods, defaults []PaymentMethodSetting) []PaymentMethodSetting {
+	if len(methods) == 0 {
+		methods = defaults
+	}
+	result := make([]PaymentMethodSetting, 0, len(methods)+len(defaults))
+	seen := map[string]bool{}
+	for _, method := range methods {
+		method.Code = strings.TrimSpace(method.Code)
+		method.Label = strings.TrimSpace(method.Label)
+		method.Provider = strings.TrimSpace(method.Provider)
+		if method.Code == "" || method.Provider == "" {
+			continue
+		}
+		if method.Label == "" {
+			method.Label = method.Code
+		}
+		key := strings.ToLower(method.Code + "\x00" + method.Provider)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, method)
+	}
+	for _, method := range defaults {
+		key := strings.ToLower(strings.TrimSpace(method.Code) + "\x00" + strings.TrimSpace(method.Provider))
+		if key == "\x00" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, method)
+	}
+	return result
 }
 
 func NormalizePaymentSettings(settings *PaymentSettings) PaymentSettings {
@@ -222,17 +308,7 @@ func NormalizePaymentSettings(settings *PaymentSettings) PaymentSettings {
 	}
 	result.QRCodeBaseURL = strings.TrimSpace(result.QRCodeBaseURL)
 	result.EpaySubmitSubject = strings.TrimSpace(result.EpaySubmitSubject)
-	if len(result.Methods) == 0 {
-		result.Methods = DefaultPaymentSettings().Methods
-	}
-	for i := range result.Methods {
-		result.Methods[i].Code = strings.TrimSpace(result.Methods[i].Code)
-		result.Methods[i].Label = strings.TrimSpace(result.Methods[i].Label)
-		result.Methods[i].Provider = strings.TrimSpace(result.Methods[i].Provider)
-		if result.Methods[i].Label == "" {
-			result.Methods[i].Label = result.Methods[i].Code
-		}
-	}
+	result.Methods = normalizePaymentMethodSettings(result.Methods, DefaultPaymentSettings().Methods)
 	result.Epay.Version = strings.ToLower(strings.TrimSpace(result.Epay.Version))
 	if result.Epay.Version == "" {
 		result.Epay.Version = "v1"
@@ -244,6 +320,41 @@ func NormalizePaymentSettings(settings *PaymentSettings) PaymentSettings {
 		result.Epay.SignType = "RSA"
 	} else {
 		result.Epay.SignType = "MD5"
+	}
+	defaults := defaultAlipayBillSettings()
+	result.AlipayBill.GatewayURL = strings.TrimSpace(result.AlipayBill.GatewayURL)
+	if result.AlipayBill.GatewayURL == "" {
+		result.AlipayBill.GatewayURL = defaults.GatewayURL
+	}
+	result.AlipayBill.AppID = strings.TrimSpace(result.AlipayBill.AppID)
+	result.AlipayBill.TransferUserID = strings.TrimSpace(result.AlipayBill.TransferUserID)
+	result.AlipayBill.TransferUserName = strings.TrimSpace(result.AlipayBill.TransferUserName)
+	result.AlipayBill.ReceiptQRURL = strings.TrimSpace(result.AlipayBill.ReceiptQRURL)
+	result.AlipayBill.CashierBaseURL = strings.TrimRight(strings.TrimSpace(result.AlipayBill.CashierBaseURL), "/")
+	result.AlipayBill.MatchMode = strings.TrimSpace(result.AlipayBill.MatchMode)
+	if result.AlipayBill.MatchMode == "" {
+		result.AlipayBill.MatchMode = defaults.MatchMode
+	}
+	if !strings.EqualFold(result.AlipayBill.MatchMode, defaults.MatchMode) {
+		result.AlipayBill.MatchMode = defaults.MatchMode
+	}
+	if result.AlipayBill.QueryMinutesBack <= 0 {
+		result.AlipayBill.QueryMinutesBack = defaults.QueryMinutesBack
+	}
+	if result.AlipayBill.CheckIntervalSeconds < 5 {
+		result.AlipayBill.CheckIntervalSeconds = defaults.CheckIntervalSeconds
+	}
+	if result.AlipayBill.CheckIntervalSeconds > 300 {
+		result.AlipayBill.CheckIntervalSeconds = 300
+	}
+	if result.AlipayBill.OrderTimeoutSeconds <= 0 {
+		result.AlipayBill.OrderTimeoutSeconds = defaults.OrderTimeoutSeconds
+	}
+	if result.AlipayBill.BillPageSize <= 0 {
+		result.AlipayBill.BillPageSize = defaults.BillPageSize
+	}
+	if result.AlipayBill.BillPageSize > 1000 {
+		result.AlipayBill.BillPageSize = 1000
 	}
 	return result
 }
@@ -286,8 +397,13 @@ func ValidatePaymentSettings(settings *PaymentSettings) error {
 	if version != "" && version != "v1" && version != "v2" {
 		return fmt.Errorf("易支付版本只能是 v1 或 v2")
 	}
-	if settings.Epay.Enabled || settings.ThirdPartyEnabled || paymentMethodsUseProvider(settings.Methods, "epay") {
+	if settings.Epay.Enabled || paymentMethodsUseProvider(settings.Methods, "epay") {
 		if err := validateEpaySettings(settings.Epay); err != nil {
+			return err
+		}
+	}
+	if settings.AlipayBill.Enabled || paymentMethodsUseProvider(settings.Methods, "alipay_bill") {
+		if err := validateAlipayBillSettings(settings.AlipayBill); err != nil {
 			return err
 		}
 	}
@@ -302,6 +418,18 @@ func validatePaymentQRCodeBaseURL(value string) error {
 	parsed, err := url.ParseRequestURI(value)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("二维码图片基础地址必须是完整 URL 或以 / 开头的路径")
+	}
+	return nil
+}
+
+func validateOptionalHTTPURL(value, label string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("%s必须是 http 或 https 完整 URL", label)
 	}
 	return nil
 }
@@ -332,6 +460,35 @@ func validateEpaySettings(settings EpaySettings) error {
 	}
 	if strings.TrimSpace(settings.Key) == "" {
 		return fmt.Errorf("易支付 V1 商户密钥不能为空")
+	}
+	return nil
+}
+
+func validateAlipayBillSettings(settings AlipayBillSettings) error {
+	gatewayURL, err := url.ParseRequestURI(strings.TrimSpace(settings.GatewayURL))
+	if err != nil || gatewayURL.Scheme == "" || gatewayURL.Host == "" {
+		return fmt.Errorf("支付宝网关地址必须是完整 URL")
+	}
+	if strings.TrimSpace(settings.AppID) == "" {
+		return fmt.Errorf("支付宝 app_id 不能为空")
+	}
+	if strings.TrimSpace(settings.PrivateKey) == "" {
+		return fmt.Errorf("支付宝应用私钥不能为空")
+	}
+	if strings.TrimSpace(settings.AlipayPublicKey) == "" {
+		return fmt.Errorf("支付宝公钥不能为空")
+	}
+	if strings.TrimSpace(settings.TransferUserID) == "" && strings.TrimSpace(settings.ReceiptQRURL) == "" {
+		return fmt.Errorf("支付宝收款 UID 或收款码地址至少填写一项")
+	}
+	if err := validateOptionalHTTPURL(settings.ReceiptQRURL, "支付宝收款码地址"); err != nil {
+		return err
+	}
+	if err := validateOptionalHTTPURL(settings.CashierBaseURL, "支付宝收银台公网地址"); err != nil {
+		return err
+	}
+	if settings.CheckIntervalSeconds < 5 || settings.CheckIntervalSeconds > 300 {
+		return fmt.Errorf("支付宝账单检查间隔必须在 5 到 300 秒之间")
 	}
 	return nil
 }
@@ -374,6 +531,15 @@ func (d *Database) SavePaymentSettings(settings *PaymentSettings) error {
 		}
 		if settings.Epay.MerchantPrivateKey == "" && settings.Epay.HasMerchantKey {
 			settings.Epay.MerchantPrivateKey = current.Epay.MerchantPrivateKey
+		}
+		if settings.AlipayBill.PrivateKey == "" && settings.AlipayBill.HasPrivateKey {
+			settings.AlipayBill.PrivateKey = current.AlipayBill.PrivateKey
+		}
+		if settings.AlipayBill.AlipayPublicKey == "" && settings.AlipayBill.HasAlipayPublicKey {
+			settings.AlipayBill.AlipayPublicKey = current.AlipayBill.AlipayPublicKey
+		}
+		if settings.AlipayBill.AppAuthToken == "" && settings.AlipayBill.HasAppAuthToken {
+			settings.AlipayBill.AppAuthToken = current.AlipayBill.AppAuthToken
 		}
 	}
 	normalized := NormalizePaymentSettings(settings)
@@ -861,6 +1027,30 @@ func (d *Database) ListPaymentOrders(query PaymentOrderQuery) ([]*PaymentOrder, 
 	return items, total, rows.Err()
 }
 
+func (d *Database) ListPendingProviderPaymentOrders(provider string, limit int) ([]*PaymentOrder, error) {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return nil, fmt.Errorf("支付渠道不能为空")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := d.db.Query(paymentOrderSelectSQL()+` WHERE provider = ? AND status = 'pending' ORDER BY created_at ASC, id ASC LIMIT ?`, provider, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*PaymentOrder{}
+	for rows.Next() {
+		item, err := scanPaymentOrder(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (d *Database) UpdatePaymentOrderStatus(orderNo, status string, message string, payload interface{}) error {
 	orderNo = strings.TrimSpace(orderNo)
 	status = strings.TrimSpace(status)
@@ -891,6 +1081,25 @@ func (d *Database) UpdatePaymentOrderStatus(orderNo, status string, message stri
 		return err
 	}
 	return tx.Commit()
+}
+
+func (d *Database) UpdatePaymentOrderMetadata(orderNo string, metadata map[string]interface{}) error {
+	orderNo = strings.TrimSpace(orderNo)
+	if orderNo == "" {
+		return sql.ErrNoRows
+	}
+	payloadText, err := marshalPayload(metadata)
+	if err != nil {
+		return err
+	}
+	result, err := d.db.Exec(`UPDATE payment_orders SET metadata = ?, updated_at = CURRENT_TIMESTAMP WHERE order_no = ?`, payloadText, orderNo)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (d *Database) UpdatePaymentOrderProviderInfo(orderNo, providerOrderNo, payURL, qrCode, raw string) error {
@@ -967,6 +1176,87 @@ func (d *Database) ListPaymentEvents(orderNo string) ([]*PaymentEvent, error) {
 		items = append(items, &item)
 	}
 	return items, rows.Err()
+}
+
+func (d *Database) SaveAlipayBillRecord(record *AlipayBillRecord) error {
+	if record == nil {
+		return fmt.Errorf("支付宝账单流水不能为空")
+	}
+	record.ProviderOrderNo = strings.TrimSpace(record.ProviderOrderNo)
+	record.Direction = strings.TrimSpace(record.Direction)
+	if record.ProviderOrderNo == "" || record.Direction == "" || record.AmountCents <= 0 || record.PaidAt.IsZero() {
+		return fmt.Errorf("支付宝账单流水缺少必要字段")
+	}
+	if strings.TrimSpace(record.Raw) == "" {
+		record.Raw = "{}"
+	}
+	_, err := d.db.Exec(`
+		INSERT OR IGNORE INTO payment_alipay_bill_records (provider_order_no, account_log_id, order_no, amount_cents, direction, remark, summary, opposite_account, paid_at, raw, matched_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, record.ProviderOrderNo, strings.TrimSpace(record.AccountLogID), strings.TrimSpace(record.OrderNo), record.AmountCents, record.Direction, strings.TrimSpace(record.Remark), strings.TrimSpace(record.Summary), strings.TrimSpace(record.OppositeAccount), record.PaidAt, record.Raw, record.MatchedAt)
+	return err
+}
+
+func (d *Database) FindAlipayBillRecordByProviderOrderNo(providerOrderNo string) (*AlipayBillRecord, error) {
+	providerOrderNo = strings.TrimSpace(providerOrderNo)
+	if providerOrderNo == "" {
+		return nil, sql.ErrNoRows
+	}
+	return scanAlipayBillRecord(d.db.QueryRow(`SELECT id, provider_order_no, account_log_id, order_no, amount_cents, direction, remark, summary, opposite_account, paid_at, raw, matched_at, created_at FROM payment_alipay_bill_records WHERE provider_order_no = ?`, providerOrderNo))
+}
+
+func (d *Database) MarkAlipayBillRecordMatched(providerOrderNo, orderNo string) (bool, error) {
+	providerOrderNo = strings.TrimSpace(providerOrderNo)
+	orderNo = strings.TrimSpace(orderNo)
+	if providerOrderNo == "" || orderNo == "" {
+		return false, fmt.Errorf("支付宝账单流水号和订单号不能为空")
+	}
+	result, err := d.db.Exec(`UPDATE payment_alipay_bill_records SET order_no = ?, matched_at = CURRENT_TIMESTAMP WHERE provider_order_no = ? AND matched_at IS NULL`, orderNo, providerOrderNo)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+func (d *Database) SetPaymentProviderState(provider, key, value string) error {
+	provider = strings.TrimSpace(provider)
+	key = strings.TrimSpace(key)
+	if provider == "" || key == "" {
+		return fmt.Errorf("支付渠道状态 provider 和 key 不能为空")
+	}
+	_, err := d.db.Exec(`
+		INSERT INTO payment_provider_states (provider, state_key, state_value, updated_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(provider, state_key) DO UPDATE SET state_value = excluded.state_value, updated_at = CURRENT_TIMESTAMP
+	`, provider, key, strings.TrimSpace(value))
+	return err
+}
+
+func (d *Database) GetPaymentProviderState(provider, key string) (string, error) {
+	provider = strings.TrimSpace(provider)
+	key = strings.TrimSpace(key)
+	if provider == "" || key == "" {
+		return "", sql.ErrNoRows
+	}
+	var value string
+	err := d.db.QueryRow(`SELECT state_value FROM payment_provider_states WHERE provider = ? AND state_key = ?`, provider, key).Scan(&value)
+	return value, err
+}
+
+func scanAlipayBillRecord(scanner interface{ Scan(...interface{}) error }) (*AlipayBillRecord, error) {
+	var item AlipayBillRecord
+	var matchedAt sql.NullTime
+	if err := scanner.Scan(&item.ID, &item.ProviderOrderNo, &item.AccountLogID, &item.OrderNo, &item.AmountCents, &item.Direction, &item.Remark, &item.Summary, &item.OppositeAccount, &item.PaidAt, &item.Raw, &matchedAt, &item.CreatedAt); err != nil {
+		return nil, err
+	}
+	if matchedAt.Valid {
+		item.MatchedAt = &matchedAt.Time
+	}
+	return &item, nil
 }
 
 func (d *Database) RecordPointTransaction(tx *sql.Tx, item *PointTransaction) (*PointTransaction, error) {

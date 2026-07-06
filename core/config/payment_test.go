@@ -24,8 +24,20 @@ func TestDefaultPaymentSettings(t *testing.T) {
 	if settings.HidePayURL {
 		t.Fatal("expected default hide_pay_url false")
 	}
-	if len(settings.Methods) != 1 || settings.Methods[0].Code != "points" || !settings.Methods[0].Enabled {
+	if len(settings.Methods) != 2 || settings.Methods[0].Code != "points" || !settings.Methods[0].Enabled || settings.Methods[1].Code != "alipay_transfer" || settings.Methods[1].Provider != "alipay_bill" || settings.Methods[1].Enabled {
 		t.Fatalf("unexpected default methods: %#v", settings.Methods)
+	}
+	if settings.AlipayBill.GatewayURL != "https://openapi.alipay.com/gateway.do" || settings.AlipayBill.MatchMode != "amount_unique" || settings.AlipayBill.QueryMinutesBack != 30 || settings.AlipayBill.CheckIntervalSeconds != 15 || settings.AlipayBill.OrderTimeoutSeconds != 300 || settings.AlipayBill.BillPageSize != 100 {
+		t.Fatalf("unexpected default alipay bill settings: %#v", settings.AlipayBill)
+	}
+}
+
+func TestNormalizePaymentSettingsAppendsMissingDefaultMethods(t *testing.T) {
+	settings := DefaultPaymentSettings()
+	settings.Methods = []PaymentMethodSetting{{Code: "points", Label: "积分支付", Provider: "points", Enabled: true}}
+	normalized := NormalizePaymentSettings(&settings)
+	if len(normalized.Methods) < 2 || normalized.Methods[1].Code != "alipay_transfer" || normalized.Methods[1].Provider != "alipay_bill" {
+		t.Fatalf("expected alipay bill default method to be appended: %#v", normalized.Methods)
 	}
 }
 
@@ -53,7 +65,7 @@ func TestSaveAndGetPaymentSettings(t *testing.T) {
 	if saved.PointsPerRMB != 80 || saved.CurrencyUnit != "元" || saved.MaxPendingPayments != 3 || saved.EpayQueryIntervalSeconds != 2 || !saved.ThirdPartyEnabled || !saved.HidePayURL || saved.QRCodeBaseURL != "https://qr.example.com/base" || saved.EpaySubmitSubject != "后台伪造标题" || saved.Epay.SignType != "RSA" || saved.Epay.Version != "v2" {
 		t.Fatalf("unexpected saved settings: %#v", saved)
 	}
-	if len(saved.Methods) != 2 || saved.Methods[1].Code != "alipay" {
+	if len(saved.Methods) != 3 || saved.Methods[2].Code != "alipay" {
 		t.Fatalf("unexpected methods: %#v", saved.Methods)
 	}
 }

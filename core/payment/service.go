@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	defaultWaitTimeout = 300
-	providerPoints     = "points"
-	methodPoints       = "points"
+	defaultWaitTimeout   = 300
+	providerPoints       = "points"
+	providerAlipayBill   = "alipay_bill"
+	methodPoints         = "points"
+	methodAlipayTransfer = "alipay_transfer"
 )
 
 var amountPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]{1,2})?$`)
@@ -163,6 +165,10 @@ func EnabledMethods(settings *config.PaymentSettings, requestedMethods []string)
 			if epayAvailable(normalized) {
 				methods = append(methods, method)
 			}
+		case providerAlipayBill:
+			if alipayBillAvailable(normalized) {
+				methods = append(methods, method)
+			}
 		}
 	}
 	return methods
@@ -179,6 +185,13 @@ func epayAvailable(settings config.PaymentSettings) bool {
 		return strings.TrimSpace(settings.Epay.PlatformPublicKey) != "" && strings.TrimSpace(settings.Epay.MerchantPrivateKey) != ""
 	}
 	return strings.TrimSpace(settings.Epay.Key) != ""
+}
+
+func alipayBillAvailable(settings config.PaymentSettings) bool {
+	if !settings.ThirdPartyEnabled || !settings.AlipayBill.Enabled {
+		return false
+	}
+	return strings.TrimSpace(settings.AlipayBill.GatewayURL) != "" && strings.TrimSpace(settings.AlipayBill.AppID) != "" && strings.TrimSpace(settings.AlipayBill.PrivateKey) != "" && strings.TrimSpace(settings.AlipayBill.AlipayPublicKey) != "" && (strings.TrimSpace(settings.AlipayBill.TransferUserID) != "" || strings.TrimSpace(settings.AlipayBill.ReceiptQRURL) != "")
 }
 
 func (s *Service) WaitPay(req WaitPayRequest, io Interaction) (PaymentResult, error) {
@@ -251,6 +264,9 @@ func (s *Service) WaitPay(req WaitPayRequest, io Interaction) (PaymentResult, er
 	}
 	if provider == "epay" {
 		return s.waitEpay(req, settingsValue, method, amountCents, pointsAmount, io)
+	}
+	if provider == providerAlipayBill {
+		return s.waitAlipayBill(req, settingsValue, method, amountCents, pointsAmount, io)
 	}
 	message := "不支持的支付渠道: " + method.Provider
 	return PaymentResult{Status: "failed", Provider: method.Provider, Method: method.Code, Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, Message: message}, fmt.Errorf("%s", message)
@@ -374,6 +390,88 @@ func (s *Service) waitEpay(req WaitPayRequest, settings config.PaymentSettings, 
 	}
 }
 
+func (s *Service) waitAlipayBill(req WaitPayRequest, settings config.PaymentSettings, method config.PaymentMethodSetting, amountCents, pointsAmount int64, io Interaction) (result PaymentResult, err error) {
+	if err := s.ensurePendingPaymentCapacity(settings, req.UnionID); err != nil {
+		return PaymentResult{Status: "failed", Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, Message: err.Error()}, err
+	}
+	provider, err := NewAlipayBillProvider(settings.AlipayBill, nil)
+	if err != nil {
+		return PaymentResult{Status: "failed", Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, Message: err.Error()}, err
+	}
+	timeoutSeconds := alipayBillOrderTimeout(settings, req.Timeout)
+	expiredAt := time.Now().Add(time.Duration(timeoutSeconds) * time.Second)
+	payableAmountCents, err := s.nextAlipayBillPayableAmount(amountCents)
+	if err != nil {
+		return PaymentResult{Status: "failed", Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, Message: err.Error()}, err
+	}
+	metadata := map[string]interface{}{}
+	for key, value := range req.Metadata {
+		metadata[key] = value
+	}
+	metadata["match_mode"] = alipayBillMatchMode
+	metadata["requested_amount_cents"] = amountCents
+	metadata["payable_amount_cents"] = payableAmountCents
+	metadata["amount_offset_cents"] = payableAmountCents - amountCents
+	order, err := s.database.CreateProviderPaymentOrder(config.ProviderPaymentOrderInput{PluginID: req.PluginID, UnionID: req.UnionID, Platform: req.Platform, AdapterID: req.AdapterID, UserID: req.UserID, GroupID: req.GroupID, Subject: req.Subject, AmountCents: payableAmountCents, PointsAmount: pointsAmount, Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Metadata: metadata, Remark: req.Remark, ExpiredAt: expiredAt})
+	if err != nil {
+		return PaymentResult{Status: "failed", Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, Message: err.Error()}, err
+	}
+	providerOrder, err := provider.CreateOrder(ProviderCreateRequest{OrderNo: order.OrderNo, Subject: req.Subject, AmountCents: payableAmountCents, Method: alipayBillMethodCode(method)})
+	if err != nil {
+		_ = s.database.UpdatePaymentOrderStatus(order.OrderNo, "failed", "支付宝账单下单失败", map[string]string{"error": err.Error()})
+		return PaymentResult{Status: "failed", OrderNo: order.OrderNo, Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: payableAmountCents, PointsAmount: pointsAmount, Message: err.Error()}, err
+	}
+	if err = s.database.UpdatePaymentOrderProviderInfo(order.OrderNo, providerOrder.ProviderOrderNo, providerOrder.PayURL, providerOrder.QRCode, providerOrder.Raw); err != nil {
+		return PaymentResult{Status: "failed", OrderNo: order.OrderNo, Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: payableAmountCents, PointsAmount: pointsAmount, Message: err.Error()}, err
+	}
+	ch, cancel := DefaultWaitHub.Register(order.OrderNo)
+	defer cancel()
+	initial := PaymentResult{Status: "pending", OrderNo: order.OrderNo, Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: payableAmountCents, PointsAmount: pointsAmount, PayURL: providerOrder.PayURL, QRCode: providerOrder.QRCode, ProviderOrderNo: providerOrder.ProviderOrderNo, Message: "等待支付宝转账"}
+	baseURL := paymentQRCodePublicBaseURL(settings, "")
+	if err = sendAlipayBillPaymentInfo(baseURL, initial, method, settings.HidePayURL, paymentCurrencyUnit(settings), io); err != nil {
+		log.Printf("[PAYMENT] Send alipay bill qrcode image failed: order=%s err=%v", order.OrderNo, err)
+		if settings.HidePayURL {
+			message := "二维码图片发送失败，请稍后重试"
+			_ = s.database.UpdatePaymentOrderStatus(order.OrderNo, "failed", message, map[string]string{"error": err.Error()})
+			if io.Reply != nil {
+				_ = io.Reply(message)
+			}
+			return PaymentResult{Status: "failed", OrderNo: order.OrderNo, Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: payableAmountCents, PointsAmount: pointsAmount, PayURL: providerOrder.PayURL, QRCode: providerOrder.QRCode, Message: message}, err
+		}
+	}
+	done := make(chan struct{})
+	defer close(done)
+	cancelInput := listenForPaymentCancel(io, timeoutSeconds, done)
+	timeout := time.After(time.Duration(timeoutSeconds) * time.Second)
+	for {
+		select {
+		case result, ok := <-ch:
+			if !ok {
+				return PaymentResult{Status: "expired", OrderNo: order.OrderNo, Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: payableAmountCents, PointsAmount: pointsAmount, Message: "支付超时"}, nil
+			}
+			return result, nil
+		case choice, ok := <-cancelInput:
+			if !ok {
+				cancelInput = nil
+				continue
+			}
+			if isCancelChoice(choice) {
+				message := "支付已取消"
+				_ = s.database.UpdatePaymentOrderStatus(order.OrderNo, "cancelled", message, nil)
+				return PaymentResult{Status: "cancelled", OrderNo: order.OrderNo, Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: payableAmountCents, PointsAmount: pointsAmount, PayURL: providerOrder.PayURL, QRCode: providerOrder.QRCode, Message: message}, nil
+			}
+			if strings.TrimSpace(choice) != "" {
+				cancelInput = listenForPaymentCancel(io, timeoutSeconds, done)
+			} else {
+				cancelInput = nil
+			}
+		case <-timeout:
+			_ = s.database.ExpirePaymentOrder(order.OrderNo, "支付超时")
+			return PaymentResult{Status: "expired", OrderNo: order.OrderNo, Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: payableAmountCents, PointsAmount: pointsAmount, PayURL: providerOrder.PayURL, QRCode: providerOrder.QRCode, Message: "支付超时"}, nil
+		}
+	}
+}
+
 func (s *Service) pollEpayOrder(provider PaymentProvider, orderNo, providerOrderNo string, intervalSeconds int, done <-chan struct{}) <-chan *ProviderQueryResult {
 	ch := make(chan *ProviderQueryResult, 1)
 	if provider == nil {
@@ -461,6 +559,25 @@ func (s *Service) ensureUserPendingPaymentCapacity(unionID string) error {
 	return nil
 }
 
+func (s *Service) nextAlipayBillPayableAmount(amountCents int64) (int64, error) {
+	orders, err := s.database.ListPendingProviderPaymentOrders(providerAlipayBill, 1000)
+	if err != nil {
+		return 0, err
+	}
+	used := map[int64]bool{}
+	now := time.Now()
+	for _, order := range orders {
+		if order != nil && order.AmountCents > 0 && order.ExpiredAt.After(now) {
+			used[order.AmountCents] = true
+		}
+	}
+	payableAmountCents := amountCents
+	for used[payableAmountCents] {
+		payableAmountCents++
+	}
+	return payableAmountCents, nil
+}
+
 func (s *Service) ensurePendingPaymentCapacity(settings config.PaymentSettings, unionID string) error {
 	if err := s.ensureUserPendingPaymentCapacity(unionID); err != nil {
 		return err
@@ -530,6 +647,16 @@ func paymentMethodButtons(methods []config.PaymentMethodSetting, pointsUnit stri
 	return rows
 }
 
+func alipayBillOrderTimeout(settings config.PaymentSettings, fallback int) int {
+	if settings.AlipayBill.OrderTimeoutSeconds > 0 {
+		return settings.AlipayBill.OrderTimeoutSeconds
+	}
+	if fallback > 0 {
+		return fallback
+	}
+	return defaultWaitTimeout
+}
+
 func epayPaymentMessage(result PaymentResult, method config.PaymentMethodSetting, hidePayURL bool, currencyUnit string) string {
 	label := strings.TrimSpace(method.Label)
 	if label == "" {
@@ -549,6 +676,35 @@ func epayPaymentMessage(result PaymentResult, method config.PaymentMethodSetting
 	}
 	lines = append(lines, "请完成支付，系统会自动确认。")
 	return strings.Join(lines, "\n")
+}
+
+func alipayBillPaymentMessage(result PaymentResult, method config.PaymentMethodSetting, hidePayURL bool, currencyUnit string) string {
+	message := epayPaymentMessage(result, method, hidePayURL, currencyUnit)
+	lines := []string{message, "请按上方支付金额精确付款，系统会按账单入账金额自动确认。"}
+	return strings.Join(lines, "\n")
+}
+
+func sendAlipayBillPaymentInfo(baseURL string, result PaymentResult, method config.PaymentMethodSetting, hidePayURL bool, currencyUnit string, io Interaction) error {
+	message := alipayBillPaymentMessage(result, method, hidePayURL, currencyUnit)
+	imageURL, err := epayQRCodeImageURL(baseURL, result)
+	if err != nil {
+		if io.Reply != nil {
+			_ = io.Reply(message)
+		}
+		return err
+	}
+	if io.SendRich != nil {
+		if err := io.SendRich(types.RichMessage{Parts: []types.RichMessagePart{{Type: "text", Text: message + "\n"}, {Type: "image", URL: imageURL, Alt: "支付宝转账二维码"}}, FallbackText: message, Prefer: "auto"}); err == nil {
+			return nil
+		}
+	}
+	if io.Reply != nil {
+		_ = io.Reply(message)
+	}
+	if io.SendImage == nil {
+		return fmt.Errorf("适配器不支持发送图片")
+	}
+	return io.SendImage(imageURL)
 }
 
 func sendEpayPaymentInfo(baseURL string, result PaymentResult, method config.PaymentMethodSetting, hidePayURL bool, currencyUnit string, io Interaction) error {

@@ -237,7 +237,7 @@ const detailVisible = ref(false)
 const detail = reactive({ order: null, events: [] })
 const filters = reactive({ order_no: '', union_id: '', plugin_id: '', status: '', provider: '', method: '' })
 
-const pageDescription = '追踪支付订单、回调原文和状态事件，支持对易支付待支付订单手动查询。'
+const pageDescription = '追踪支付订单、回调原文和状态事件，支持对可查询第三方待支付订单手动查询。'
 const showPageDescription = () => {
   ElMessageBox.alert(pageDescription, '订单管理说明', { confirmButtonText: '知道了', type: 'info' })
 }
@@ -328,7 +328,7 @@ const deleteSelectedOrders = async () => {
   }
 }
 
-const canQuery = (row) => row && row.provider === 'epay' && row.status === 'pending'
+const canQuery = (row) => row && row.status === 'pending' && ['epay', 'alipay_bill'].includes(row.provider)
 
 function orderKey(row) {
   return row?.order_no || ''

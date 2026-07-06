@@ -25,6 +25,7 @@ import (
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/deps"
 	"github.com/allbot/allbot/core/imagehost"
+	"github.com/allbot/allbot/core/payment"
 	"github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/router"
 	"github.com/allbot/allbot/core/session"
@@ -171,6 +172,8 @@ func main() {
 		default:
 		}
 	})
+	alipayBillMonitor := payment.NewAlipayBillMonitor(configDB)
+	alipayBillMonitor.Start()
 	backupService := backup.NewService(configDB, pluginManager.PluginDir())
 	backupService.Start()
 	logCleanupService := web.NewLogCleanupService(configDB, webServer.GetLogManager())
@@ -208,6 +211,7 @@ func main() {
 
 	shutdown := func() {
 		log.Println("AllBot 关闭中...")
+		alipayBillMonitor.Stop()
 		logCleanupService.Stop()
 		backupService.Stop()
 		scheduledTaskRunner.Stop()
