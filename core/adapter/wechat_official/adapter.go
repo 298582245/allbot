@@ -32,6 +32,8 @@ const (
 	wechatOfficialTokenRefreshLead = 5 * time.Minute
 )
 
+var wechatOfficialPassiveReplyWait = 2 * time.Second
+
 type WeChatOfficialAdapter struct {
 	appID        string
 	appSecret    string
@@ -46,6 +48,9 @@ type WeChatOfficialAdapter struct {
 	accessToken    string
 	tokenExpiresAt time.Time
 	tokenMu        sync.Mutex
+
+	passiveReplyMu sync.Mutex
+	passiveReplies map[string]chan wechatOfficialPassiveReply
 
 	stopOnce sync.Once
 	stopped  chan struct{}
@@ -75,6 +80,20 @@ type wechatOfficialAPIResponse struct {
 	ErrMsg  string `json:"errmsg"`
 }
 
+type wechatOfficialPassiveReplyXML struct {
+	XMLName      xml.Name `xml:"xml"`
+	ToUserName   string   `xml:"ToUserName"`
+	FromUserName string   `xml:"FromUserName"`
+	CreateTime   int64    `xml:"CreateTime"`
+	MsgType      string   `xml:"MsgType"`
+	Content      string   `xml:"Content"`
+}
+
+type wechatOfficialPassiveReply struct {
+	target string
+	text   string
+}
+
 // NewWeChatOfficialAdapter 创建微信公众号适配器。
 func NewWeChatOfficialAdapter(appID, appSecret, token, callbackPath, apiBaseURL, tokenURL string) *WeChatOfficialAdapter {
 	callbackPath = normalizeCallbackPath(callbackPath)
@@ -87,14 +106,15 @@ func NewWeChatOfficialAdapter(appID, appSecret, token, callbackPath, apiBaseURL,
 		tokenURL = wechatOfficialDefaultTokenURL
 	}
 	return &WeChatOfficialAdapter{
-		appID:        strings.TrimSpace(appID),
-		appSecret:    strings.TrimSpace(appSecret),
-		token:        strings.TrimSpace(token),
-		callbackPath: callbackPath,
-		apiBaseURL:   strings.TrimRight(apiBaseURL, "/"),
-		tokenURL:     tokenURL,
-		httpClient:   &http.Client{Timeout: 15 * time.Second},
-		stopped:      make(chan struct{}),
+		appID:          strings.TrimSpace(appID),
+		appSecret:      strings.TrimSpace(appSecret),
+		token:          strings.TrimSpace(token),
+		callbackPath:   callbackPath,
+		apiBaseURL:     strings.TrimRight(apiBaseURL, "/"),
+		tokenURL:       tokenURL,
+		httpClient:     &http.Client{Timeout: 15 * time.Second},
+		passiveReplies: make(map[string]chan wechatOfficialPassiveReply),
+		stopped:        make(chan struct{}),
 	}
 }
 
@@ -156,6 +176,10 @@ func (a *WeChatOfficialAdapter) SendMessage(target string, text string) error {
 	if target == "" {
 		return fmt.Errorf("微信公众号发送目标不能为空")
 	}
+	if a.sendPassiveReply(target, text) {
+		log.Printf("[发送][微信公众号][%s][被动回复]：%s", target, text)
+		return nil
+	}
 	body := map[string]interface{}{
 		"touser":  target,
 		"msgtype": "text",
@@ -163,8 +187,12 @@ func (a *WeChatOfficialAdapter) SendMessage(target string, text string) error {
 			"content": text,
 		},
 	}
-	log.Printf("[发送][微信公众号][%s]：%s", target, text)
-	return a.callAPI(http.MethodPost, "/cgi-bin/message/custom/send", body, nil)
+	if err := a.callAPI(http.MethodPost, "/cgi-bin/message/custom/send", body, nil); err != nil {
+		log.Printf("[发送失败][微信公众号][%s][客服消息]：%v", target, err)
+		return err
+	}
+	log.Printf("[发送][微信公众号][%s][客服消息]：%s", target, text)
+	return nil
 }
 
 func (a *WeChatOfficialAdapter) SendImage(target string, imageURL string) error {
@@ -229,11 +257,19 @@ func (a *WeChatOfficialAdapter) handleMessageCallback(w http.ResponseWriter, r *
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
-	if msg != nil {
-		go a.dispatchMessage(msg)
+	if msg == nil {
+		writeWeChatOfficialSuccess(w)
+		return
 	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write([]byte("success"))
+	replyCh := a.registerPassiveReply(msg.UserID)
+	defer a.unregisterPassiveReply(msg.UserID, replyCh)
+	go a.dispatchMessage(msg)
+	select {
+	case reply := <-replyCh:
+		a.writePassiveTextReply(w, msg, reply.text)
+	case <-time.After(wechatOfficialPassiveReplyWait):
+		writeWeChatOfficialSuccess(w)
+	}
 }
 
 func (a *WeChatOfficialAdapter) verifySignature(signature, timestamp, nonce string) bool {
@@ -315,6 +351,60 @@ func (a *WeChatOfficialAdapter) dispatchMessage(msg *types.Message) {
 	if a.messageHandler != nil {
 		a.messageHandler(msg)
 	}
+}
+
+func (a *WeChatOfficialAdapter) registerPassiveReply(openID string) chan wechatOfficialPassiveReply {
+	ch := make(chan wechatOfficialPassiveReply, 1)
+	a.passiveReplyMu.Lock()
+	a.passiveReplies[openID] = ch
+	a.passiveReplyMu.Unlock()
+	return ch
+}
+
+func (a *WeChatOfficialAdapter) unregisterPassiveReply(openID string, ch chan wechatOfficialPassiveReply) {
+	a.passiveReplyMu.Lock()
+	if a.passiveReplies[openID] == ch {
+		delete(a.passiveReplies, openID)
+	}
+	a.passiveReplyMu.Unlock()
+}
+
+func (a *WeChatOfficialAdapter) sendPassiveReply(target string, text string) bool {
+	a.passiveReplyMu.Lock()
+	ch := a.passiveReplies[target]
+	a.passiveReplyMu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- wechatOfficialPassiveReply{target: target, text: text}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *WeChatOfficialAdapter) writePassiveTextReply(w http.ResponseWriter, msg *types.Message, text string) {
+	reply := wechatOfficialPassiveReplyXML{
+		ToUserName:   strings.TrimSpace(msg.Metadata["wechat_from_user_name"]),
+		FromUserName: strings.TrimSpace(msg.Metadata["wechat_to_user_name"]),
+		CreateTime:   time.Now().Unix(),
+		MsgType:      "text",
+		Content:      text,
+	}
+	payload, err := xml.Marshal(reply)
+	if err != nil {
+		log.Printf("[发送失败][微信公众号][%s][被动回复]：%v", msg.UserID, err)
+		writeWeChatOfficialSuccess(w)
+		return
+	}
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	_, _ = w.Write(payload)
+}
+
+func writeWeChatOfficialSuccess(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte("success"))
 }
 
 func (a *WeChatOfficialAdapter) getAccessToken() (string, error) {

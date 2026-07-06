@@ -147,6 +147,8 @@ func TestParseEventMessageXML(t *testing.T) {
 
 func TestPostCallbackDispatchesMessage(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "secret", "token", "callback", "", "")
+	wechatOfficialPassiveReplyWait = 10 * time.Millisecond
+	defer func() { wechatOfficialPassiveReplyWait = 2 * time.Second }()
 	messages := make(chan *types.Message, 1)
 	adapter.SetMessageHandler(func(msg *types.Message) { messages <- msg })
 	query := url.Values{}
@@ -223,6 +225,33 @@ func TestAccessTokenCacheAndRefresh(t *testing.T) {
 	}
 }
 
+func TestPostCallbackUsesPassiveTextReply(t *testing.T) {
+	adapter := NewWeChatOfficialAdapter("app", "secret", "token", "callback", "", "")
+	adapter.SetMessageHandler(func(msg *types.Message) {
+		if err := adapter.SendMessage(msg.UserID, "你好 <allbot>"); err != nil {
+			t.Errorf("SendMessage returned error: %v", err)
+		}
+	})
+	query := url.Values{}
+	query.Set("timestamp", "123")
+	query.Set("nonce", "nonce")
+	query.Set("signature", testWeChatSignature("token", "123", "nonce"))
+	request := httptest.NewRequest(http.MethodPost, "/?"+query.Encode(), strings.NewReader(`<xml><ToUserName><![CDATA[gh_app]]></ToUserName><FromUserName><![CDATA[openid]]></FromUserName><CreateTime>1</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[ping]]></Content><MsgId>9</MsgId></xml>`))
+	response := httptest.NewRecorder()
+
+	adapter.HandleHTTPCallback("callback", response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	body := response.Body.String()
+	for _, want := range []string{"<ToUserName>openid</ToUserName>", "<FromUserName>gh_app</FromUserName>", "<MsgType>text</MsgType>", "<Content>你好 &lt;allbot&gt;</Content>"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("passive reply missing %q in %s", want, body)
+		}
+	}
+}
+
 func TestSendMessageUsesCustomerServiceAPI(t *testing.T) {
 	var sendCalls int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -267,6 +296,8 @@ func TestSendMessageUsesCustomerServiceAPI(t *testing.T) {
 
 func TestPostCallbackReturnsBeforeSlowHandler(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "secret", "token", "callback", "", "")
+	wechatOfficialPassiveReplyWait = 10 * time.Millisecond
+	defer func() { wechatOfficialPassiveReplyWait = 2 * time.Second }()
 	started := make(chan struct{})
 	release := make(chan struct{})
 	adapter.SetMessageHandler(func(msg *types.Message) {
