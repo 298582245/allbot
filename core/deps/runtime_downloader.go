@@ -703,6 +703,31 @@ func untarSafe(source io.Reader, targetDir string) error {
 			if closeErr != nil {
 				return closeErr
 			}
+		case tar.TypeSymlink:
+			linkName := filepath.Clean(filepath.FromSlash(header.Linkname))
+			if filepath.IsAbs(linkName) {
+				return fmt.Errorf("压缩包包含非法符号链接: %s", header.Name)
+			}
+			linkTarget := filepath.Join(filepath.Dir(absPath), linkName)
+			absLinkTarget, err := filepath.Abs(linkTarget)
+			if err != nil {
+				return err
+			}
+			if absLinkTarget != absTarget && !strings.HasPrefix(absLinkTarget, absTarget+string(filepath.Separator)) {
+				return fmt.Errorf("压缩包符号链接路径越界: %s", header.Name)
+			}
+			if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
+				return err
+			}
+			if err := os.Symlink(header.Linkname, absPath); err != nil {
+				data, readErr := os.ReadFile(absLinkTarget)
+				if readErr != nil {
+					return err
+				}
+				if writeErr := os.WriteFile(absPath, data, os.FileMode(header.Mode)&0755); writeErr != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil

@@ -585,6 +585,39 @@ func TestNodeProfileNpmPathPrefersExecutableDirectory(t *testing.T) {
 	}
 }
 
+func TestUntarSafeRestoresRelativeSymlink(t *testing.T) {
+	tarPath := filepath.Join(t.TempDir(), "node.tar.gz")
+	if err := writeTarGzipEntriesForTest(tarPath, []tarTestEntry{
+		{Name: "node/bin/node", Data: []byte("node")},
+		{Name: "node/lib/node_modules/npm/bin/npm-cli.js", Data: []byte("npm")},
+		{Name: "node/bin/npm", LinkName: "../lib/node_modules/npm/bin/npm-cli.js"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "out")
+	if err := untarGzipSafe(tarPath, out); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(out, "node", "bin", "npm")
+	data, err := os.ReadFile(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "npm" {
+		t.Fatalf("expected npm shim content, got %q", data)
+	}
+}
+
+func TestUntarSafeRejectsSymlinkEscape(t *testing.T) {
+	tarPath := filepath.Join(t.TempDir(), "bad-link.tar.gz")
+	if err := writeTarGzipEntriesForTest(tarPath, []tarTestEntry{{Name: "node/bin/npm", LinkName: "../../evil"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := untarGzipSafe(tarPath, filepath.Join(t.TempDir(), "out")); err == nil {
+		t.Fatal("expected escaping symlink to be rejected")
+	}
+}
+
 func TestDownloaderRejectsUntrustedURLAndZipSlip(t *testing.T) {
 	if err := validateTrustedURL("https://evil.example/runtime.zip", []string{"nodejs.org"}); err == nil {
 		t.Fatal("expected untrusted URL to be rejected")
@@ -632,6 +665,16 @@ func writeZipForTest(path, name string, data []byte) error {
 }
 
 func writeTarGzipForTest(path, name string, data []byte) error {
+	return writeTarGzipEntriesForTest(path, []tarTestEntry{{Name: name, Data: data}})
+}
+
+type tarTestEntry struct {
+	Name     string
+	Data     []byte
+	LinkName string
+}
+
+func writeTarGzipEntriesForTest(path string, entries []tarTestEntry) error {
 	file, err := os.Create(path)
 	if err != nil {
 		return err
@@ -639,7 +682,23 @@ func writeTarGzipForTest(path, name string, data []byte) error {
 	defer file.Close()
 	gzipWriter := gzip.NewWriter(file)
 	defer gzipWriter.Close()
-	return writeTarForTest(gzipWriter, name, data)
+	writer := tar.NewWriter(gzipWriter)
+	defer writer.Close()
+	for _, entry := range entries {
+		if entry.LinkName != "" {
+			if err := writer.WriteHeader(&tar.Header{Name: entry.Name, Typeflag: tar.TypeSymlink, Mode: 0755, Linkname: entry.LinkName}); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := writer.WriteHeader(&tar.Header{Name: entry.Name, Mode: 0644, Size: int64(len(entry.Data))}); err != nil {
+			return err
+		}
+		if _, err := writer.Write(entry.Data); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeTarZstdForTest(path, name string, data []byte) error {
