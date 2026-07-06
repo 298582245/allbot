@@ -252,6 +252,35 @@ func TestPostCallbackUsesPassiveTextReply(t *testing.T) {
 	}
 }
 
+func TestPostCallbackMergesPassiveReplies(t *testing.T) {
+	adapter := NewWeChatOfficialAdapter("app", "secret", "token", "callback", "", "")
+	wechatOfficialPassiveReplyWait = 20 * time.Millisecond
+	defer func() { wechatOfficialPassiveReplyWait = 2 * time.Second }()
+	adapter.SetMessageHandler(func(msg *types.Message) {
+		if err := adapter.SendMessage(msg.UserID, "正在加载二维码，请稍候..."); err != nil {
+			t.Errorf("SendMessage returned error: %v", err)
+		}
+		if err := adapter.SendImage(msg.UserID, "https://example.com/qrcode.png"); err != nil {
+			t.Errorf("SendImage returned error: %v", err)
+		}
+	})
+	query := url.Values{}
+	query.Set("timestamp", "123")
+	query.Set("nonce", "nonce")
+	query.Set("signature", testWeChatSignature("token", "123", "nonce"))
+	request := httptest.NewRequest(http.MethodPost, "/?"+query.Encode(), strings.NewReader(`<xml><ToUserName><![CDATA[gh_app]]></ToUserName><FromUserName><![CDATA[openid]]></FromUserName><CreateTime>1</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[ping]]></Content><MsgId>9</MsgId></xml>`))
+	response := httptest.NewRecorder()
+
+	adapter.HandleHTTPCallback("callback", response, request)
+
+	body := response.Body.String()
+	for _, want := range []string{"正在加载二维码，请稍候...", "https://example.com/qrcode.png"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("passive reply missing %q in %s", want, body)
+		}
+	}
+}
+
 func TestSendImageSendsImageURLAsText(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "secret", "token", "callback", "", "")
 	adapter.SetMessageHandler(func(msg *types.Message) {

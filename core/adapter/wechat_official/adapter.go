@@ -268,12 +268,12 @@ func (a *WeChatOfficialAdapter) handleMessageCallback(w http.ResponseWriter, r *
 	replyCh := a.registerPassiveReply(msg.UserID)
 	defer a.unregisterPassiveReply(msg.UserID, replyCh)
 	go a.dispatchMessage(msg)
-	select {
-	case reply := <-replyCh:
-		a.writePassiveTextReply(w, msg, reply.text)
-	case <-time.After(wechatOfficialPassiveReplyWait):
+	replies := collectWeChatOfficialPassiveReplies(replyCh, wechatOfficialPassiveReplyWait)
+	if len(replies) == 0 {
 		writeWeChatOfficialSuccess(w)
+		return
 	}
+	a.writePassiveTextReply(w, msg, strings.Join(replies, "\n\n"))
 }
 
 func (a *WeChatOfficialAdapter) verifySignature(signature, timestamp, nonce string) bool {
@@ -383,8 +383,25 @@ func (a *WeChatOfficialAdapter) sendPassiveReply(target string, text string) boo
 	select {
 	case ch <- wechatOfficialPassiveReply{target: target, text: text}:
 		return true
-	default:
+	case <-time.After(wechatOfficialPassiveReplyWait):
 		return false
+	}
+}
+
+func collectWeChatOfficialPassiveReplies(ch <-chan wechatOfficialPassiveReply, wait time.Duration) []string {
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	replies := make([]string, 0, 4)
+	for {
+		select {
+		case reply := <-ch:
+			text := strings.TrimSpace(reply.text)
+			if text != "" {
+				replies = append(replies, text)
+			}
+		case <-deadline.C:
+			return replies
+		}
 	}
 }
 
