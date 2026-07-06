@@ -1,7 +1,6 @@
 package deps
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -71,45 +70,15 @@ func (d *HTTPRuntimeDownloader) linuxPythonDownloadSpec(client *http.Client, ver
 }
 
 func findPythonStandaloneAsset(client *http.Client, version, architecture string) (pythonStandaloneAsset, error) {
-	platform, err := pythonStandalonePlatform(architecture)
+	assets, err := listPythonStandaloneCandidateAssets(client, architecture, pythonStandaloneReleasePageSize)
 	if err != nil {
 		return pythonStandaloneAsset{}, err
 	}
-	request, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/astral-sh/python-build-standalone/releases?per_page=10", nil)
-	if err != nil {
-		return pythonStandaloneAsset{}, err
-	}
-	request.Header.Set("Accept", "application/vnd.github+json")
-	response, err := client.Do(request)
-	if err != nil {
-		return pythonStandaloneAsset{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return pythonStandaloneAsset{}, fmt.Errorf("读取 Python standalone 发布列表失败: HTTP %d", response.StatusCode)
-	}
-	var releases []pythonStandaloneRelease
-	if err := json.NewDecoder(response.Body).Decode(&releases); err != nil {
-		return pythonStandaloneAsset{}, err
-	}
-	prefix := "cpython-" + normalizePythonStandaloneVersion(version) + "+"
-	var fallback pythonStandaloneAsset
-	for _, release := range releases {
-		for _, asset := range release.Assets {
-			name := asset.Name
-			if !strings.HasPrefix(name, prefix) || !strings.Contains(name, platform) || !strings.Contains(name, "install_only") {
-				continue
-			}
-			if strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz") {
-				return asset, nil
-			}
-			if fallback.Name == "" && (strings.HasSuffix(name, ".tar.zst") || strings.HasSuffix(name, ".tar.zstd")) {
-				fallback = asset
-			}
+	version = normalizePythonStandaloneVersion(version)
+	for _, item := range assets {
+		if strings.EqualFold(item.Version, version) {
+			return item.Asset, nil
 		}
-	}
-	if fallback.Name != "" {
-		return fallback, nil
 	}
 	return pythonStandaloneAsset{}, fmt.Errorf("未找到 Python %s 的 %s 预编译下载资产", version, architecture)
 }

@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"strings"
 	"testing"
@@ -121,6 +122,69 @@ func TestRuntimeProfileStatusReturnsAllProfiles(t *testing.T) {
 			t.Fatalf("expected 3 statuses, got %#v", response)
 		}
 	})
+}
+
+func TestHandleRuntimeProfileDownloadCandidates(t *testing.T) {
+	withTempWorkdir(t, func() {
+		metadataServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/python/index.json" {
+				t.Fatalf("unexpected path %s", r.URL.Path)
+			}
+			_, _ = w.Write([]byte(`{"items":[{"items":[{"catalogEntry":{"version":"3.12.4"}}]}]}`))
+		}))
+		defer metadataServer.Close()
+		oldTransport := http.DefaultTransport
+		http.DefaultTransport = metadataServer.Client().Transport
+		t.Cleanup(func() { http.DefaultTransport = oldTransport })
+		server := testServer(t)
+		err := server.runtimeProfilesDatabase().SaveRuntimeDownloadSettings(config.RuntimeDownloadSettings{PythonMetadataURL: metadataServer.URL + "/python/index.json"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder := performOpenAPIJSONRequest(t, server.handleRuntimeProfileDownloadCandidates, http.MethodGet, "/api/runtime-profiles/download-candidates?runtime=python&architecture=win-x64&limit=10", map[string]interface{}{})
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+		var response deps.RuntimeDownloadCandidateResult
+		decodeOpenAPIResponse(t, recorder, &response)
+		if response.Runtime != "python" || response.Architecture != "win-x64" || response.Source != "nuget" || len(response.Candidates) != 1 || response.Candidates[0].Version != "3.12.4" {
+			t.Fatalf("unexpected response: %#v", response)
+		}
+	})
+}
+
+func TestHandleRuntimeProfileDownloadCandidatesRejectsInvalidParams(t *testing.T) {
+	server := testServer(t)
+	missing := performOpenAPIJSONRequest(t, server.handleRuntimeProfileDownloadCandidates, http.MethodGet, "/api/runtime-profiles/download-candidates", map[string]interface{}{})
+	if missing.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing runtime 400, got %d: %s", missing.Code, missing.Body.String())
+	}
+	invalidRuntime := performOpenAPIJSONRequest(t, server.handleRuntimeProfileDownloadCandidates, http.MethodGet, "/api/runtime-profiles/download-candidates?runtime=ruby", map[string]interface{}{})
+	if invalidRuntime.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid runtime 400, got %d: %s", invalidRuntime.Code, invalidRuntime.Body.String())
+	}
+	invalidArchitecture := performOpenAPIJSONRequest(t, server.handleRuntimeProfileDownloadCandidates, http.MethodGet, "/api/runtime-profiles/download-candidates?runtime=nodejs&architecture=darwin-x64", map[string]interface{}{})
+	if invalidArchitecture.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid architecture 400, got %d: %s", invalidArchitecture.Code, invalidArchitecture.Body.String())
+	}
+}
+
+func TestHandleRuntimeProfileDownloadCandidatesUsesDefaultArchitecture(t *testing.T) {
+	metadataServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"items":[{"items":[{"catalogEntry":{"version":"3.12.4"}}]}]}`))
+	}))
+	defer metadataServer.Close()
+	oldTransport := http.DefaultTransport
+	http.DefaultTransport = metadataServer.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = oldTransport })
+	server := testServer(t)
+	if err := server.runtimeProfilesDatabase().SaveRuntimeDownloadSettings(config.RuntimeDownloadSettings{PythonMetadataURL: metadataServer.URL}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := performOpenAPIJSONRequest(t, server.handleRuntimeProfileDownloadCandidates, http.MethodGet, "/api/runtime-profiles/download-candidates?runtime=python&limit=1", map[string]interface{}{})
+	if recorder.Code == http.StatusBadRequest && strings.Contains(recorder.Body.String(), "架构") {
+		t.Fatalf("architecture should default instead of 400: %d %s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func TestHandleRuntimeProfileDownloadSettings(t *testing.T) {

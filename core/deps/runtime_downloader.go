@@ -756,7 +756,7 @@ func managedRuntimeExecutableInRoot(runtimeName, architecture, root string) stri
 		if isWindowsRuntimeArchitecture(architecture) {
 			return filepath.Join(root, "tools", "python.exe")
 		}
-		return filepath.Join(root, "bin", "python")
+		return filepath.Join(root, "bin", "python3")
 	}
 	if isWindowsRuntimeArchitecture(architecture) {
 		return filepath.Join(root, "node.exe")

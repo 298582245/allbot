@@ -212,7 +212,7 @@ func (m *KeywordReplyManager) systemInfo() string {
 }
 
 func formatSystemInfo(systemName string, processor string, cores string, uptime string, memory string, disk string, appMemory string, appDisk string) string {
-	return builtin.FormatSystemInfo(systemName, processor, cores, uptime, memory, disk, appMemory, appDisk)
+	return builtin.FormatSystemInfo(systemName, "测试架构", processor, cores, uptime, memory, disk, appMemory, appDisk)
 }
 
 func userRegisterGuide() string {

@@ -9,13 +9,11 @@ func (d *HTTPRuntimeDownloader) nodeDownloadSpec(version, architecture string, o
 	if !isSupportedRuntimeArchitecture(architecture) {
 		return runtimeDownloadSpec{}, fmt.Errorf("Node.js 架构不支持: %s", architecture)
 	}
-	archiveExt := ".zip"
 	executable := "node.exe"
 	if !isWindowsRuntimeArchitecture(architecture) {
-		archiveExt = ".tar.gz"
 		executable = filepath.Join("bin", "node")
 	}
-	archiveName := fmt.Sprintf("node-v%s-%s%s", version, architecture, archiveExt)
+	archiveName := nodeArchiveName(version, architecture)
 	rootDir := filepath.Join(d.rootDir, "nodejs", fmt.Sprintf("%s-%s", version, architecture))
 	mirrorURL := runtimeOptionOrDefault(options.NodeMirrorURL, "https://nodejs.org/dist")
 	sourceURL := fmt.Sprintf("%s/v%s/%s", mirrorURL, version, archiveName)

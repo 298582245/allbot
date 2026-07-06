@@ -605,7 +605,7 @@ func TestSystemInfoIncludesAllBotUsage(t *testing.T) {
 	defer db.Close()
 
 	info := manager.systemInfo()
-	for _, expected := range []string{"系统信息", "系统：", "处理器：", "核心数：", "allBot", "内存占用：", "磁盘占用：", "%"} {
+	for _, expected := range []string{"系统信息", "系统：", "运行架构：", "处理器：", "核心数：", "allBot", "内存占用：", "磁盘占用：", "%"} {
 		if !strings.Contains(info, expected) {
 			t.Fatalf("systemInfo missing %q: %s", expected, info)
 		}
@@ -614,6 +614,9 @@ func TestSystemInfoIncludesAllBotUsage(t *testing.T) {
 
 func TestFormatSystemInfoShowsCoreThreadDescription(t *testing.T) {
 	info := formatSystemInfo("Debian GNU/Linux(debian) 12.10", "CPU", "4核心4线程", "1m", "1GB", "2GB", "3MB", "4MB")
+	if !strings.Contains(info, "运行架构：测试架构") {
+		t.Fatalf("system info missing architecture description: %s", info)
+	}
 	if !strings.Contains(info, "核心数：4核心4线程") {
 		t.Fatalf("system info missing core thread description: %s", info)
 	}

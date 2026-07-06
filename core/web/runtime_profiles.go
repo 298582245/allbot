@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/allbot/allbot/core/config"
@@ -40,6 +41,44 @@ func (s *Server) handleRuntimeProfiles(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleRuntimeProfileDownloadCandidates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	manager := s.runtimeDepsManager()
+	if manager == nil {
+		s.jsonError(w, "依赖管理器不可用", http.StatusInternalServerError)
+		return
+	}
+	values := r.URL.Query()
+	runtimeName := strings.TrimSpace(values.Get("runtime"))
+	if runtimeName == "" {
+		s.jsonError(w, "runtime 不能为空", http.StatusBadRequest)
+		return
+	}
+	limit := 0
+	if rawLimit := strings.TrimSpace(values.Get("limit")); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed <= 0 {
+			s.jsonError(w, "limit 必须是正整数", http.StatusBadRequest)
+			return
+		}
+		limit = parsed
+	}
+	options, err := s.runtimeDownloadOptionsSnapshot()
+	if err != nil {
+		s.jsonError(w, "读取下载设置失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	result, err := manager.ListRuntimeDownloadCandidates(deps.RuntimeDownloadCandidateQuery{Runtime: runtimeName, Architecture: values.Get("architecture"), Q: values.Get("q"), Limit: limit}, options)
+	if err != nil {
+		s.jsonError(w, "读取可下载版本失败: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.jsonResponse(w, result)
 }
 
 func (s *Server) handleRuntimeProfileDownloadSettings(w http.ResponseWriter, r *http.Request) {

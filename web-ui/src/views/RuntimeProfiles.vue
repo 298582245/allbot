@@ -154,8 +154,29 @@
           <el-input v-model="form.version" placeholder="例如 18.20.4、3.10.11" />
         </el-form-item>
         <el-form-item v-if="form.source === 'managed'" label="目标版本" required>
-          <el-input v-model="form.requested_version" placeholder="例如 18.20.4、3.10.11" />
-          <div class="field-tip">只填写版本号，下载源可在下载设置中配置，安装目录限制在项目 runtime/interpreters。</div>
+          <el-select
+            v-model="form.requested_version"
+            class="version-select"
+            filterable
+            remote
+            allow-create
+            clearable
+            reserve-keyword
+            :remote-method="searchDownloadCandidates"
+            :loading="candidateLoading"
+            placeholder="搜索或输入版本号，例如 18.20.4、3.10.11"
+            @visible-change="handleCandidateVisibleChange"
+          >
+            <el-option v-for="item in downloadCandidates" :key="candidateKey(item)" :label="candidateLabel(item)" :value="item.version">
+              <div class="candidate-option">
+                <span>{{ candidateLabel(item) }}</span>
+                <small v-if="item.asset_name">{{ item.asset_name }}</small>
+              </div>
+            </el-option>
+          </el-select>
+          <div class="field-tip">可搜索当前下载源可用版本，也可手动输入；保存不做远程校验，初始化时会再次验证资产。</div>
+          <div v-if="candidateWarning" class="field-tip warning-tip">{{ candidateWarning }}</div>
+          <div v-if="candidateError" class="field-tip warning-tip">{{ candidateError }}</div>
         </el-form-item>
         <el-form-item label="架构">
           <el-select v-model="form.architecture" style="width: 100%">
@@ -223,7 +244,7 @@ defineOptions({ name: 'RuntimeProfiles' })
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled } from '@element-plus/icons-vue'
-import { getLatestRuntimeProfileInitJob, getRuntimeDownloadSettings, getRuntimeProfileInitJob, getRuntimeProfiles, getRuntimeProfileStatus, initRuntimeProfile, saveRuntimeDownloadSettings, saveRuntimeProfiles, testRuntimeProfile } from '@/api'
+import { getLatestRuntimeProfileInitJob, getRuntimeDownloadCandidates, getRuntimeDownloadSettings, getRuntimeProfileInitJob, getRuntimeProfiles, getRuntimeProfileStatus, initRuntimeProfile, saveRuntimeDownloadSettings, saveRuntimeProfiles, testRuntimeProfile } from '@/api'
 import StdPagination from '@/components/StdPagination.vue'
 
 const loading = ref(false)
@@ -243,6 +264,12 @@ const form = reactive(emptyProfile())
 const downloadSettingsVisible = ref(false)
 const downloadSettingsSaving = ref(false)
 const downloadSettings = reactive(defaultDownloadSettings())
+const downloadCandidates = ref([])
+const candidateLoading = ref(false)
+const candidateError = ref('')
+const candidateWarning = ref('')
+const candidateLoaded = ref(false)
+let candidateRequestSeq = 0
 
 const pageDescription = '维护多个 Node.js/Python 解释器，支持手动路径、项目内自动下载托管，并可配置代理/镜像。'
 const showPageDescription = () => {
@@ -305,7 +332,17 @@ function normalizeArchitectureForRuntime() {
   if (!options.includes(form.architecture)) form.architecture = options[0] || defaultArchitecture()
 }
 
-watch(() => [form.runtime, form.source], normalizeArchitectureForRuntime)
+watch(() => [form.runtime, form.source], () => {
+  normalizeArchitectureForRuntime()
+  refreshManagedCandidates()
+})
+
+watch(() => form.architecture, refreshManagedCandidates)
+
+watch(dialogVisible, visible => {
+  if (visible) refreshManagedCandidates()
+  else clearDownloadCandidates()
+})
 
 watch(filteredProfiles, () => {
   const maxPage = Math.max(1, Math.ceil(filteredProfiles.value.length / pageSize))
@@ -337,6 +374,7 @@ function openDialog(row = null, index = -1) {
   editingIndex.value = index
   autoInitialize.value = index < 0
   dialogVisible.value = true
+  refreshManagedCandidates()
 }
 
 async function openDownloadSettings() {
@@ -354,6 +392,8 @@ async function saveDownloadSettingsDialog() {
   try {
     const response = await saveRuntimeDownloadSettings({ ...downloadSettings })
     assignDownloadSettings(response?.settings)
+    clearDownloadCandidates()
+    if (dialogVisible.value && form.source === 'managed') refreshManagedCandidates()
     ElMessage.success(response?.message || '保存成功')
   } finally {
     downloadSettingsSaving.value = false
@@ -364,6 +404,9 @@ async function saveDialog() {
   const item = normalizeFormProfile()
   const next = normalizeProfilesForSave(item)
   if (!next) return
+  if (shouldWarnManualCandidate(item)) {
+    await ElMessageBox.confirm('当前目标版本不在已加载候选列表中，初始化时可能失败。是否继续保存？', '版本提示', { type: 'warning', confirmButtonText: '继续保存', cancelButtonText: '返回修改' })
+  }
   const shouldInitialize = autoInitialize.value
   saving.value = true
   try {
@@ -378,6 +421,61 @@ async function saveDialog() {
   } finally {
     saving.value = false
   }
+}
+
+function refreshManagedCandidates() {
+  if (!dialogVisible.value || form.source !== 'managed') return
+  searchDownloadCandidates(form.requested_version || '')
+}
+
+async function searchDownloadCandidates(query = '') {
+  if (form.source !== 'managed' || !form.runtime) return
+  const requestSeq = ++candidateRequestSeq
+  candidateLoading.value = true
+  candidateError.value = ''
+  candidateWarning.value = ''
+  try {
+    const response = await getRuntimeDownloadCandidates({ runtime: form.runtime, architecture: form.architecture, q: query || '', limit: 50 })
+    if (requestSeq !== candidateRequestSeq) return
+    downloadCandidates.value = Array.isArray(response?.candidates) ? response.candidates : []
+    candidateLoaded.value = true
+    const warnings = Array.isArray(response?.warnings) ? response.warnings.filter(Boolean) : []
+    if (warnings.length > 0) candidateWarning.value = warnings.join('；')
+  } catch (error) {
+    if (requestSeq !== candidateRequestSeq) return
+    downloadCandidates.value = []
+    candidateLoaded.value = false
+    candidateError.value = '无法读取可下载版本，可手动输入版本号后初始化验证'
+  } finally {
+    if (requestSeq === candidateRequestSeq) candidateLoading.value = false
+  }
+}
+
+function handleCandidateVisibleChange(visible) {
+  if (visible && form.source === 'managed' && downloadCandidates.value.length === 0) refreshManagedCandidates()
+}
+
+function clearDownloadCandidates() {
+  candidateRequestSeq += 1
+  downloadCandidates.value = []
+  candidateError.value = ''
+  candidateWarning.value = ''
+  candidateLoaded.value = false
+  candidateLoading.value = false
+}
+
+function candidateKey(item) {
+  return `${item.source || ''}:${item.version || ''}:${item.asset_name || ''}`
+}
+
+function candidateLabel(item) {
+  return `${item.label || item.version}${item.source ? ` / ${item.source}` : ''}`
+}
+
+function shouldWarnManualCandidate(item) {
+  if (item.source !== 'managed' || !item.requested_version || candidateError.value || !candidateLoaded.value) return false
+  if (downloadCandidates.value.length === 0) return false
+  return !downloadCandidates.value.some(candidate => candidate.version === item.requested_version)
 }
 
 function normalizeFormProfile() {
@@ -595,6 +693,10 @@ onBeforeUnmount(() => {
 .mobile-profile-list { display: none; }
 .default-tag { margin-left: 6px; }
 .field-tip { margin-top: 4px; color: #909399; font-size: 12px; line-height: 1.4; }
+.warning-tip { color: #e6a23c; }
+.version-select { width: 100%; }
+.candidate-option { display: flex; flex-direction: column; line-height: 1.35; padding: 4px 0; }
+.candidate-option small { color: #909399; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .init-progress { display: flex; flex-direction: column; gap: 4px; }
 .init-progress-text { color: #606266; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 768px) {

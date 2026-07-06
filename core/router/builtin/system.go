@@ -17,12 +17,15 @@ func replySystem(ctx *Context) error {
 }
 
 func SystemInfo(startTime time.Time) string {
-	return FormatSystemInfo(systemDescription(), processorDescription(), coreThreadDescription(), formatReplyDuration(time.Since(startTime)), memoryInfo(), diskInfo("."), allBotMemoryUsage(), allBotDiskUsage())
+	return FormatSystemInfo(systemDescription(), runtimeArchitectureDescription(), processorDescription(), coreThreadDescription(), formatReplyDuration(time.Since(startTime)), memoryInfo(), diskInfo("."), allBotMemoryUsage(), allBotDiskUsage())
 }
 
-func FormatSystemInfo(systemName string, processor string, cores string, uptime string, memory string, disk string, appMemory string, appDisk string) string {
+func FormatSystemInfo(systemName string, architecture string, processor string, cores string, uptime string, memory string, disk string, appMemory string, appDisk string) string {
 	if strings.TrimSpace(systemName) == "" {
 		systemName = runtime.GOOS
+	}
+	if strings.TrimSpace(architecture) == "" {
+		architecture = runtimeArchitectureDescription()
 	}
 	if strings.TrimSpace(processor) == "" {
 		processor = "未知"
@@ -30,7 +33,26 @@ func FormatSystemInfo(systemName string, processor string, cores string, uptime 
 	if strings.TrimSpace(cores) == "" {
 		cores = coreThreadDescription()
 	}
-	return fmt.Sprintf("系统信息\n系统：%s\n处理器：%s\n核心数：%s\n运行时间：%s\n内存信息：%s\n磁盘信息：%s\nallBot\n内存占用：%s\n磁盘占用：%s", systemName, processor, cores, uptime, memory, disk, appMemory, appDisk)
+	return fmt.Sprintf("系统信息\n系统：%s\n运行架构：%s\n处理器：%s\n核心数：%s\n运行时间：%s\n内存信息：%s\n磁盘信息：%s\nallBot\n内存占用：%s\n磁盘占用：%s", systemName, architecture, processor, cores, uptime, memory, disk, appMemory, appDisk)
+}
+
+func runtimeArchitectureDescription() string {
+	return fmt.Sprintf("%s（GOOS=%s，GOARCH=%s）", runtimeProfileArchitecture(), runtime.GOOS, runtime.GOARCH)
+}
+
+func runtimeProfileArchitecture() string {
+	arch := "x64"
+	if runtime.GOARCH == "arm64" {
+		arch = "arm64"
+	}
+	switch runtime.GOOS {
+	case "windows":
+		return "win-" + arch
+	case "linux":
+		return "linux-" + arch
+	default:
+		return runtime.GOOS + "-" + arch
+	}
 }
 
 func systemDescription() string {

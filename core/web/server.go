@@ -177,6 +177,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/dependencies", s.handleDependencies)
 	mux.HandleFunc("/api/dependencies/", s.handleDependencyDetail)
 	mux.HandleFunc("/api/runtime-profiles", s.handleRuntimeProfiles)
+	mux.HandleFunc("/api/runtime-profiles/download-candidates", s.handleRuntimeProfileDownloadCandidates)
 	mux.HandleFunc("/api/runtime-profiles/download-settings", s.handleRuntimeProfileDownloadSettings)
 	mux.HandleFunc("/api/runtime-profiles/init", s.handleRuntimeProfileInit)
 	mux.HandleFunc("/api/runtime-profiles/init/", s.handleRuntimeProfileInitJob)

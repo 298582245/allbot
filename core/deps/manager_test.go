@@ -523,8 +523,8 @@ func TestRuntimeDownloadSpecsUseMirrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if managedRuntimeExecutableInRoot("python", "linux-x64", filepath.Join("runtime", "python")) != filepath.Join("runtime", "python", "bin", "python") {
-		t.Fatal("linux managed python executable path should use bin/python")
+	if managedRuntimeExecutableInRoot("python", "linux-x64", filepath.Join("runtime", "python")) != filepath.Join("runtime", "python", "bin", "python3") {
+		t.Fatal("linux managed python executable path should use bin/python3")
 	}
 	if pythonSpec.URL != "https://mirror.example.com/nuget/python/3.10.11" || pythonSpec.NuGetIndexURL != "https://mirror.example.com/nuget/index.json" {
 		t.Fatalf("unexpected python urls: %#v", pythonSpec)

@@ -749,7 +749,7 @@ function formatQueryResult(name, result, account) {
 
 function accountExpiresAt(account) { return account?.expires_at || account?.expiresAt || ''; }
 function isAccountAuthorized(expiresAt) { const time = new Date(expiresAt || '').getTime(); return Number.isFinite(time) && time > Date.now(); }
-function formatAuthStatus(expiresAt) { if (!expiresAt) return '未授权'; return isAccountAuthorized(expiresAt) ? `授权至 ${formatTime(expiresAt)}` : `已过期 ${formatTime(expiresAt)}`; }
+function formatAuthStatus(expiresAt) { if (!expiresAt) return '未授权'; return isAccountAuthorized(expiresAt) ? `${formatTime(expiresAt)}` : `已过期`; }
 function formatTime(value) { const date = value instanceof Date ? value : new Date(value); return Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', { hour12: false }) : String(value || '无'); }
 function formatDurationSeconds(ms) { const seconds = Math.max(0, Number(ms) || 0) / 1000; return `${seconds.toFixed(3)}秒`; }
 function maskValue(value) { const text = String(value || ''); return text.length <= 12 ? (text ? `${text.slice(0, 4)}****` : '空') : `${text.slice(0, 6)}****${text.slice(-4)}`; }

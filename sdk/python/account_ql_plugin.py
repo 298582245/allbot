@@ -854,7 +854,7 @@ def safe_timestamp(value: datetime.datetime) -> float:
 def format_auth_status(value: str) -> str:
     if not value:
         return "未授权"
-    return f"授权至 {format_time(value)}" if is_authorized(value) else f"已过期 {format_time(value)}"
+    return f"{format_time(value)}" if is_authorized(value) else f"已过期"
 
 
 __all__ = ["create_account_ql_plugin", "builtin_points_auth", "builtin_payment_auth", "AccountQLPlugin", "AccountStore"]

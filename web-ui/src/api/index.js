@@ -337,6 +337,16 @@ export const saveRuntimeProfiles = (profiles) => {
   })
 }
 
+// 获取运行环境可下载候选版本
+export const getRuntimeDownloadCandidates = (params = {}) => {
+  return request({
+    url: '/runtime-profiles/download-candidates',
+    method: 'get',
+    params,
+    silent: true
+  })
+}
+
 // 获取运行环境下载设置
 export const getRuntimeDownloadSettings = () => {
   return request({
