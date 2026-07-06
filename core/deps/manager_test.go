@@ -610,7 +610,7 @@ func TestUntarSafeRestoresRelativeSymlink(t *testing.T) {
 
 func TestUntarSafeRejectsSymlinkEscape(t *testing.T) {
 	tarPath := filepath.Join(t.TempDir(), "bad-link.tar.gz")
-	if err := writeTarGzipEntriesForTest(tarPath, []tarTestEntry{{Name: "node/bin/npm", LinkName: "../../evil"}}); err != nil {
+	if err := writeTarGzipEntriesForTest(tarPath, []tarTestEntry{{Name: "node/bin/npm", LinkName: "../../../evil"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := untarGzipSafe(tarPath, filepath.Join(t.TempDir(), "out")); err == nil {

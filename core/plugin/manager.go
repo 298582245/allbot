@@ -464,6 +464,11 @@ func isOpenAPIProtocolAction(action string) bool {
 	}
 }
 
+func isClosedPipeScanError(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "file already closed") || strings.Contains(message, "closed pipe")
+}
+
 func scanPluginProcessStderr(reader io.Reader, scope string, id string) {
 	lineCh := make(chan string, 16)
 	errCh := make(chan error, 1)
@@ -516,7 +521,7 @@ func scanPluginProcessStderr(reader io.Reader, scope string, id string) {
 		case line, ok := <-lineCh:
 			if !ok {
 				flush()
-				if err := <-errCh; err != nil {
+				if err := <-errCh; err != nil && !isClosedPipeScanError(err) {
 					log.Printf("[SYSTEM][%s][%s][STDERR] scan error: %v", scope, id, err)
 				}
 				return
