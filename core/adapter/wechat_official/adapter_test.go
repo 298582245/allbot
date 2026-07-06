@@ -252,6 +252,27 @@ func TestPostCallbackUsesPassiveTextReply(t *testing.T) {
 	}
 }
 
+func TestSendImageSendsImageURLAsText(t *testing.T) {
+	adapter := NewWeChatOfficialAdapter("app", "secret", "token", "callback", "", "")
+	adapter.SetMessageHandler(func(msg *types.Message) {
+		if err := adapter.SendImage(msg.UserID, "https://example.com/a.png"); err != nil {
+			t.Errorf("SendImage returned error: %v", err)
+		}
+	})
+	query := url.Values{}
+	query.Set("timestamp", "123")
+	query.Set("nonce", "nonce")
+	query.Set("signature", testWeChatSignature("token", "123", "nonce"))
+	request := httptest.NewRequest(http.MethodPost, "/?"+query.Encode(), strings.NewReader(`<xml><ToUserName><![CDATA[gh_app]]></ToUserName><FromUserName><![CDATA[openid]]></FromUserName><CreateTime>1</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[ping]]></Content><MsgId>9</MsgId></xml>`))
+	response := httptest.NewRecorder()
+
+	adapter.HandleHTTPCallback("callback", response, request)
+
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "<Content>https://example.com/a.png</Content>") {
+		t.Fatalf("status = %d body = %q", response.Code, response.Body.String())
+	}
+}
+
 func TestSendMessageUsesCustomerServiceAPI(t *testing.T) {
 	var sendCalls int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

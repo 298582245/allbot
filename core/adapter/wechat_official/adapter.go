@@ -196,7 +196,11 @@ func (a *WeChatOfficialAdapter) SendMessage(target string, text string) error {
 }
 
 func (a *WeChatOfficialAdapter) SendImage(target string, imageURL string) error {
-	return fmt.Errorf("微信公众号图片发送暂未实现")
+	imageURL = strings.TrimSpace(imageURL)
+	if imageURL == "" {
+		return fmt.Errorf("微信公众号图片链接不能为空")
+	}
+	return a.SendMessage(target, imageURL)
 }
 
 func (a *WeChatOfficialAdapter) SendFile(target string, filePath string) error {

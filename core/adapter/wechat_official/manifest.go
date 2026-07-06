@@ -33,7 +33,7 @@ func init() {
 		},
 		Capabilities: registry.Capabilities{
 			SendText:         true,
-			SendImage:        false,
+			SendImage:        true,
 			SendFile:         false,
 			SendRich:         true,
 			SendMixedContent: false,
