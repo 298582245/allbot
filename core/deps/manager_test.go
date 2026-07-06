@@ -4,11 +4,15 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 func TestValidatePythonDependencyNameAllowsExtras(t *testing.T) {
@@ -418,10 +422,10 @@ func TestManagedProfileValidationRejectsInvalidVersionAndArchitecture(t *testing
 	_, err = manager.SaveRuntimeProfiles([]RuntimeProfile{
 		{ID: "node-default", Name: "默认 Node.js", Runtime: "nodejs", Executable: "node", Enabled: true, Default: true},
 		{ID: "python-default", Name: "默认 Python", Runtime: "python", Executable: "python", Enabled: true, Default: true},
-		{ID: "managed-python", Name: "Managed Python", Runtime: "python", Source: "managed", RequestedVersion: "3.10.11", Architecture: "win-arm64", Enabled: true},
+		{ID: "managed-python", Name: "Managed Python", Runtime: "python", Source: "managed", RequestedVersion: "3.10.11", Architecture: "linux-x64", Enabled: true},
 	})
-	if err == nil || !strings.Contains(err.Error(), "Python 自动下载") {
-		t.Fatalf("expected python architecture error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected linux python managed profile to be valid, got %v", err)
 	}
 }
 
@@ -515,9 +519,12 @@ func TestRuntimeDownloadSpecsUseMirrors(t *testing.T) {
 		t.Fatalf("node trusted hosts missing mirror: %#v %#v", nodeSpec.TrustedHosts, nodeSpec.HashTrustedHosts)
 	}
 
-	pythonSpec, err := downloader.pythonDownloadSpec("3.10.11", "win-x64", RuntimeDownloadOptions{PythonPackageMirrorURL: "https://mirror.example.com/nuget/python/", PythonMetadataURL: "https://mirror.example.com/nuget/index.json/"})
+	pythonSpec, err := downloader.pythonDownloadSpec(http.DefaultClient, "3.10.11", "win-x64", RuntimeDownloadOptions{PythonPackageMirrorURL: "https://mirror.example.com/nuget/python/", PythonMetadataURL: "https://mirror.example.com/nuget/index.json/"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if managedRuntimeExecutableInRoot("python", "linux-x64", filepath.Join("runtime", "python")) != filepath.Join("runtime", "python", "bin", "python") {
+		t.Fatal("linux managed python executable path should use bin/python")
 	}
 	if pythonSpec.URL != "https://mirror.example.com/nuget/python/3.10.11" || pythonSpec.NuGetIndexURL != "https://mirror.example.com/nuget/index.json" {
 		t.Fatalf("unexpected python urls: %#v", pythonSpec)
@@ -536,7 +543,7 @@ func TestRuntimeDownloadSpecsKeepDefaultURLs(t *testing.T) {
 	if nodeSpec.URL != "https://nodejs.org/dist/v18.20.4/node-v18.20.4-win-x64.zip" || nodeSpec.SHA256URL != "https://nodejs.org/dist/v18.20.4/SHASUMS256.txt" || nodeSpec.Executable != filepath.Join(nodeSpec.RootDir, "node.exe") {
 		t.Fatalf("unexpected default node urls: %#v", nodeSpec)
 	}
-	pythonSpec, err := downloader.pythonDownloadSpec("3.10.11", "win-x64", RuntimeDownloadOptions{})
+	pythonSpec, err := downloader.pythonDownloadSpec(http.DefaultClient, "3.10.11", "win-x64", RuntimeDownloadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,6 +603,13 @@ func TestDownloaderRejectsUntrustedURLAndZipSlip(t *testing.T) {
 	if err := untarGzipSafe(tarPath, filepath.Join(t.TempDir(), "out")); err == nil {
 		t.Fatal("expected tar slip archive to be rejected")
 	}
+	zstdPath := filepath.Join(t.TempDir(), "bad.tar.zst")
+	if err := writeTarZstdForTest(zstdPath, "../evil.txt", []byte("evil")); err != nil {
+		t.Fatal(err)
+	}
+	if err := untarZstdSafe(zstdPath, filepath.Join(t.TempDir(), "out")); err == nil {
+		t.Fatal("expected zstd tar slip archive to be rejected")
+	}
 }
 
 func writeZipForTest(path, name string, data []byte) error {
@@ -625,12 +639,30 @@ func writeTarGzipForTest(path, name string, data []byte) error {
 	defer file.Close()
 	gzipWriter := gzip.NewWriter(file)
 	defer gzipWriter.Close()
-	writer := tar.NewWriter(gzipWriter)
+	return writeTarForTest(gzipWriter, name, data)
+}
+
+func writeTarZstdForTest(path, name string, data []byte) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	zstdWriter, err := zstd.NewWriter(file)
+	if err != nil {
+		return err
+	}
+	defer zstdWriter.Close()
+	return writeTarForTest(zstdWriter, name, data)
+}
+
+func writeTarForTest(target io.Writer, name string, data []byte) error {
+	writer := tar.NewWriter(target)
 	defer writer.Close()
 	if err := writer.WriteHeader(&tar.Header{Name: name, Mode: 0644, Size: int64(len(data))}); err != nil {
 		return err
 	}
-	_, err = writer.Write(data)
+	_, err := writer.Write(data)
 	return err
 }
 

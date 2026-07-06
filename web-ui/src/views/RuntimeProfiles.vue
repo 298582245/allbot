@@ -161,7 +161,7 @@
           <el-select v-model="form.architecture" style="width: 100%">
             <el-option v-for="option in architectureOptions" :key="option.value" :label="option.label" :value="option.value" />
           </el-select>
-          <div v-if="form.source === 'managed' && form.runtime === 'python'" class="field-tip">Python 自动下载当前仅支持 Windows x64；Linux 服务器请使用手动路径，例如 python3。</div>
+          <div v-if="form.source === 'managed' && form.runtime === 'python'" class="field-tip">Linux 下自动匹配并下载 python-build-standalone 预编译包；Windows 下使用 Python 嵌入包。</div>
         </el-form-item>
         <el-form-item v-if="form.source === 'manual'" label="解释器路径" required>
           <el-input v-model="form.executable" :placeholder="executablePlaceholder" />
@@ -258,7 +258,7 @@ const architectureOptions = computed(() => {
     { label: 'Windows x64', value: 'win-x64' },
     { label: 'Windows ARM64', value: 'win-arm64' }
   ]
-  if (form.source === 'managed' && form.runtime === 'python') return options.filter(option => option.value === 'win-x64')
+  if (form.source === 'managed' && form.runtime === 'python') return options.filter(option => option.value !== 'win-arm64')
   return options
 })
 

@@ -8,8 +8,8 @@
 
 - 时间：当前会话
 - 修改范围：160-168、252-271、290-304
-- 变更摘要：运行环境架构选择新增 Linux x64/Linux ARM64，新增环境默认优先沿用后端已有默认架构；Python 自动下载提示仅支持 Windows x64，Linux 服务器使用手动路径。
-- 统计：本次改动新增 21 行、删除 4 行，净增 17 行。
+- 变更摘要：运行环境架构选择新增 Linux x64/Linux ARM64，新增环境默认优先沿用后端已有默认架构；Python 自动下载允许 Linux 架构，并提示 Linux 下自动匹配下载 python-build-standalone 预编译包。
+- 统计：本次改动新增 21 行、删除 4 行，净增 17 行；随后调整 Python managed 架构过滤和提示文案。
 
 ### `src/views/Settings.vue`
 

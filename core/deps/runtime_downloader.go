@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 const (
@@ -79,12 +81,11 @@ func (d *HTTPRuntimeDownloader) EnsureRuntime(runtimeName, version, architecture
 	if !isSupportedRuntimeArchitecture(architecture) {
 		return RuntimeDownloadResult{}, fmt.Errorf("运行环境架构不支持: %s", architecture)
 	}
-
 	client, err := runtimeHTTPClient(options)
 	if err != nil {
 		return RuntimeDownloadResult{}, err
 	}
-	spec, err := d.downloadSpec(runtimeName, version, architecture, options)
+	spec, err := d.downloadSpec(client, runtimeName, version, architecture, options)
 	if err != nil {
 		return RuntimeDownloadResult{}, err
 	}
@@ -173,11 +174,11 @@ func (d *HTTPRuntimeDownloader) EnsureRuntime(runtimeName, version, architecture
 	return RuntimeDownloadResult{Runtime: runtimeName, Version: version, Architecture: architecture, Executable: spec.Executable, RootDir: spec.RootDir, SourceURL: spec.URL, SHA256: actualHash}, nil
 }
 
-func (d *HTTPRuntimeDownloader) downloadSpec(runtimeName, version, architecture string, options RuntimeDownloadOptions) (runtimeDownloadSpec, error) {
+func (d *HTTPRuntimeDownloader) downloadSpec(client *http.Client, runtimeName, version, architecture string, options RuntimeDownloadOptions) (runtimeDownloadSpec, error) {
 	if runtimeName == "nodejs" {
 		return d.nodeDownloadSpec(version, architecture, options)
 	}
-	return d.pythonDownloadSpec(version, architecture, options)
+	return d.pythonDownloadSpec(client, version, architecture, options)
 }
 
 func runtimeHTTPClient(options RuntimeDownloadOptions) (*http.Client, error) {
@@ -534,8 +535,12 @@ func sha256File(path string) (string, error) {
 }
 
 func extractRuntimeArchive(archivePath, targetDir string) error {
-	if strings.HasSuffix(strings.ToLower(archivePath), ".tar.gz") || strings.HasSuffix(strings.ToLower(archivePath), ".tgz") {
+	lowerPath := strings.ToLower(archivePath)
+	if strings.HasSuffix(lowerPath, ".tar.gz") || strings.HasSuffix(lowerPath, ".tgz") {
 		return untarGzipSafe(archivePath, targetDir)
+	}
+	if strings.HasSuffix(lowerPath, ".tar.zst") || strings.HasSuffix(lowerPath, ".tar.zstd") {
+		return untarZstdSafe(archivePath, targetDir)
 	}
 	return unzipSafe(archivePath, targetDir)
 }
@@ -621,7 +626,25 @@ func untarGzipSafe(archivePath, targetDir string) error {
 		return err
 	}
 	defer gzipReader.Close()
-	reader := tar.NewReader(gzipReader)
+	return untarSafe(gzipReader, targetDir)
+}
+
+func untarZstdSafe(archivePath, targetDir string) error {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	zstdReader, err := zstd.NewReader(file)
+	if err != nil {
+		return err
+	}
+	defer zstdReader.Close()
+	return untarSafe(zstdReader, targetDir)
+}
+
+func untarSafe(source io.Reader, targetDir string) error {
+	reader := tar.NewReader(source)
 	absTarget, err := filepath.Abs(targetDir)
 	if err != nil {
 		return err
@@ -730,7 +753,10 @@ func copyDir(sourceDir, targetDir string) error {
 
 func managedRuntimeExecutableInRoot(runtimeName, architecture, root string) string {
 	if runtimeName == "python" {
-		return filepath.Join(root, "tools", "python.exe")
+		if isWindowsRuntimeArchitecture(architecture) {
+			return filepath.Join(root, "tools", "python.exe")
+		}
+		return filepath.Join(root, "bin", "python")
 	}
 	if isWindowsRuntimeArchitecture(architecture) {
 		return filepath.Join(root, "node.exe")

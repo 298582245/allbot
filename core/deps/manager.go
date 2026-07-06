@@ -948,9 +948,6 @@ func (m *Manager) normalizeRuntimeProfiles(profiles []RuntimeProfile) ([]Runtime
 		if !isSupportedRuntimeArchitecture(profile.Architecture) {
 			return nil, fmt.Errorf("运行环境架构不支持: %s", profile.Architecture)
 		}
-		if profile.Source == "managed" && profile.Runtime == "python" && profile.Architecture != "win-x64" {
-			return nil, fmt.Errorf("Python 自动下载暂只支持 Windows x64")
-		}
 		profile.RequestedVersion = strings.TrimSpace(profile.RequestedVersion)
 		if profile.Source == "managed" && profile.RequestedVersion == "" && profile.Version != "" {
 			profile.RequestedVersion = profile.Version
