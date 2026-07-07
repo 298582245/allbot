@@ -401,6 +401,7 @@ onUnmounted(() => {
   word-break: break-word;
 }
 
+.log-level { color: #52c41a; }
 .log-info .log-level { color: #52c41a; }
 .log-warn .log-level { color: #faad14; }
 .log-error .log-level { color: #f5222d; }

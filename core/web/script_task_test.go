@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -64,6 +65,80 @@ func TestHandleScriptTasksFiltersQueuedStatus(t *testing.T) {
 	}
 	if response.Total != 1 || len(response.Items) != 1 || response.Items[0].Status != config.ScriptRunStatusQueued {
 		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
+func TestHandleScriptTasksReturnsSettings(t *testing.T) {
+	server := testServer(t)
+	settings := config.ScriptTaskSettings{RetentionDays: 3, RunTimeoutSeconds: 120, TimeoutNotifyAdminEnabled: true}
+	if err := server.adapterManager.GetDatabase().SaveScriptTaskSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/script-tasks", nil)
+	server.handleScriptTasks(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		RetentionDays int                       `json:"retention_days"`
+		Settings      config.ScriptTaskSettings `json:"settings"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+	if response.RetentionDays != settings.RetentionDays || response.Settings != settings {
+		t.Fatalf("unexpected settings response: %#v", response)
+	}
+}
+
+func TestHandleScriptTasksSaveSettings(t *testing.T) {
+	server := testServer(t)
+	body := bytes.NewBufferString(`{"retention_days":30,"run_timeout_seconds":600,"timeout_notify_admin_enabled":true}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/script-tasks?action=settings", body)
+	server.handleScriptTasks(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	settings, err := server.adapterManager.GetDatabase().GetScriptTaskSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.RetentionDays != 30 || settings.RunTimeoutSeconds != 600 || !settings.TimeoutNotifyAdminEnabled {
+		t.Fatalf("settings not saved: %#v", settings)
+	}
+}
+
+func TestHandleScriptTasksRejectsInvalidRunTimeout(t *testing.T) {
+	server := testServer(t)
+	body := bytes.NewBufferString(`{"retention_days":0,"run_timeout_seconds":86401,"timeout_notify_admin_enabled":false}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/script-tasks?action=settings", body)
+	server.handleScriptTasks(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestHandleScriptTasksCleanupKeepsOtherSettings(t *testing.T) {
+	server := testServer(t)
+	if err := server.adapterManager.GetDatabase().SaveScriptTaskSettings(config.ScriptTaskSettings{RunTimeoutSeconds: 60, TimeoutNotifyAdminEnabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/script-tasks?action=cleanup&days=7", nil)
+	server.handleScriptTasks(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	settings, err := server.adapterManager.GetDatabase().GetScriptTaskSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.RetentionDays != 7 || settings.RunTimeoutSeconds != 60 || !settings.TimeoutNotifyAdminEnabled {
+		t.Fatalf("cleanup should only update retention days: %#v", settings)
 	}
 }
 

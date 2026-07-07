@@ -4,6 +4,7 @@ AllBot v1.0.3
 1. 上个版本忘记说了支持docker和docker-compose了
 2. 内置支付添加支付宝账单免挂支付
 3. 修复微信公众号适配器
+4. 新增WebChat其他平台验证码登录
 
 
 AllBot v1.0.2

@@ -107,6 +107,85 @@ func TestSaveLogRetentionDaysRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestScriptTaskSettingsDefaultsToZero(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	settings, err := db.GetScriptTaskSettings()
+	if err != nil {
+		t.Fatalf("GetScriptTaskSettings returned error: %v", err)
+	}
+	if settings.RetentionDays != 0 || settings.RunTimeoutSeconds != 0 || settings.TimeoutNotifyAdminEnabled {
+		t.Fatalf("unexpected default script task settings: %#v", settings)
+	}
+}
+
+func TestSaveScriptTaskSettings(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	saved := ScriptTaskSettings{RetentionDays: 30, RunTimeoutSeconds: 600, TimeoutNotifyAdminEnabled: true}
+	if err := db.SaveScriptTaskSettings(saved); err != nil {
+		t.Fatalf("SaveScriptTaskSettings returned error: %v", err)
+	}
+	settings, err := db.GetScriptTaskSettings()
+	if err != nil {
+		t.Fatalf("GetScriptTaskSettings returned error: %v", err)
+	}
+	if settings != saved {
+		t.Fatalf("expected %#v, got %#v", saved, settings)
+	}
+}
+
+func TestSaveScriptTaskSettingsRejectsInvalidValues(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	cases := []ScriptTaskSettings{
+		{RetentionDays: -1},
+		{RetentionDays: 3651},
+		{RunTimeoutSeconds: -1},
+		{RunTimeoutSeconds: 86401},
+	}
+	for _, item := range cases {
+		if err := db.SaveScriptTaskSettings(item); err == nil {
+			t.Fatalf("expected invalid settings to fail: %#v", item)
+		}
+	}
+}
+
+func TestEnsureDefaultSystemSettingsKeepsSavedScriptTaskSettings(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	saved := ScriptTaskSettings{RetentionDays: 12, RunTimeoutSeconds: 90, TimeoutNotifyAdminEnabled: true}
+	if err := db.SaveScriptTaskSettings(saved); err != nil {
+		t.Fatalf("SaveScriptTaskSettings returned error: %v", err)
+	}
+	if err := ensureDefaultSystemSettings(db.db); err != nil {
+		t.Fatalf("ensureDefaultSystemSettings returned error: %v", err)
+	}
+	settings, err := db.GetScriptTaskSettings()
+	if err != nil {
+		t.Fatalf("GetScriptTaskSettings returned error: %v", err)
+	}
+	if settings != saved {
+		t.Fatalf("expected saved script task settings %#v, got %#v", saved, settings)
+	}
+}
+
 func TestNormalizeAccessControlConfigKeepsUnionIDs(t *testing.T) {
 	config := NormalizeAccessControlConfig(types.AccessControlConfig{
 		WhitelistUnionIDs: []string{"union-1", "union-1", ""},

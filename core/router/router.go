@@ -1132,6 +1132,78 @@ func (r *Router) DispatchFakeMessageWithAdapter(pluginID string, platform string
 	return r.dispatchFakeMessage(pluginID, plugincore.FakeMessageAction{Platform: platform, AdapterID: adapterID, UserID: userID, GroupID: groupID, Content: content})
 }
 
+func (r *Router) NotifyScriptTaskTimeout(notification plugincore.ScriptTimeoutNotification) {
+	r.mu.RLock()
+	database := r.database
+	r.mu.RUnlock()
+	if database == nil {
+		log.Printf("[SYSTEM] 脚本任务超时通知跳过：数据库不可用 log_id=%d", notification.LogID)
+		return
+	}
+	settings, err := database.GetScriptTaskSettings()
+	if err != nil {
+		log.Printf("[SYSTEM] 读取脚本任务通知设置失败：%v", err)
+		return
+	}
+	if !settings.TimeoutNotifyAdminEnabled {
+		return
+	}
+	item, err := database.GetScriptRunLog(notification.LogID)
+	if err != nil || item == nil {
+		log.Printf("[SYSTEM] 读取脚本任务超时日志失败：log_id=%d err=%v", notification.LogID, err)
+		return
+	}
+	admins, err := r.startedPlatformAdmins("")
+	if err != nil || len(admins) == 0 {
+		log.Printf("[SYSTEM] 脚本任务超时通知无可触达管理员：log_id=%d err=%v", notification.LogID, err)
+		return
+	}
+	text := formatScriptTaskTimeoutNotification(item, notification)
+	for _, admin := range admins {
+		action := plugincore.SendMessageAction{Platform: admin["platform"], AdapterID: admin["adapter_id"], UserID: admin["user_id"], Text: text}
+		if unionID := strings.TrimSpace(admin["union_id"]); unionID != "" {
+			action.UnionID = unionID
+		}
+		if err := r.sendPluginMessage(item.PluginID, action); err != nil {
+			log.Printf("[SYSTEM] 脚本任务超时通知发送失败：log_id=%d platform=%s user=%s err=%v", notification.LogID, action.Platform, action.UserID, err)
+			continue
+		}
+		return
+	}
+	log.Printf("[SYSTEM] 脚本任务超时通知全部发送失败：log_id=%d", notification.LogID)
+}
+
+func formatScriptTaskTimeoutNotification(item *config.ScriptRunLog, notification plugincore.ScriptTimeoutNotification) string {
+	return fmt.Sprintf("脚本任务运行超时，已自动停止\n\n任务ID：%d\n插件：%s\n脚本：%s\n运行模式：%s\n运行环境：%s / %s\n用户：%s\n超时时间：%d 秒\n开始时间：%s\n结束时间：%s\n错误：%s",
+		item.ID,
+		valueOrDash(item.PluginID),
+		valueOrDash(item.ScriptPath),
+		valueOrDash(item.RunMode),
+		valueOrDash(item.Runtime),
+		valueOrDash(item.RuntimeProfile),
+		valueOrDash(item.UnionID),
+		notification.TimeoutSeconds,
+		formatLocalTime(item.StartedAt),
+		formatLocalTime(notification.FinishedAt),
+		valueOrDash(notification.Error),
+	)
+}
+
+func valueOrDash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+func formatLocalTime(value time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.Local().Format("2006-01-02 15:04:05")
+}
+
 func (r *Router) SendPluginMessage(pluginID string, action plugincore.SendMessageAction) plugincore.PluginUserResult {
 	if err := r.sendPluginMessage(pluginID, action); err != nil {
 		return plugincore.PluginUserResult{Success: false, Error: err.Error()}

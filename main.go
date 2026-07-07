@@ -128,6 +128,7 @@ func main() {
 	pluginManager := plugin.NewManager(*pluginDir, depsManager)
 	pluginManager.SetDatabase(configDB)
 	messageRouter.SetPluginManager(pluginManager)
+	pluginManager.SetScriptTimeoutNotifier(messageRouter.NotifyScriptTaskTimeout)
 
 	plugins, err := pluginManager.LoadAllPlugins()
 	if err != nil {

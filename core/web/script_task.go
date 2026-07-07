@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,48 +11,91 @@ import (
 )
 
 func (s *Server) handleScriptTasks(w http.ResponseWriter, r *http.Request) {
+	database := s.adapterManager.GetDatabase()
 	switch r.Method {
 	case http.MethodGet:
-		retentionDays := s.scriptTaskRetentionDays()
-		if _, err := s.adapterManager.GetDatabase().CleanupScriptRunLogs(retentionDays); err != nil {
+		settings, err := database.GetScriptTaskSettings()
+		if err != nil {
+			s.jsonError(w, "读取脚本任务设置失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if _, err := database.CleanupScriptRunLogs(settings.RetentionDays); err != nil {
 			s.jsonError(w, "清理脚本任务失败: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		filter := scriptRunLogFilterFromRequest(r)
-		total, err := s.adapterManager.GetDatabase().CountScriptRunLogs(filter)
+		total, err := database.CountScriptRunLogs(filter)
 		if err != nil {
 			s.jsonError(w, "统计脚本任务失败: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		items, err := s.adapterManager.GetDatabase().ListScriptRunLogs(filter)
+		items, err := database.ListScriptRunLogs(filter)
 		if err != nil {
 			s.jsonError(w, "获取脚本任务失败: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		s.jsonResponse(w, map[string]interface{}{"items": items, "total": total, "page": pageFromFilter(filter), "page_size": filter.Limit, "retention_days": retentionDays})
+		s.jsonResponse(w, map[string]interface{}{"items": items, "total": total, "page": pageFromFilter(filter), "page_size": filter.Limit, "retention_days": settings.RetentionDays, "settings": settings})
 	case http.MethodPost:
-		if r.URL.Query().Get("action") != "cleanup" {
+		switch r.URL.Query().Get("action") {
+		case "cleanup":
+			s.saveScriptTaskCleanupSettings(w, r)
+		case "settings":
+			s.saveScriptTaskSettings(w, r)
+		default:
 			s.jsonError(w, "不支持的脚本任务操作", http.StatusBadRequest)
-			return
 		}
-		days, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("days")))
-		if err != nil || days < 0 {
-			s.jsonError(w, "清理天数无效", http.StatusBadRequest)
-			return
-		}
-		if err := s.adapterManager.GetDatabase().SetSetting("script_tasks.retention_days", strconv.Itoa(days), "脚本任务日志自动清理天数，0 表示不自动清理"); err != nil {
-			s.jsonError(w, "保存清理设置失败: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		removed, err := s.adapterManager.GetDatabase().CleanupScriptRunLogs(days)
-		if err != nil {
-			s.jsonError(w, "清理脚本任务失败: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		s.jsonResponse(w, map[string]interface{}{"message": "脚本任务清理设置已保存", "retention_days": days, "removed": removed})
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) saveScriptTaskCleanupSettings(w http.ResponseWriter, r *http.Request) {
+	days, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("days")))
+	if err != nil || days < 0 {
+		s.jsonError(w, "清理天数无效", http.StatusBadRequest)
+		return
+	}
+	database := s.adapterManager.GetDatabase()
+	settings, err := database.GetScriptTaskSettings()
+	if err != nil {
+		s.jsonError(w, "读取脚本任务设置失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	settings.RetentionDays = days
+	if err := database.SaveScriptTaskSettings(settings); err != nil {
+		s.jsonError(w, "保存清理设置失败: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	removed, err := database.CleanupScriptRunLogs(settings.RetentionDays)
+	if err != nil {
+		s.jsonError(w, "清理脚本任务失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.jsonResponse(w, map[string]interface{}{"message": "脚本任务清理设置已保存", "retention_days": settings.RetentionDays, "removed": removed})
+}
+
+func (s *Server) saveScriptTaskSettings(w http.ResponseWriter, r *http.Request) {
+	var settings config.ScriptTaskSettings
+	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+		s.jsonError(w, "脚本任务设置格式无效", http.StatusBadRequest)
+		return
+	}
+	database := s.adapterManager.GetDatabase()
+	if err := database.SaveScriptTaskSettings(settings); err != nil {
+		s.jsonError(w, "保存脚本任务设置失败: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	saved, err := database.GetScriptTaskSettings()
+	if err != nil {
+		s.jsonError(w, "读取脚本任务设置失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	removed, err := database.CleanupScriptRunLogs(saved.RetentionDays)
+	if err != nil {
+		s.jsonError(w, "清理脚本任务失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.jsonResponse(w, map[string]interface{}{"message": "脚本任务设置已保存", "settings": saved, "removed": removed})
 }
 
 func (s *Server) handleScriptTaskDetail(w http.ResponseWriter, r *http.Request) {
@@ -199,13 +243,9 @@ func isCancelableScriptTaskStatus(status string) bool {
 }
 
 func (s *Server) scriptTaskRetentionDays() int {
-	value, err := s.adapterManager.GetDatabase().GetSetting("script_tasks.retention_days")
+	settings, err := s.adapterManager.GetDatabase().GetScriptTaskSettings()
 	if err != nil {
 		return 0
 	}
-	days, err := strconv.Atoi(strings.TrimSpace(value))
-	if err != nil || days < 0 {
-		return 0
-	}
-	return days
+	return settings.RetentionDays
 }

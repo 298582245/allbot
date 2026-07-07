@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/deps"
@@ -751,6 +752,102 @@ func TestRunPluginScriptRejectsMissingRuntimeProfile(t *testing.T) {
 	result := manager.RunPluginScript(pluginPath, ScriptRunAction{PluginID: "plugin-test", Runtime: "nodejs", RuntimeProfile: "missing", Script: "task.js", Wait: true})
 	if result.Success || !strings.Contains(result.Error, "运行环境 Profile 不存在或未启用") {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestRunPluginScriptStopsAfterRunTimeout(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node 不可用，跳过脚本执行测试")
+	}
+	pluginPath := t.TempDir()
+	script := "setInterval(() => console.log('tick'), 100)\n"
+	if err := os.WriteFile(filepath.Join(pluginPath, "task.js"), []byte(script), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(pluginPath, deps.NewManager(t.TempDir()))
+	configureManagerTestProfiles(t, manager)
+	database, err := config.NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.SaveScriptTaskSettings(config.ScriptTaskSettings{RunTimeoutSeconds: 1}); err != nil {
+		t.Fatal(err)
+	}
+	manager.SetDatabase(database)
+	notifications := make(chan ScriptTimeoutNotification, 1)
+	manager.SetScriptTimeoutNotifier(func(notification ScriptTimeoutNotification) { notifications <- notification })
+
+	result := manager.RunPluginScript(pluginPath, ScriptRunAction{PluginID: "plugin-timeout", Runtime: "nodejs", RuntimeProfile: "node18", Script: "task.js", Wait: true, Timeout: 5})
+	if result.Success || !strings.Contains(result.Error, "脚本任务运行超过 1 秒，已自动停止") {
+		t.Fatalf("unexpected timeout result: %#v", result)
+	}
+	items, err := database.ListScriptRunLogs(config.ScriptRunLogFilter{PluginID: "plugin-timeout"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Status != "failed" || !strings.Contains(items[0].Error, "运行超过 1 秒") {
+		t.Fatalf("unexpected timeout log: %#v", items)
+	}
+	select {
+	case notification := <-notifications:
+		if notification.LogID != items[0].ID || notification.TimeoutSeconds != 1 {
+			t.Fatalf("unexpected notification: %#v", notification)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected timeout notification")
+	}
+	select {
+	case notification := <-notifications:
+		t.Fatalf("unexpected duplicate notification: %#v", notification)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestWaitScriptRunTimeoutDoesNotStopRunningScript(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node 不可用，跳过脚本执行测试")
+	}
+	pluginPath := t.TempDir()
+	script := "setTimeout(() => console.log('done'), 1500)\n"
+	if err := os.WriteFile(filepath.Join(pluginPath, "task.js"), []byte(script), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(pluginPath, deps.NewManager(t.TempDir()))
+	configureManagerTestProfiles(t, manager)
+	database, err := config.NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	manager.SetDatabase(database)
+
+	result := manager.RunPluginScript(pluginPath, ScriptRunAction{PluginID: "plugin-wait-timeout", Runtime: "nodejs", RuntimeProfile: "node18", Script: "task.js", Wait: true, Timeout: 1})
+	if !result.Success {
+		t.Fatalf("wait timeout should return success data: %#v", result)
+	}
+	data, ok := result.Data.(map[string]interface{})
+	if !ok || data["timeout"] != true {
+		t.Fatalf("expected wait timeout data, got %#v", result.Data)
+	}
+	var detail *config.ScriptRunLog
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		items, err := database.ListScriptRunLogs(config.ScriptRunLogFilter{PluginID: "plugin-wait-timeout"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) == 1 && items[0].Status == "success" {
+			detail, err = database.GetScriptRunLog(items[0].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if detail == nil || !strings.Contains(detail.Output, "done") {
+		t.Fatalf("script should finish after wait timeout, got %#v", detail)
 	}
 }
 

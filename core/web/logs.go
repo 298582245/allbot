@@ -74,6 +74,7 @@ var (
 	urlVolatileQueryPattern = regexp.MustCompile(`(?i)([?&](?:offset|timeout|limit|timestamp|ts|nonce|retry|attempt|t)=)[^&\s\"]+`)
 	whitespacePattern       = regexp.MustCompile(`\s+`)
 	logFileNamePattern      = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}\.log$`)
+	logLineHeaderPattern    = regexp.MustCompile(`^\d{2}:\d{2}:\d{2}\s+(?i:INFO|WARN|ERROR|DEBUG)\s+`)
 )
 
 // NewLogManager 创建日志管理器。
@@ -617,22 +618,45 @@ func readLogEntriesFromFile(date, keyword, level string) ([]LogEntry, error) {
 	keyword = strings.ToLower(strings.TrimSpace(keyword))
 	level = strings.ToLower(strings.TrimSpace(level))
 	items := make([]LogEntry, 0)
+	var current *LogEntry
+	appendCurrent := func() {
+		if current == nil {
+			return
+		}
+		entry := normalizeLogEntry(*current)
+		if level != "" && strings.ToLower(entry.Level) != level {
+			current = nil
+			return
+		}
+		if keyword != "" && !logEntryContainsKeyword(entry, keyword) {
+			current = nil
+			return
+		}
+		items = append(items, entry)
+		current = nil
+	}
 	scanner := bufio.NewScanner(file)
 	buffer := make([]byte, 0, 64*1024)
 	scanner.Buffer(buffer, 1024*1024)
 	for scanner.Scan() {
-		entry := parseLogLine(scanner.Text())
-		if level != "" && strings.ToLower(entry.Level) != level {
+		line := scanner.Text()
+		if isLogLineHeader(line) {
+			appendCurrent()
+			entry := parseLogLine(line)
+			current = &entry
 			continue
 		}
-		if keyword != "" && !logEntryContainsKeyword(entry, keyword) {
+		if current == nil {
+			entry := parseLogLine(line)
+			current = &entry
 			continue
 		}
-		items = append(items, entry)
+		current.Message += "\n" + line
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
+	appendCurrent()
 	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
 		items[i], items[j] = items[j], items[i]
 	}
@@ -645,6 +669,10 @@ func parseLogLine(line string) LogEntry {
 		return normalizeLogEntry(LogEntry{Time: "", Level: "info", Message: line})
 	}
 	return normalizeLogEntry(LogEntry{Time: parts[0], Level: strings.ToLower(parts[1]), Message: parts[2]})
+}
+
+func isLogLineHeader(line string) bool {
+	return logLineHeaderPattern.MatchString(line)
 }
 
 func logEntryContainsKeyword(entry LogEntry, keyword string) bool {

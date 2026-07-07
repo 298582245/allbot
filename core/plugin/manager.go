@@ -21,17 +21,18 @@ import (
 )
 
 type Manager struct {
-	plugins        map[string]*PluginProcess
-	runningScripts map[int64]context.CancelFunc
-	scriptDone     map[int64]chan ScriptRunResult
-	queuedScripts  map[int64]*queuedScriptRun
-	queueWake      chan struct{}
-	schedulerOnce  sync.Once
-	mu             sync.RWMutex
-	pluginDir      string
-	depsManager    *deps.Manager
-	database       *config.Database
-	scriptLimit    int
+	plugins               map[string]*PluginProcess
+	runningScripts        map[int64]context.CancelFunc
+	scriptDone            map[int64]chan ScriptRunResult
+	queuedScripts         map[int64]*queuedScriptRun
+	queueWake             chan struct{}
+	schedulerOnce         sync.Once
+	mu                    sync.RWMutex
+	pluginDir             string
+	depsManager           *deps.Manager
+	database              *config.Database
+	scriptLimit           int
+	scriptTimeoutNotifier ScriptTimeoutNotifier
 }
 
 type PluginProcess struct {
@@ -158,17 +159,28 @@ type ScriptRunResult struct {
 	FinishedAt time.Time `json:"finished_at"`
 }
 
+type ScriptTimeoutNotification struct {
+	LogID          int64
+	TimeoutSeconds int
+	Output         string
+	Error          string
+	FinishedAt     time.Time
+}
+
+type ScriptTimeoutNotifier func(ScriptTimeoutNotification)
+
 type queuedScriptRun struct {
-	logID       int64
-	pluginPath  string
-	runtimeName string
-	fullScript  string
-	workDir     string
-	resolved    deps.ResolvedRuntime
-	action      ScriptRunAction
-	done        chan ScriptRunResult
-	startedAt   time.Time
-	createdAt   time.Time
+	logID             int64
+	pluginPath        string
+	runtimeName       string
+	fullScript        string
+	workDir           string
+	resolved          deps.ResolvedRuntime
+	action            ScriptRunAction
+	done              chan ScriptRunResult
+	startedAt         time.Time
+	createdAt         time.Time
+	runTimeoutSeconds int
 }
 
 type ScriptRunTask struct {
@@ -209,6 +221,12 @@ type PaymentWaitAction struct {
 
 func NewManager(pluginDir string, depsManager *deps.Manager) *Manager {
 	return &Manager{plugins: make(map[string]*PluginProcess), runningScripts: make(map[int64]context.CancelFunc), scriptDone: make(map[int64]chan ScriptRunResult), pluginDir: pluginDir, depsManager: depsManager, scriptLimit: 1}
+}
+
+func (m *Manager) SetScriptTimeoutNotifier(notifier ScriptTimeoutNotifier) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.scriptTimeoutNotifier = notifier
 }
 
 func (m *Manager) PluginDir() string {
@@ -1350,13 +1368,30 @@ func (m *Manager) enqueueScriptRun(logID int64, pluginPath, runtimeName, fullScr
 		m.queueWake = make(chan struct{}, 1)
 	}
 	done := make(chan ScriptRunResult, 1)
-	queueItem := &queuedScriptRun{logID: logID, pluginPath: pluginPath, runtimeName: runtimeName, fullScript: fullScript, workDir: workDir, resolved: resolved, action: action, done: done, startedAt: startedAt, createdAt: time.Now()}
+	queueItem := &queuedScriptRun{logID: logID, pluginPath: pluginPath, runtimeName: runtimeName, fullScript: fullScript, workDir: workDir, resolved: resolved, action: action, done: done, startedAt: startedAt, createdAt: time.Now(), runTimeoutSeconds: m.scriptTaskRunTimeoutSecondsLocked()}
 	m.queuedScripts[logID] = queueItem
 	m.scriptDone[logID] = done
 	m.mu.Unlock()
 	m.ensureScriptScheduler()
 	m.signalScriptQueue()
 	return true
+}
+
+func (m *Manager) scriptTaskRunTimeoutSecondsLocked() int {
+	if m.database == nil {
+		return 0
+	}
+	settings, err := m.database.GetScriptTaskSettings()
+	if err != nil || settings.RunTimeoutSeconds < 0 || settings.RunTimeoutSeconds > 86400 {
+		return 0
+	}
+	return settings.RunTimeoutSeconds
+}
+
+func (m *Manager) scriptTaskRunTimeoutSeconds() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.scriptTaskRunTimeoutSecondsLocked()
 }
 
 func (m *Manager) ensureScriptScheduler() {
@@ -1385,7 +1420,13 @@ func (m *Manager) runScriptScheduler() {
 			if queueItem == nil {
 				break
 			}
-			ctx, cancel := context.WithCancel(context.Background())
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if queueItem.runTimeoutSeconds > 0 {
+				ctx, cancel = context.WithTimeout(context.Background(), time.Duration(queueItem.runTimeoutSeconds)*time.Second)
+			} else {
+				ctx, cancel = context.WithCancel(context.Background())
+			}
 			m.mu.Lock()
 			if _, ok := m.queuedScripts[queueItem.logID]; !ok {
 				m.mu.Unlock()
@@ -1410,7 +1451,7 @@ func (m *Manager) runScriptScheduler() {
 				m.finishScriptRun(queueItem.logID, "paused", "", "脚本任务已暂停", time.Now())
 				continue
 			}
-			go m.runPluginScriptTask(ctx, queueItem.logID, queueItem.runtimeName, queueItem.fullScript, queueItem.workDir, queueItem.resolved, queueItem.action)
+			go m.runPluginScriptTask(ctx, queueItem.logID, queueItem.runtimeName, queueItem.fullScript, queueItem.workDir, queueItem.resolved, queueItem.action, queueItem.runTimeoutSeconds)
 		}
 	}
 }
@@ -1504,7 +1545,7 @@ func mergeScriptEnv(stored map[string]string, explicit map[string]string) map[st
 	return merged
 }
 
-func (m *Manager) runPluginScriptTask(ctx context.Context, logID int64, runtimeName, fullScript, workDir string, resolved deps.ResolvedRuntime, action ScriptRunAction) {
+func (m *Manager) runPluginScriptTask(ctx context.Context, logID int64, runtimeName, fullScript, workDir string, resolved deps.ResolvedRuntime, action ScriptRunAction, runTimeoutSeconds int) {
 	cmdArgs := []string{fullScript}
 	if runtimeName == "python" {
 		cmdArgs = []string{"-u", fullScript}
@@ -1554,15 +1595,31 @@ finished:
 	status := "success"
 	errorText := ""
 	if err != nil {
-		if ctx.Err() == context.Canceled {
+		switch ctx.Err() {
+		case context.DeadlineExceeded:
+			status = "failed"
+			errorText = fmt.Sprintf("脚本任务运行超过 %d 秒，已自动停止", runTimeoutSeconds)
+		case context.Canceled:
 			status = "paused"
 			errorText = "脚本任务已暂停"
-		} else {
+		default:
 			status = "failed"
 			errorText = err.Error()
 		}
 	}
 	m.finishScriptRun(logID, status, outputText, errorText, finishedAt)
+	if ctx.Err() == context.DeadlineExceeded {
+		m.notifyScriptTaskTimeout(ScriptTimeoutNotification{LogID: logID, TimeoutSeconds: runTimeoutSeconds, Output: outputText, Error: errorText, FinishedAt: finishedAt})
+	}
+}
+
+func (m *Manager) notifyScriptTaskTimeout(notification ScriptTimeoutNotification) {
+	m.mu.RLock()
+	notifier := m.scriptTimeoutNotifier
+	m.mu.RUnlock()
+	if notifier != nil {
+		go notifier(notification)
+	}
 }
 
 func (m *Manager) markScriptRunRunning(logID int64) error {

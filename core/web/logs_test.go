@@ -125,6 +125,25 @@ func TestLogManagerQueryLogFileReadsHistoryByDate(t *testing.T) {
 	})
 }
 
+func TestLogManagerQueryLogFileKeepsMultilineMessageTogether(t *testing.T) {
+	withTempWorkdirForLogTests(t, func() {
+		lm := newTestLogManager(t, 10)
+		writeTestLogFile(t, "2026-06-25", "10:00:00 INFO sendMessage 第一行\n第二行\n最后一行\n10:00:01 ERROR next\n")
+
+		result, err := lm.QueryLogFile("2026-06-25", 1, 10, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Total != 2 || len(result.Items) != 2 {
+			t.Fatalf("expected two log entries, got total=%d items=%#v", result.Total, result.Items)
+		}
+		entry := result.Items[1]
+		if entry.Time != "10:00:00" || entry.Level != "info" || entry.Message != "sendMessage 第一行\n第二行\n最后一行" {
+			t.Fatalf("unexpected multiline entry: %#v", entry)
+		}
+	})
+}
+
 func TestLogManagerListLogFilesOnlyWhitelist(t *testing.T) {
 	withTempWorkdirForLogTests(t, func() {
 		lm := newTestLogManager(t, 10)

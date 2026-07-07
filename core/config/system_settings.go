@@ -22,16 +22,22 @@ type PlatformAdmin struct {
 }
 
 const (
-	adminPasswordKey                  = "admin.password"
-	adminPasswordDescription          = "管理员密码哈希"
-	adminGeneratedPasswordKey         = "admin.generated_password"
-	adminGeneratedPasswordDescription = "首次自动生成的管理员默认密码"
-	adminPasswordHashPrefix           = "pbkdf2_sha256"
-	adminPasswordIterations           = 200000
-	adminPasswordSaltBytes            = 16
-	adminPasswordKeyBytes             = 32
-	logRetentionDaysKey               = "logs.retention_days"
-	logRetentionDaysDescription       = "系统日志保留天数，0 表示禁用自动清理"
+	adminPasswordKey                        = "admin.password"
+	adminPasswordDescription                = "管理员密码哈希"
+	adminGeneratedPasswordKey               = "admin.generated_password"
+	adminGeneratedPasswordDescription       = "首次自动生成的管理员默认密码"
+	adminPasswordHashPrefix                 = "pbkdf2_sha256"
+	adminPasswordIterations                 = 200000
+	adminPasswordSaltBytes                  = 16
+	adminPasswordKeyBytes                   = 32
+	logRetentionDaysKey                     = "logs.retention_days"
+	logRetentionDaysDescription             = "系统日志保留天数，0 表示禁用自动清理"
+	scriptTaskRetentionDaysKey              = "script_tasks.retention_days"
+	scriptTaskRetentionDaysDescription      = "脚本任务日志自动清理天数，0 表示不自动清理"
+	scriptTaskRunTimeoutSecondsKey          = "script_tasks.run_timeout_seconds"
+	scriptTaskRunTimeoutSecondsDescription  = "脚本任务运行超时时间，0 表示不限制"
+	scriptTaskTimeoutNotifyAdminEnabledKey  = "script_tasks.timeout_notify_admin_enabled"
+	scriptTaskTimeoutNotifyAdminDescription = "脚本任务超时自动停止后是否通知平台管理员"
 )
 
 type AdminPasswordInitResult struct {
@@ -55,6 +61,12 @@ type SystemSettings struct {
 	// 安全访问码：开启后访问登录页需在 URL 携带访问码，否则返回 404
 	AccessCodeEnabled bool   `json:"access_code_enabled"`
 	AccessCode        string `json:"access_code"`
+}
+
+type ScriptTaskSettings struct {
+	RetentionDays             int  `json:"retention_days"`
+	RunTimeoutSeconds         int  `json:"run_timeout_seconds"`
+	TimeoutNotifyAdminEnabled bool `json:"timeout_notify_admin_enabled"`
 }
 
 type BackupSettings struct {
@@ -132,6 +144,68 @@ func (d *Database) SaveLogRetentionDays(days int) error {
 		return fmt.Errorf("日志保留天数必须在 0 到 3650 之间")
 	}
 	return d.SetSetting(logRetentionDaysKey, strconv.Itoa(days), logRetentionDaysDescription)
+}
+
+func DefaultScriptTaskSettings() ScriptTaskSettings {
+	return ScriptTaskSettings{}
+}
+
+func NormalizeScriptTaskSettings(settings ScriptTaskSettings) ScriptTaskSettings {
+	if settings.RetentionDays < 0 {
+		settings.RetentionDays = 0
+	}
+	if settings.RetentionDays > 3650 {
+		settings.RetentionDays = 3650
+	}
+	if settings.RunTimeoutSeconds < 0 {
+		settings.RunTimeoutSeconds = 0
+	}
+	if settings.RunTimeoutSeconds > 86400 {
+		settings.RunTimeoutSeconds = 86400
+	}
+	return settings
+}
+
+func (d *Database) GetScriptTaskSettings() (ScriptTaskSettings, error) {
+	items, err := d.getSettingsMap()
+	if err != nil {
+		return DefaultScriptTaskSettings(), err
+	}
+	settings := ScriptTaskSettings{
+		RetentionDays:             intValueAllowZeroOrDefault(items, scriptTaskRetentionDaysKey, 0),
+		RunTimeoutSeconds:         intValueAllowZeroOrDefault(items, scriptTaskRunTimeoutSecondsKey, 0),
+		TimeoutNotifyAdminEnabled: valueOrDefault(items, scriptTaskTimeoutNotifyAdminEnabledKey, "false") == "true",
+	}
+	if settings.RetentionDays < 0 || settings.RetentionDays > 3650 {
+		return DefaultScriptTaskSettings(), fmt.Errorf("脚本任务日志保留天数必须在 0 到 3650 之间")
+	}
+	if settings.RunTimeoutSeconds < 0 || settings.RunTimeoutSeconds > 86400 {
+		return DefaultScriptTaskSettings(), fmt.Errorf("脚本任务运行超时时间必须在 0 到 86400 秒之间")
+	}
+	return settings, nil
+}
+
+func (d *Database) SaveScriptTaskSettings(settings ScriptTaskSettings) error {
+	if settings.RetentionDays < 0 || settings.RetentionDays > 3650 {
+		return fmt.Errorf("脚本任务日志保留天数必须在 0 到 3650 之间")
+	}
+	if settings.RunTimeoutSeconds < 0 || settings.RunTimeoutSeconds > 86400 {
+		return fmt.Errorf("脚本任务运行超时时间必须在 0 到 86400 秒之间")
+	}
+	items := map[string]struct {
+		value       string
+		description string
+	}{
+		scriptTaskRetentionDaysKey:             {strconv.Itoa(settings.RetentionDays), scriptTaskRetentionDaysDescription},
+		scriptTaskRunTimeoutSecondsKey:         {strconv.Itoa(settings.RunTimeoutSeconds), scriptTaskRunTimeoutSecondsDescription},
+		scriptTaskTimeoutNotifyAdminEnabledKey: {boolString(settings.TimeoutNotifyAdminEnabled), scriptTaskTimeoutNotifyAdminDescription},
+	}
+	for key, item := range items {
+		if err := d.SetSetting(key, item.value, item.description); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
@@ -473,6 +547,14 @@ func valueOrDefault(items map[string]string, key, fallback string) string {
 func intValueOrDefault(items map[string]string, key string, fallback int) int {
 	var value int
 	if _, err := fmt.Sscanf(items[key], "%d", &value); err == nil && value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func intValueAllowZeroOrDefault(items map[string]string, key string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(items[key]))
+	if err == nil && value >= 0 {
 		return value
 	}
 	return fallback

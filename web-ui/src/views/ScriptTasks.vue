@@ -19,16 +19,7 @@
             <div class="subtitle">{{ pageDescription }}</div>
           </div>
           <div class="header-actions">
-            <el-input-number
-              v-model="retentionDays"
-              :min="0"
-              :max="3650"
-              controls-position="right"
-            />
-            <span class="retention-label">天后自动清理</span>
-            <el-button :loading="savingCleanup" @click="saveCleanup"
-              >保存清理</el-button
-            >
+            <el-button @click="settingsDialogVisible = true">任务设置</el-button>
             <el-switch v-model="autoRefresh" active-text="自动刷新" />
             <el-button :loading="loading" @click="loadItems">刷新</el-button>
           </div>
@@ -336,6 +327,49 @@
     </el-card>
 
     <el-dialog
+      v-model="settingsDialogVisible"
+      title="脚本任务设置"
+      width="520px"
+      destroy-on-close
+    >
+      <el-form label-width="140px" class="settings-form">
+        <el-form-item label="日志保留天数">
+          <el-input-number
+            v-model="retentionDays"
+            :min="0"
+            :max="3650"
+            controls-position="right"
+          />
+          <div class="form-tip">0 表示不自动清理脚本任务日志。</div>
+        </el-form-item>
+        <el-form-item label="运行超时秒数">
+          <el-input-number
+            v-model="runTimeoutSeconds"
+            :min="0"
+            :max="86400"
+            :step="60"
+            controls-position="right"
+          />
+          <div class="form-tip">
+            0 表示不限制；超时时间从脚本进入运行中开始计算。
+          </div>
+        </el-form-item>
+        <el-form-item label="超时通知">
+          <el-switch
+            v-model="timeoutNotifyAdminEnabled"
+            active-text="通知一个可触达的平台管理员"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="settingsDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="savingSettings" @click="saveSettings"
+          >保存设置</el-button
+        >
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="logDialogVisible"
       :title="logTitle"
       width="80%"
@@ -390,13 +424,16 @@ const loading = ref(false);
 const logLoading = ref(false);
 const pausingId = ref(0);
 const deletingId = ref(0);
-const savingCleanup = ref(false);
+const savingSettings = ref(false);
 const autoRefresh = ref(true);
 const showMobileFilters = ref(false);
 const items = ref([]);
 const currentLog = ref(null);
 const logDialogVisible = ref(false);
+const settingsDialogVisible = ref(false);
 const retentionDays = ref(0);
+const runTimeoutSeconds = ref(0);
+const timeoutNotifyAdminEnabled = ref(false);
 const searchKeyword = ref("");
 const searchUnionId = ref("");
 const searchRunMode = ref("");
@@ -407,7 +444,7 @@ const page = ref(1);
 const pageSize = ref(20);
 const total = ref(0);
 const pageDescription =
-  "查看插件提交的 Node.js / Python 脚本任务；日志放在弹窗里滚动查看，后台不提供手动启动。";
+  "查看插件提交的 Node.js / Python 脚本任务；日志放在弹窗里滚动查看，后台不提供手动启动。超时时间从脚本进入运行中开始计算，排队时间不计入；超时后会自动停止脚本并标记为失败；开启通知后会尝试通知一个可触达的平台管理员。";
 const DEFAULT_RUNTIME_PROFILE_FILTER = "__default__";
 let refreshTimer = 0;
 
@@ -462,8 +499,17 @@ const loadItems = async () => {
     total.value = Array.isArray(result)
       ? items.value.length
       : Number(result.total || 0);
-    if (!Array.isArray(result) && typeof result.retention_days === "number")
-      retentionDays.value = result.retention_days;
+    if (!settingsDialogVisible.value && !savingSettings.value) {
+      if (!Array.isArray(result) && result.settings) {
+        retentionDays.value = Number(result.settings.retention_days) || 0;
+        runTimeoutSeconds.value = Number(result.settings.run_timeout_seconds) || 0;
+        timeoutNotifyAdminEnabled.value = Boolean(
+          result.settings.timeout_notify_admin_enabled
+        );
+      } else if (!Array.isArray(result) && typeof result.retention_days === "number") {
+        retentionDays.value = result.retention_days;
+      }
+    }
   } finally {
     loading.value = false;
   }
@@ -497,20 +543,23 @@ const resetSearch = async () => {
   await searchItems();
 };
 
-const saveCleanup = async () => {
-  savingCleanup.value = true;
+const saveSettings = async () => {
+  savingSettings.value = true;
   try {
-    const result = await request.post(
-      `/script-tasks?action=cleanup&days=${retentionDays.value}`
-    );
+    const result = await request.post("/script-tasks?action=settings", {
+      retention_days: Number(retentionDays.value) || 0,
+      run_timeout_seconds: Number(runTimeoutSeconds.value) || 0,
+      timeout_notify_admin_enabled: Boolean(timeoutNotifyAdminEnabled.value),
+    });
     ElMessage.success(
-      `${result.message || "脚本任务清理设置已保存"}，已清理 ${
+      `${result.message || "脚本任务设置已保存"}，已清理 ${
         result.removed || 0
       } 条`
     );
+    settingsDialogVisible.value = false;
     await loadItems();
   } finally {
-    savingCleanup.value = false;
+    savingSettings.value = false;
   }
 };
 
@@ -689,10 +738,15 @@ onBeforeUnmount(stopTimer);
 .header-actions > * {
   min-width: 0;
 }
-.retention-label {
-  color: #606266;
-  font-size: 13px;
-  white-space: nowrap;
+.settings-form :deep(.el-input-number) {
+  width: 180px;
+}
+.form-tip {
+  width: 100%;
+  margin-top: 6px;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.5;
 }
 .search-bar {
   display: grid;
@@ -802,15 +856,21 @@ pre {
     grid-template-columns: 1fr;
     align-items: stretch;
   }
-  .header-actions :deep(.el-input-number),
   .header-actions :deep(.el-button) {
     width: 100%;
   }
   .header-actions :deep(.el-switch) {
     justify-self: flex-start;
   }
-  .retention-label {
-    white-space: normal;
+  .settings-form :deep(.el-form-item__label) {
+    width: 100% !important;
+    justify-content: flex-start;
+  }
+  .settings-form :deep(.el-form-item__content) {
+    margin-left: 0 !important;
+  }
+  .settings-form :deep(.el-input-number) {
+    width: 100%;
   }
   .desktop-search-bar {
     display: none;
