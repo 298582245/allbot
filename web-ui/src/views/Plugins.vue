@@ -159,9 +159,11 @@
       v-model="configDialogVisible"
       title="插件配置"
       width="840px"
+      class="plugin-config-dialog"
       @close="handleConfigDialogClose"
     >
-      <el-tabs v-model="configActiveTab" class="plugin-config-tabs">
+      <div class="plugin-config-dialog-body">
+      <el-tabs v-model="configActiveTab" class="plugin-config-tabs plugin-config-dialog-tabs">
         <el-tab-pane v-if="userConfigFields.length > 0" label="用户配置" name="user">
           <el-form :model="currentConfig.user_config" label-width="120px">
             <template v-for="(field, index) in userConfigFields" :key="field.key || `${field.type}-${index}`">
@@ -201,6 +203,61 @@
                 <div v-if="field.description" class="field-tip">{{ field.description }}</div>
               </el-form-item>
             </template>
+          </el-form>
+        </el-tab-pane>
+
+        <el-tab-pane label="Web配置" name="web">
+          <el-form :model="currentConfig" label-width="120px">
+            <el-divider content-position="left">插件面板</el-divider>
+            <el-form-item label="启用 WebUI">
+              <el-switch v-model="currentConfig.web_ui.enabled" active-text="显示" inactive-text="隐藏" />
+              <div class="field-tip">开启后，后台菜单会显示该插件的独立 Web 面板入口。</div>
+            </el-form-item>
+            <el-form-item label="面板标题">
+              <el-input v-model="currentConfig.web_ui.title" placeholder="留空使用插件名称" />
+            </el-form-item>
+            <el-form-item label="入口文件">
+              <el-input v-model="currentConfig.web_ui.entry" placeholder="例如：web/index.html" />
+              <div class="field-tip">入口路径必须是插件目录内的相对路径，不能使用绝对路径或 ../。</div>
+            </el-form-item>
+            <el-form-item label="菜单图标">
+              <el-input v-model="currentConfig.web_ui.icon" placeholder="可选，例如：Goods" />
+            </el-form-item>
+            <el-form-item label="排序">
+              <el-input-number v-model="currentConfig.web_ui.order" :step="1" />
+              <div class="field-tip">数字越小越靠前。</div>
+            </el-form-item>
+
+            <el-divider content-position="left">Web 聊天室</el-divider>
+            <el-form-item label="Web 显示">
+              <el-switch v-model="currentConfig.web_chat.enabled" active-text="显示" inactive-text="隐藏" />
+              <div class="field-tip">关闭后，Web 用户在聊天页插件入口中看不到该插件。</div>
+            </el-form-item>
+            <el-form-item label="入口标题">
+              <el-input v-model="currentConfig.web_chat.title" placeholder="留空使用插件名称" />
+            </el-form-item>
+            <el-form-item label="入口说明">
+              <el-input v-model="currentConfig.web_chat.description" placeholder="留空使用默认说明" />
+            </el-form-item>
+            <el-form-item label="输入提示">
+              <el-input v-model="currentConfig.web_chat.placeholder" placeholder="留空使用默认输入提示" />
+            </el-form-item>
+            <el-form-item label="入口指令">
+              <el-input v-model="currentConfig.web_chat.entry_text" placeholder="点击入口后默认发送或填入的文本" />
+            </el-form-item>
+            <el-form-item label="搜索关键词">
+              <el-select
+                v-model="currentConfig.web_chat.keywords"
+                multiple
+                filterable
+                allow-create
+                clearable
+                default-first-option
+                placeholder="可输入多个关键词"
+                style="width: 100%"
+              />
+              <div class="field-tip">用于 Web 聊天室搜索或分类展示。</div>
+            </el-form-item>
           </el-form>
         </el-tab-pane>
 
@@ -328,6 +385,7 @@
           </el-form>
         </el-tab-pane>
       </el-tabs>
+      </div>
       <template #footer>
         <el-button @click="configDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="saveConfig">保存</el-button>
@@ -767,6 +825,8 @@ const currentConfig = ref({
   user_config: {},
   open_api: createOpenApiConfig(),
   script_env: createScriptEnvConfig(),
+  web_ui: createWebUIConfig(),
+  web_chat: createWebChatConfig(),
   enabled: true
 })
 
@@ -1077,9 +1137,11 @@ const handleConfig = async (plugin) => {
     config.user_config = normalizeUserConfig(config.user_config_schema, config.user_config)
     config.open_api = createOpenApiConfig(plugin.id, config.runtime, config.open_api || {})
     config.script_env = createScriptEnvConfig(config.script_env || {})
+    config.web_ui = createWebUIConfig(config.web_ui || {})
+    config.web_chat = createWebChatConfig(config.web_chat || {})
     await loadScriptEnvOptions()
     currentConfig.value = config
-    configActiveTab.value = userConfigFields.value.length > 0 ? 'user' : 'base'
+    configActiveTab.value = userConfigFields.value.length > 0 ? 'user' : 'web'
     configDialogVisible.value = true
   } catch (error) {
     console.error('获取插件配置失败:', error)
@@ -1190,6 +1252,8 @@ const saveConfig = async () => {
     currentConfig.value.access_control = normalizeAccessControl(currentConfig.value.access_control, true)
     currentConfig.value.open_api = createOpenApiConfig(currentPluginId.value, currentConfig.value.runtime, currentConfig.value.open_api || {})
     currentConfig.value.script_env = createScriptEnvConfig(currentConfig.value.script_env || {})
+    currentConfig.value.web_ui = createWebUIConfig(currentConfig.value.web_ui || {})
+    currentConfig.value.web_chat = createWebChatConfig(currentConfig.value.web_chat || {})
     await request.put(`/plugins/config/${currentPluginId.value}`, currentConfig.value)
     ElMessage.success('配置已保存并生效')
     configDialogVisible.value = false
@@ -1218,6 +1282,8 @@ const handleConfigDialogClose = () => {
     user_config: {},
     open_api: createOpenApiConfig(),
     script_env: createScriptEnvConfig(),
+    web_ui: createWebUIConfig(),
+    web_chat: createWebChatConfig(),
     enabled: true
   }
 }
@@ -1255,6 +1321,29 @@ function createScriptEnvConfig(config = {}) {
   return {
     enabled: Boolean(config.enabled),
     names: [...new Set(names.map(name => String(name || '').trim()).filter(Boolean))]
+  }
+}
+
+function createWebUIConfig(config = {}) {
+  return {
+    enabled: Boolean(config.enabled),
+    title: String(config.title || '').trim(),
+    entry: String(config.entry || '').trim().replaceAll('\\', '/'),
+    icon: String(config.icon || '').trim(),
+    order: Number(config.order || 0)
+  }
+}
+
+function createWebChatConfig(config = {}) {
+  const keywords = Array.isArray(config.keywords) ? config.keywords : String(config.keywords || '').split(/[\n,，]/)
+  return {
+    enabled: config.enabled === undefined || config.enabled === null ? true : Boolean(config.enabled),
+    title: String(config.title || '').trim(),
+    description: String(config.description || '').trim(),
+    placeholder: String(config.placeholder || '').trim(),
+    entry_text: String(config.entry_text || '').trim(),
+    keywords: [...new Set(keywords.map(keyword => String(keyword || '').trim()).filter(Boolean))],
+    quick_actions: Array.isArray(config.quick_actions) ? config.quick_actions : []
   }
 }
 
@@ -2301,6 +2390,41 @@ onBeforeUnmount(() => {
   align-items: center;
 }
 
+.plugin-config-dialog :deep(.el-dialog) {
+  max-height: min(86vh, 900px);
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-config-dialog :deep(.el-dialog__body) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.plugin-config-dialog-body {
+  height: calc(86vh - 148px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.plugin-config-dialog-tabs {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-config-dialog-tabs :deep(.el-tabs__header) {
+  flex-shrink: 0;
+}
+
+.plugin-config-dialog-tabs :deep(.el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
 .config-divider {
   margin: 20px 0 16px;
 }
@@ -2432,6 +2556,18 @@ onBeforeUnmount(() => {
 
   .plugin-card-footer .el-button {
     margin-left: 0;
+  }
+
+  .plugin-config-dialog :deep(.el-dialog) {
+    max-height: 90vh;
+  }
+
+  .plugin-config-dialog-body {
+    height: calc(90vh - 136px);
+  }
+
+  .plugin-config-dialog-tabs :deep(.el-tabs__content) {
+    padding-right: 4px;
   }
 
   .create-config-header {

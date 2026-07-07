@@ -30,15 +30,18 @@
               <el-icon><component :is="isFilePanelCollapsed ? ArrowDown : ArrowUp" /></el-icon>
               {{ isFilePanelCollapsed ? '展开' : '收起' }}
             </el-button>
-            <el-dropdown trigger="click" @command="openCreateDialog">
-              <el-button size="small" type="primary" plain>新建</el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="file">新建文件</el-dropdown-item>
-                  <el-dropdown-item command="directory">新建文件夹</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <div class="file-panel-actions">
+              <el-button size="small" plain :loading="exporting" @click="exportPluginDirectory">导出</el-button>
+              <el-dropdown trigger="click" @command="openCreateDialog">
+                <el-button size="small" type="primary" plain>新建</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="file">新建文件</el-dropdown-item>
+                    <el-dropdown-item command="directory">新建文件夹</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
           </div>
           <el-tree
             ref="fileTreeRef"
@@ -96,6 +99,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, ArrowLeft, ArrowUp, Document, Folder } from '@element-plus/icons-vue'
 import request from '@/utils/request'
+import { useAuthStore } from '@/stores/auth'
 import { EditorView, basicSetup } from 'codemirror'
 import { python } from '@codemirror/lang-python'
 import { javascript } from '@codemirror/lang-javascript'
@@ -103,6 +107,7 @@ import { oneDark } from '@codemirror/theme-one-dark'
 
 const route = useRoute()
 const router = useRouter()
+const authStore = useAuthStore()
 
 const pluginId = ref(route.params.id)
 const pluginName = ref('')
@@ -115,6 +120,7 @@ const loading = ref(false)
 const saving = ref(false)
 const creating = ref(false)
 const deleting = ref(false)
+const exporting = ref(false)
 const canEdit = ref(false)
 const isFilePanelCollapsed = ref(false)
 const editorContainer = ref(null)
@@ -218,6 +224,34 @@ const saveCode = async () => {
     ElMessage.error('保存文件失败: ' + (error.response?.data?.error || error.message))
   } finally {
     saving.value = false
+  }
+}
+
+const exportPluginDirectory = async () => {
+  exporting.value = true
+  try {
+    const fileName = `${pluginId.value}.zip`
+    const response = await fetch(`/api/plugins/export/${encodeURIComponent(pluginId.value)}`, {
+      headers: { Authorization: `Bearer ${authStore.token}` }
+    })
+    if (!response.ok) {
+      ElMessage.error('导出失败')
+      return
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileName
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    console.error('导出失败:', error)
+    ElMessage.error('导出失败: ' + (error.message || '未知错误'))
+  } finally {
+    exporting.value = false
   }
 }
 
@@ -403,6 +437,12 @@ onBeforeUnmount(destroyEditor)
 
 .mobile-collapse-button {
   display: none;
+}
+
+.file-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .tree-node {

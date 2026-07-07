@@ -133,6 +133,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/openapis", s.handleOpenAPIConfigs)
 	mux.HandleFunc("/api/openapis/", s.handleOpenAPIConfigDetail)
 	mux.HandleFunc("/api/plugins/config/", s.handlePluginConfig)
+	mux.HandleFunc("/api/plugins/export/", s.handlePluginExport)
 	mux.HandleFunc("/api/plugins/files/", s.handlePluginFiles)
 	mux.HandleFunc("/api/plugins/code/", s.handlePluginCode)
 	mux.HandleFunc("/api/plugins/templates", s.handlePluginTemplates)
@@ -1130,6 +1131,43 @@ func (s *Server) handlePluginCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+func (s *Server) handlePluginExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	pluginID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/plugins/export/"), "/")
+	pluginInfo := s.router.GetPlugin(pluginID)
+	if pluginInfo == nil {
+		s.jsonError(w, "插件不存在", http.StatusNotFound)
+		return
+	}
+	pluginRoot := filepath.Join("plugins", pluginID)
+	info, err := os.Stat(pluginRoot)
+	if err != nil {
+		s.jsonError(w, "插件目录不存在", http.StatusNotFound)
+		return
+	}
+	if !info.IsDir() {
+		s.jsonError(w, "插件目录不存在", http.StatusNotFound)
+		return
+	}
+	tmpDir, err := os.MkdirTemp("", "allbot-plugin-export-*")
+	if err != nil {
+		s.jsonError(w, "创建临时目录失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+	zipPath := filepath.Join(tmpDir, pluginID+".zip")
+	if err := zipDirectory(pluginRoot, zipPath); err != nil {
+		s.jsonError(w, "导出插件失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", pluginID+".zip"))
+	http.ServeFile(w, r, zipPath)
 }
 
 func (s *Server) handlePluginFiles(w http.ResponseWriter, r *http.Request) {
