@@ -42,6 +42,12 @@ type RuntimeProfileConfig struct {
 	Profiles []RuntimeProfile `json:"profiles"`
 }
 
+type RuntimeEnvironmentBackup struct {
+	Profiles           []RuntimeProfile             `json:"profiles"`
+	PythonDependencies map[string]map[string]string `json:"python_dependencies"`
+	NodeDependencies   map[string]map[string]string `json:"node_dependencies"`
+}
+
 type RuntimeDownloadOptions struct {
 	ProxyURL               string
 	NodeMirrorURL          string
@@ -668,6 +674,95 @@ func (m *Manager) SaveRuntimeProfiles(profiles []RuntimeProfile) ([]RuntimeProfi
 	return m.saveRuntimeProfilesLocked(profiles)
 }
 
+func (m *Manager) ExportRuntimeEnvironment() (RuntimeEnvironmentBackup, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	profiles, err := m.loadRuntimeProfilesLocked()
+	if err != nil {
+		return RuntimeEnvironmentBackup{}, err
+	}
+	snapshot := RuntimeEnvironmentBackup{Profiles: profiles, PythonDependencies: map[string]map[string]string{}, NodeDependencies: map[string]map[string]string{}}
+	for _, profile := range profiles {
+		paths := m.profileDependencyPaths(profile)
+		switch profile.Runtime {
+		case "python":
+			deps, err := m.loadPythonDepsFile(paths.pythonDepsFile)
+			if err != nil {
+				return RuntimeEnvironmentBackup{}, err
+			}
+			snapshot.PythonDependencies[profile.ID] = cloneStringMap(deps.Packages)
+		case "nodejs":
+			deps, err := m.loadNodeDepsFile(paths.nodeDepsFile)
+			if err != nil {
+				return RuntimeEnvironmentBackup{}, err
+			}
+			snapshot.NodeDependencies[profile.ID] = cloneStringMap(deps.Dependencies)
+		}
+	}
+	return snapshot, nil
+}
+
+func (m *Manager) ImportRuntimeEnvironment(snapshot RuntimeEnvironmentBackup) ([]string, error) {
+	m.mu.Lock()
+	profiles, err := m.saveRuntimeProfilesLocked(snapshot.Profiles)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	for _, profile := range profiles {
+		paths := m.profileDependencyPaths(profile)
+		switch profile.Runtime {
+		case "python":
+			if deps, ok := snapshot.PythonDependencies[profile.ID]; ok {
+				if err := m.savePythonDepsFile(paths.pythonDepsFile, &PythonDeps{Packages: cloneStringMap(deps)}); err != nil {
+					m.mu.Unlock()
+					return nil, err
+				}
+			}
+		case "nodejs":
+			if deps, ok := snapshot.NodeDependencies[profile.ID]; ok {
+				if err := m.saveNodeDepsFile(paths.nodeDepsFile, &NodeDeps{Dependencies: cloneStringMap(deps)}); err != nil {
+					m.mu.Unlock()
+					return nil, err
+				}
+			}
+		}
+	}
+	m.mu.Unlock()
+
+	warnings := make([]string, 0)
+	for _, profile := range profiles {
+		if !profile.Enabled {
+			continue
+		}
+		if profile.Source != "managed" {
+			if err := ensureExecutableAvailable(profile.Executable); err != nil {
+				warnings = append(warnings, fmt.Sprintf("运行环境 %s 的解释器不可用: %v", profile.ID, err))
+				continue
+			}
+		}
+		if _, err := m.InitializeRuntimeProfile(profile.ID, RuntimeProfileInitOptions{AutoDownload: profile.Source == "managed"}); err != nil {
+			warnings = append(warnings, fmt.Sprintf("运行环境 %s 初始化失败: %v", profile.ID, err))
+			continue
+		}
+		switch profile.Runtime {
+		case "python":
+			if deps := snapshot.PythonDependencies[profile.ID]; len(deps) > 0 {
+				if err := m.EnsurePythonDepsForProfile(profile.ID, deps); err != nil {
+					warnings = append(warnings, fmt.Sprintf("运行环境 %s 安装 Python 依赖失败: %v", profile.ID, err))
+				}
+			}
+		case "nodejs":
+			if deps := snapshot.NodeDependencies[profile.ID]; len(deps) > 0 {
+				if err := m.EnsureNodeDepsForProfile(profile.ID, deps); err != nil {
+					warnings = append(warnings, fmt.Sprintf("运行环境 %s 安装 Node.js 依赖失败: %v", profile.ID, err))
+				}
+			}
+		}
+	}
+	return warnings, nil
+}
+
 func (m *Manager) saveRuntimeProfilesLocked(profiles []RuntimeProfile) ([]RuntimeProfile, error) {
 	normalized, err := m.normalizeRuntimeProfiles(profiles)
 	if err != nil {
@@ -1126,6 +1221,14 @@ func (m *Manager) resolvedRuntime(profile RuntimeProfile) (ResolvedRuntime, erro
 		}
 	}
 	return ResolvedRuntime{Profile: profile, Executable: executable, NodePath: m.absPath(paths.nodeModules)}, nil
+}
+
+func cloneStringMap(items map[string]string) map[string]string {
+	cloned := make(map[string]string, len(items))
+	for key, value := range items {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func normalizeRuntimeName(runtimeName string) string {

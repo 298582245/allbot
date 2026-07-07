@@ -110,6 +110,7 @@ func newBackupWebTestServer(t *testing.T) (*Server, *config.Database, *backup.Se
 	}
 	settings := config.DefaultBackupSettings()
 	settings.BackupDir = filepath.Join(workspace, "backups")
+	settings.IncludeRuntimeEnv = false
 	if err := database.SaveBackupSettings(settings); err != nil {
 		t.Fatal(err)
 	}

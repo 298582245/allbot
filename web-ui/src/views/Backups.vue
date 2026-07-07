@@ -50,6 +50,7 @@
               <el-checkbox v-model="form.include_data">数据与 OpenAPI</el-checkbox>
               <el-checkbox v-model="form.include_images">图片文件</el-checkbox>
               <el-checkbox v-model="form.include_logs">日志文件</el-checkbox>
+              <el-checkbox v-model="form.include_runtime_env">运行环境与依赖</el-checkbox>
             </el-form-item>
           </el-form>
         </section>
@@ -129,6 +130,8 @@
         <el-checkbox v-model="restoreForm.include_openapis">恢复 OpenAPI 文件</el-checkbox>
         <el-checkbox v-model="restoreForm.include_images">恢复图片文件</el-checkbox>
         <el-checkbox v-model="restoreForm.include_logs">恢复日志文件</el-checkbox>
+        <el-checkbox v-model="restoreForm.include_runtime_env">恢复运行环境与依赖</el-checkbox>
+        <el-alert v-if="restoreForm.include_runtime_env" type="info" :closable="false" title="将恢复运行环境 Profile 和依赖清单；托管环境会自动下载解释器并安装依赖，手动环境路径不可用时会在结果中提示。" />
         <el-divider />
         <el-checkbox v-model="restoreForm.confirm">我已确认恢复会覆盖当前数据</el-checkbox>
       </div>
@@ -163,8 +166,8 @@ const selectedBackup = ref(null)
 const status = reactive({ running: false, next_run_at: '', last_error: '' })
 const form = reactive(createDefaultSettings())
 const restoreForm = reactive(createDefaultRestoreForm())
-const canSubmitRestore = computed(() => restoreForm.confirm && (restoreForm.include_data || restoreForm.include_plugins || restoreForm.include_openapis || restoreForm.include_images || restoreForm.include_logs))
-const pageDescription = '备份插件目录、OpenAPI 文件、图片文件、日志文件和配置数据，支持定时执行与自动清理旧备份。'
+const canSubmitRestore = computed(() => restoreForm.confirm && (restoreForm.include_data || restoreForm.include_plugins || restoreForm.include_openapis || restoreForm.include_images || restoreForm.include_logs || restoreForm.include_runtime_env))
+const pageDescription = '备份插件目录、OpenAPI 文件、图片文件、日志文件、运行环境依赖和配置数据，支持定时执行与自动清理旧备份。'
 
 onMounted(() => {
   loadOverview()
@@ -190,8 +193,8 @@ const loadOverview = async () => {
 }
 
 const handleSaveSettings = async () => {
-  if (!form.include_plugins && !form.include_data && !form.include_images && !form.include_logs) {
-    ElMessage.error('至少需要选择插件目录、数据、图片文件或日志文件')
+  if (!form.include_plugins && !form.include_data && !form.include_images && !form.include_logs && !form.include_runtime_env) {
+    ElMessage.error('至少需要选择插件目录、数据、图片文件、日志文件或运行环境与依赖')
     return
   }
   saving.value = true
@@ -251,9 +254,10 @@ const handleRestoreBackup = async () => {
   if (!selectedBackup.value || !canSubmitRestore.value) return
   restoring.value = true
   try {
-    await restoreBackup(selectedBackup.value.name, { ...restoreForm })
+    const result = await restoreBackup(selectedBackup.value.name, { ...restoreForm })
     restoreDialogVisible.value = false
-    ElMessageBox.alert('恢复完成，请重启 AllBot 服务使配置、插件、OpenAPI、图片文件和日志文件完全生效。', '恢复完成', {
+    const warningText = result?.warnings?.length ? `\n\n提示：${result.warnings.join('；')}` : ''
+    ElMessageBox.alert(`恢复完成，请重启 AllBot 服务使配置、插件、OpenAPI、图片文件、日志文件和运行环境完全生效。${warningText}`, '恢复完成', {
       confirmButtonText: '知道了',
       type: 'success'
     })
@@ -300,6 +304,7 @@ function createDefaultRestoreForm() {
     include_openapis: true,
     include_images: false,
     include_logs: false,
+    include_runtime_env: false,
     confirm: false
   }
 }
@@ -314,6 +319,7 @@ function createDefaultSettings() {
     include_data: true,
     include_images: true,
     include_logs: true,
+    include_runtime_env: true,
     oss: { enabled: false, provider: '', bucket: '', endpoint: '', prefix: 'allbot/' }
   }
 }
@@ -349,6 +355,7 @@ function formatSummaryIncludes(summary = {}) {
   if (summary.has_openapis) includes.push('OpenAPI 文件')
   if (summary.has_images) includes.push('图片文件')
   if (summary.has_logs) includes.push('日志文件')
+  if (summary.has_runtime_env) includes.push('运行环境与依赖')
   return includes.length ? includes.join('、') : '无可恢复内容'
 }
 </script>

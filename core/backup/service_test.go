@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/allbot/allbot/core/config"
+	"github.com/allbot/allbot/core/deps"
 	_ "modernc.org/sqlite"
 )
 
@@ -58,6 +59,11 @@ func TestCreateBackupIncludesDataPluginsAndOpenAPIs(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustWriteFile(t, filepath.Join(workspace, "logs", "2026-06-08.log"), "log")
+	runtimeManager := &fakeRuntimeEnvironmentManager{snapshot: deps.RuntimeEnvironmentBackup{
+		Profiles:           []deps.RuntimeProfile{{ID: "node-default", Name: "默认 Node.js", Runtime: "nodejs", Executable: "node", Enabled: true, Default: true, Source: "manual"}},
+		NodeDependencies:   map[string]map[string]string{"node-default": {"axios": "1.6.0"}},
+		PythonDependencies: map[string]map[string]string{},
+	}}
 
 	settings := config.DefaultBackupSettings()
 	settings.BackupDir = filepath.Join(workspace, "backups")
@@ -66,6 +72,7 @@ func TestCreateBackupIncludesDataPluginsAndOpenAPIs(t *testing.T) {
 	}
 
 	service := NewService(database, pluginDir)
+	service.SetRuntimeDepsManager(runtimeManager)
 	service.now = func() time.Time { return time.Date(2026, 6, 8, 3, 4, 5, 0, time.Local) }
 	file, err := service.Create(context.Background(), "manual")
 	if err != nil {
@@ -73,7 +80,7 @@ func TestCreateBackupIncludesDataPluginsAndOpenAPIs(t *testing.T) {
 	}
 
 	entries := zipEntries(t, file.Path)
-	for _, name := range []string{"manifest.json", "data/config.db", "plugins/demo/plugin.json", "openapis/hello/config.json", "images/2026/demo.png", "logs/2026-06-08.log"} {
+	for _, name := range []string{"manifest.json", "data/config.db", "plugins/demo/plugin.json", "openapis/hello/config.json", "images/2026/demo.png", "logs/2026-06-08.log", "runtime_env/manifest.json", "runtime_env/runtime_profiles.json", "runtime_env/profiles/node-default/package.json"} {
 		if !entries[name] {
 			t.Fatalf("备份包缺少文件: %s", name)
 		}
@@ -91,13 +98,14 @@ func TestImportBackupValidatesAndListsFile(t *testing.T) {
 		"openapis/demo/config.json": []byte(`{"id":"demo"}`),
 		"images/demo.png":           []byte("image"),
 		"logs/2026-06-30.log":       []byte("log"),
+		"runtime_env/manifest.json": []byte(`{"profiles":[{"id":"node-default","name":"默认 Node.js","runtime":"nodejs","executable":"node","enabled":true,"default":true,"source":"manual"}],"python_dependencies":{},"node_dependencies":{"node-default":{"axios":"1.6.0"}}}`),
 	})
 	service.now = func() time.Time { return time.Date(2026, 6, 30, 1, 2, 3, 0, time.Local) }
 	result, err := service.Import(context.Background(), ImportOptions{Reader: bytes.NewReader(data), OriginalName: "external.zip"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.File.Name != "allbot-backup-import-20260630-010203.zip" || !result.Summary.HasData || !result.Summary.HasPlugins || !result.Summary.HasOpenAPIs || !result.Summary.HasImages || !result.Summary.HasLogs {
+	if result.File.Name != "allbot-backup-import-20260630-010203.zip" || !result.Summary.HasData || !result.Summary.HasPlugins || !result.Summary.HasOpenAPIs || !result.Summary.HasImages || !result.Summary.HasLogs || !result.Summary.HasRuntimeEnv {
 		t.Fatalf("导入结果不正确: %+v", result)
 	}
 	files, err := service.List()
@@ -142,10 +150,22 @@ func TestRestoreBackupReplacesDirectoriesAndCreatesSnapshot(t *testing.T) {
 	openAPIDir := filepath.Join(workspace, "openapis")
 	imageDir := filepath.Join(workspace, "runtime", "image_assets")
 	logDir := filepath.Join(workspace, "logs")
+	runtimeManager := &fakeRuntimeEnvironmentManager{snapshot: deps.RuntimeEnvironmentBackup{
+		Profiles:           []deps.RuntimeProfile{{ID: "node-default", Name: "默认 Node.js", Runtime: "nodejs", Executable: "node", Enabled: true, Default: true, Source: "manual"}},
+		NodeDependencies:   map[string]map[string]string{"node-default": {"axios": "1.6.0"}},
+		PythonDependencies: map[string]map[string]string{},
+	}}
+	service.SetRuntimeDepsManager(runtimeManager)
 	service.logDir = logDir
 	imageSettings := config.DefaultImageHostSettings()
 	imageSettings.StorageDir = imageDir
 	if err := database.SaveImageHostSettings(imageSettings); err != nil {
+		t.Fatal(err)
+	}
+	settings := config.DefaultBackupSettings()
+	settings.BackupDir = filepath.Join(workspace, "backups")
+	settings.IncludeRuntimeEnv = true
+	if err := database.SaveBackupSettings(settings); err != nil {
 		t.Fatal(err)
 	}
 	mustWriteFile(t, filepath.Join(pluginDir, "old", "stale.txt"), "old")
@@ -162,12 +182,15 @@ func TestRestoreBackupReplacesDirectoriesAndCreatesSnapshot(t *testing.T) {
 	mustWriteFile(t, filepath.Join(imageDir, "current.png"), "current")
 	mustWriteFile(t, filepath.Join(logDir, "current.log"), "current")
 	service.now = func() time.Time { return time.Date(2026, 6, 30, 3, 0, 0, 0, time.Local) }
-	result, err := service.Restore(context.Background(), backupFile.Name, RestoreOptions{IncludePlugins: true, IncludeOpenAPIs: true, IncludeImages: true, IncludeLogs: true, Confirm: true})
+	result, err := service.Restore(context.Background(), backupFile.Name, RestoreOptions{IncludePlugins: true, IncludeOpenAPIs: true, IncludeImages: true, IncludeLogs: true, IncludeRuntimeEnv: true, Confirm: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.RestartRequired || result.Snapshot.Name == "" {
 		t.Fatalf("恢复结果不正确: %+v", result)
+	}
+	if runtimeManager.imported.NodeDependencies["node-default"]["axios"] != "1.6.0" {
+		t.Fatalf("运行环境未恢复: %+v", runtimeManager.imported)
 	}
 	if _, err := os.Stat(filepath.Join(pluginDir, "current", "stale.txt")); !os.IsNotExist(err) {
 		t.Fatalf("插件目录应采用替换语义，实际错误: %v", err)
@@ -204,6 +227,7 @@ func TestRestoreBackupRejectsBadOptionsAndBadDatabase(t *testing.T) {
 	settings.BackupDir = filepath.Join(workspace, "backups")
 	settings.IncludeData = false
 	settings.IncludePlugins = true
+	settings.IncludeRuntimeEnv = false
 	if err := database.SaveBackupSettings(settings); err != nil {
 		t.Fatal(err)
 	}
@@ -283,6 +307,7 @@ func newBackupTestService(t *testing.T, workspace string) (*config.Database, *Se
 	settings.BackupDir = filepath.Join(workspace, "backups")
 	settings.IncludeData = true
 	settings.IncludePlugins = true
+	settings.IncludeRuntimeEnv = false
 	if err := database.SaveBackupSettings(settings); err != nil {
 		t.Fatal(err)
 	}
@@ -366,4 +391,18 @@ func zipEntries(t *testing.T, path string) map[string]bool {
 		entries[file.Name] = true
 	}
 	return entries
+}
+
+type fakeRuntimeEnvironmentManager struct {
+	snapshot deps.RuntimeEnvironmentBackup
+	imported deps.RuntimeEnvironmentBackup
+}
+
+func (m *fakeRuntimeEnvironmentManager) ExportRuntimeEnvironment() (deps.RuntimeEnvironmentBackup, error) {
+	return m.snapshot, nil
+}
+
+func (m *fakeRuntimeEnvironmentManager) ImportRuntimeEnvironment(snapshot deps.RuntimeEnvironmentBackup) ([]string, error) {
+	m.imported = snapshot
+	return []string{"fake runtime warning"}, nil
 }

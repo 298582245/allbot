@@ -294,6 +294,83 @@ func TestGetDepsForProfileReadsIsolatedManifests(t *testing.T) {
 	}
 }
 
+func TestExportRuntimeEnvironmentIncludesProfilesAndDependencies(t *testing.T) {
+	runtimeDir := t.TempDir()
+	manager := NewManager(runtimeDir)
+	profiles, err := manager.SaveRuntimeProfiles([]RuntimeProfile{
+		{ID: "node-default", Name: "默认 Node.js", Runtime: "nodejs", Executable: "node", Enabled: true, Default: true},
+		{ID: "node18", Name: "Node.js 18", Runtime: "nodejs", Executable: "node", Enabled: true},
+		{ID: "python-default", Name: "默认 Python", Runtime: "python", Executable: "python", Enabled: true, Default: true},
+		{ID: "python310", Name: "Python 3.10", Runtime: "python", Executable: "python", Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range profiles {
+		paths := manager.profileDependencyPaths(profile)
+		switch profile.ID {
+		case "node18":
+			if err := manager.saveNodeDepsFile(paths.nodeDepsFile, &NodeDeps{Dependencies: map[string]string{"axios": "1.7.0"}}); err != nil {
+				t.Fatal(err)
+			}
+		case "python310":
+			if err := manager.savePythonDepsFile(paths.pythonDepsFile, &PythonDeps{Packages: map[string]string{"requests": "2.32.0"}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	snapshot, err := manager.ExportRuntimeEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Profiles) != 4 {
+		t.Fatalf("运行环境 Profile 数量不正确: %#v", snapshot.Profiles)
+	}
+	if snapshot.NodeDependencies["node18"]["axios"] != "1.7.0" {
+		t.Fatalf("Node.js 依赖未导出: %#v", snapshot.NodeDependencies)
+	}
+	if snapshot.PythonDependencies["python310"]["requests"] != "2.32.0" {
+		t.Fatalf("Python 依赖未导出: %#v", snapshot.PythonDependencies)
+	}
+}
+
+func TestImportRuntimeEnvironmentWritesManifestsAndWarnsMissingManualRuntime(t *testing.T) {
+	runtimeDir := t.TempDir()
+	manager := NewManager(runtimeDir)
+	missingNode := filepath.Join(runtimeDir, "missing", "node.exe")
+	snapshot := RuntimeEnvironmentBackup{
+		Profiles: []RuntimeProfile{
+			{ID: "node-missing", Name: "Missing Node", Runtime: "nodejs", Executable: missingNode, Enabled: true, Default: true, Source: "manual"},
+			{ID: "python-disabled", Name: "Disabled Python", Runtime: "python", Executable: filepath.Join(runtimeDir, "missing", "python.exe"), Enabled: false, Source: "manual"},
+		},
+		NodeDependencies:   map[string]map[string]string{"node-missing": {"axios": "1.6.0"}},
+		PythonDependencies: map[string]map[string]string{"python-disabled": {"requests": "2.32.0"}},
+	}
+
+	warnings, err := manager.ImportRuntimeEnvironment(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) == 0 || !strings.Contains(warnings[0], "node-missing") {
+		t.Fatalf("缺失手动解释器应返回告警: %#v", warnings)
+	}
+	nodeDeps, err := manager.loadNodeDepsFile(filepath.Join(runtimeDir, "envs", "node-missing", "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeDeps.Dependencies["axios"] != "1.6.0" {
+		t.Fatalf("Node.js 依赖清单未恢复: %#v", nodeDeps.Dependencies)
+	}
+	pythonDeps, err := manager.loadPythonDepsFile(filepath.Join(runtimeDir, "envs", "python-disabled", "python_deps.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pythonDeps.Packages["requests"] != "2.32.0" {
+		t.Fatalf("Python 依赖清单未恢复: %#v", pythonDeps.Packages)
+	}
+}
+
 func TestManualNodeProfileInitializationCreatesManifest(t *testing.T) {
 	nodePath, err := exec.LookPath("node")
 	if err != nil {

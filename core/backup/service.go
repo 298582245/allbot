@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/allbot/allbot/core/config"
+	"github.com/allbot/allbot/core/deps"
 	"github.com/allbot/allbot/core/router"
 )
 
@@ -30,13 +31,19 @@ type OSSUploader interface {
 	Upload(ctx context.Context, file BackupFile, settings config.OSSBackupSettings) error
 }
 
+type RuntimeEnvironmentManager interface {
+	ExportRuntimeEnvironment() (deps.RuntimeEnvironmentBackup, error)
+	ImportRuntimeEnvironment(snapshot deps.RuntimeEnvironmentBackup) ([]string, error)
+}
+
 type Service struct {
-	database   *config.Database
-	pluginDir  string
-	openAPIDir string
-	logDir     string
-	uploader   OSSUploader
-	now        func() time.Time
+	database           *config.Database
+	pluginDir          string
+	openAPIDir         string
+	logDir             string
+	runtimeDepsManager RuntimeEnvironmentManager
+	uploader           OSSUploader
+	now                func() time.Time
 
 	createMu sync.Mutex
 	runnerMu sync.Mutex
@@ -80,6 +87,7 @@ type BackupSummary struct {
 	HasOpenAPIs    bool   `json:"has_openapis"`
 	HasImages      bool   `json:"has_images"`
 	HasLogs        bool   `json:"has_logs"`
+	HasRuntimeEnv  bool   `json:"has_runtime_env"`
 	FileCount      int    `json:"file_count"`
 	TotalSize      uint64 `json:"total_size"`
 	CompressedSize uint64 `json:"compressed_size"`
@@ -95,12 +103,13 @@ type ImportResult struct {
 }
 
 type RestoreOptions struct {
-	IncludeData     bool `json:"include_data"`
-	IncludePlugins  bool `json:"include_plugins"`
-	IncludeOpenAPIs bool `json:"include_openapis"`
-	IncludeImages   bool `json:"include_images"`
-	IncludeLogs     bool `json:"include_logs"`
-	Confirm         bool `json:"confirm"`
+	IncludeData       bool `json:"include_data"`
+	IncludePlugins    bool `json:"include_plugins"`
+	IncludeOpenAPIs   bool `json:"include_openapis"`
+	IncludeImages     bool `json:"include_images"`
+	IncludeLogs       bool `json:"include_logs"`
+	IncludeRuntimeEnv bool `json:"include_runtime_env"`
+	Confirm           bool `json:"confirm"`
 }
 
 type RestoreResult struct {
@@ -121,6 +130,15 @@ func (s *Service) SetOSSUploader(uploader OSSUploader) {
 	s.runnerMu.Lock()
 	defer s.runnerMu.Unlock()
 	s.uploader = uploader
+}
+
+func (s *Service) SetRuntimeDepsManager(manager RuntimeEnvironmentManager) {
+	if s == nil {
+		return
+	}
+	s.runnerMu.Lock()
+	defer s.runnerMu.Unlock()
+	s.runtimeDepsManager = manager
 }
 
 func (s *Service) Start() {
@@ -196,8 +214,8 @@ func (s *Service) createWithSettings(ctx context.Context, trigger string, settin
 	defer s.createMu.Unlock()
 
 	settings = config.NormalizeBackupSettings(settings)
-	if !settings.IncludePlugins && !settings.IncludeData && !settings.IncludeImages && !settings.IncludeLogs {
-		return BackupFile{}, fmt.Errorf("至少需要选择插件、数据、图片或日志中的一项")
+	if !settings.IncludePlugins && !settings.IncludeData && !settings.IncludeImages && !settings.IncludeLogs && !settings.IncludeRuntimeEnv {
+		return BackupFile{}, fmt.Errorf("至少需要选择插件、数据、图片、日志或运行环境中的一项")
 	}
 	backupDir, err := normalizePath(settings.BackupDir)
 	if err != nil {
@@ -239,6 +257,9 @@ func (s *Service) createWithSettings(ctx context.Context, trigger string, settin
 	}
 	if settings.IncludeLogs {
 		includes = append(includes, "logs")
+	}
+	if settings.IncludeRuntimeEnv {
+		includes = append(includes, "runtime_env")
 	}
 
 	manifest := Manifest{Version: 1, CreatedAt: createdAt, Trigger: strings.TrimSpace(trigger), Includes: includes, OSS: "reserved"}
@@ -363,7 +384,7 @@ func (s *Service) Restore(ctx context.Context, name string, options RestoreOptio
 	if !options.Confirm {
 		return RestoreResult{}, fmt.Errorf("请先确认恢复会覆盖当前数据")
 	}
-	if !options.IncludeData && !options.IncludePlugins && !options.IncludeOpenAPIs && !options.IncludeImages && !options.IncludeLogs {
+	if !options.IncludeData && !options.IncludePlugins && !options.IncludeOpenAPIs && !options.IncludeImages && !options.IncludeLogs && !options.IncludeRuntimeEnv {
 		return RestoreResult{}, fmt.Errorf("至少需要选择一项恢复内容")
 	}
 	file, err := s.Resolve(name)
@@ -388,6 +409,9 @@ func (s *Service) Restore(ctx context.Context, name string, options RestoreOptio
 	}
 	if options.IncludeLogs && !summary.HasLogs {
 		return RestoreResult{}, fmt.Errorf("备份包不包含日志文件")
+	}
+	if options.IncludeRuntimeEnv && !summary.HasRuntimeEnv {
+		return RestoreResult{}, fmt.Errorf("备份包不包含运行环境与依赖")
 	}
 
 	snapshot, err := s.CreateFullSnapshot(ctx, "pre-restore")
@@ -450,7 +474,95 @@ func (s *Service) Restore(ctx context.Context, name string, options RestoreOptio
 		}
 		restored = append(restored, "logs")
 	}
+	if options.IncludeRuntimeEnv {
+		runtimeWarnings, err := s.restoreRuntimeEnvironment(filepath.Join(stagingDir, "runtime_env"))
+		if err != nil {
+			return RestoreResult{}, fmt.Errorf("恢复运行环境与依赖失败: %w", err)
+		}
+		warnings = append(warnings, runtimeWarnings...)
+		restored = append(restored, "runtime_env")
+	}
 	return RestoreResult{Restored: restored, Snapshot: snapshot, RestartRequired: true, Warnings: warnings}, nil
+}
+
+func (s *Service) restoreRuntimeEnvironment(sourceDir string) ([]string, error) {
+	if s.runtimeDepsManager == nil {
+		return nil, fmt.Errorf("运行环境依赖管理器未初始化")
+	}
+	snapshot, err := readRuntimeEnvironmentSnapshot(sourceDir)
+	if err != nil {
+		return nil, err
+	}
+	return s.runtimeDepsManager.ImportRuntimeEnvironment(snapshot)
+}
+
+func readRuntimeEnvironmentSnapshot(sourceDir string) (deps.RuntimeEnvironmentBackup, error) {
+	data, err := os.ReadFile(filepath.Join(sourceDir, "manifest.json"))
+	if err == nil {
+		var snapshot deps.RuntimeEnvironmentBackup
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			return deps.RuntimeEnvironmentBackup{}, err
+		}
+		return normalizeRuntimeEnvironmentSnapshot(snapshot), nil
+	}
+	if !os.IsNotExist(err) {
+		return deps.RuntimeEnvironmentBackup{}, err
+	}
+	profilesData, err := os.ReadFile(filepath.Join(sourceDir, "runtime_profiles.json"))
+	if err != nil {
+		return deps.RuntimeEnvironmentBackup{}, err
+	}
+	var config deps.RuntimeProfileConfig
+	if err := json.Unmarshal(profilesData, &config); err != nil {
+		return deps.RuntimeEnvironmentBackup{}, err
+	}
+	snapshot := deps.RuntimeEnvironmentBackup{Profiles: config.Profiles, PythonDependencies: map[string]map[string]string{}, NodeDependencies: map[string]map[string]string{}}
+	for _, profile := range config.Profiles {
+		profileDir := filepath.Join(sourceDir, "profiles", profile.ID)
+		if profile.Runtime == "python" {
+			if data, err := os.ReadFile(filepath.Join(profileDir, "python_deps.json")); err == nil {
+				var item deps.PythonDeps
+				if err := json.Unmarshal(data, &item); err != nil {
+					return deps.RuntimeEnvironmentBackup{}, err
+				}
+				snapshot.PythonDependencies[profile.ID] = item.Packages
+			} else if !os.IsNotExist(err) {
+				return deps.RuntimeEnvironmentBackup{}, err
+			}
+		}
+		if profile.Runtime == "nodejs" {
+			if data, err := os.ReadFile(filepath.Join(profileDir, "package.json")); err == nil {
+				var item deps.NodeDeps
+				if err := json.Unmarshal(data, &item); err != nil {
+					return deps.RuntimeEnvironmentBackup{}, err
+				}
+				snapshot.NodeDependencies[profile.ID] = item.Dependencies
+			} else if !os.IsNotExist(err) {
+				return deps.RuntimeEnvironmentBackup{}, err
+			}
+		}
+	}
+	return normalizeRuntimeEnvironmentSnapshot(snapshot), nil
+}
+
+func normalizeRuntimeEnvironmentSnapshot(snapshot deps.RuntimeEnvironmentBackup) deps.RuntimeEnvironmentBackup {
+	if snapshot.PythonDependencies == nil {
+		snapshot.PythonDependencies = map[string]map[string]string{}
+	}
+	if snapshot.NodeDependencies == nil {
+		snapshot.NodeDependencies = map[string]map[string]string{}
+	}
+	for key, value := range snapshot.PythonDependencies {
+		if value == nil {
+			snapshot.PythonDependencies[key] = map[string]string{}
+		}
+	}
+	for key, value := range snapshot.NodeDependencies {
+		if value == nil {
+			snapshot.NodeDependencies[key] = map[string]string{}
+		}
+	}
+	return snapshot
 }
 
 func (s *Service) CreateFullSnapshot(ctx context.Context, trigger string) (BackupFile, error) {
@@ -463,6 +575,7 @@ func (s *Service) CreateFullSnapshot(ctx context.Context, trigger string) (Backu
 	settings.IncludePlugins = true
 	settings.IncludeImages = true
 	settings.IncludeLogs = true
+	settings.IncludeRuntimeEnv = s.runtimeDepsManager != nil
 	return s.createWithSettings(ctx, trigger, settings, false)
 }
 
@@ -645,6 +758,54 @@ func (s *Service) writeZip(zipPath, stagingDir, backupDir string, settings confi
 			return err
 		}
 	}
+	if settings.IncludeRuntimeEnv {
+		if err := s.addRuntimeEnvironment(writer); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) addRuntimeEnvironment(writer *zip.Writer) error {
+	if s.runtimeDepsManager == nil {
+		return fmt.Errorf("运行环境依赖管理器未初始化")
+	}
+	snapshot, err := s.runtimeDepsManager.ExportRuntimeEnvironment()
+	if err != nil {
+		return fmt.Errorf("导出运行环境失败: %w", err)
+	}
+	manifestData, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := addBytes(writer, "runtime_env/manifest.json", manifestData); err != nil {
+		return err
+	}
+	profilesData, err := json.MarshalIndent(deps.RuntimeProfileConfig{Profiles: snapshot.Profiles}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := addBytes(writer, "runtime_env/runtime_profiles.json", profilesData); err != nil {
+		return err
+	}
+	for profileID, packages := range snapshot.PythonDependencies {
+		data, err := json.MarshalIndent(deps.PythonDeps{Packages: packages}, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := addBytes(writer, pathpkg.Join("runtime_env/profiles", profileID, "python_deps.json"), data); err != nil {
+			return err
+		}
+	}
+	for profileID, packages := range snapshot.NodeDependencies {
+		data, err := json.MarshalIndent(deps.NodeDeps{Dependencies: packages}, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := addBytes(writer, pathpkg.Join("runtime_env/profiles", profileID, "package.json"), data); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -699,6 +860,8 @@ func inspectZipFiles(files []*zip.File) (Manifest, BackupSummary, []string, erro
 			summary.HasImages = true
 		case strings.HasPrefix(cleanName, "logs/"):
 			summary.HasLogs = true
+		case strings.HasPrefix(cleanName, "runtime_env/"):
+			summary.HasRuntimeEnv = true
 		}
 	}
 	if !manifestFound {
@@ -738,10 +901,10 @@ func validateZipEntry(file *zip.File) (string, bool, error) {
 	if cleanName == "data/config.db" {
 		return cleanName, false, nil
 	}
-	if file.FileInfo().IsDir() && (cleanName == "data" || cleanName == "plugins" || cleanName == "openapis" || cleanName == "images" || cleanName == "logs") {
+	if file.FileInfo().IsDir() && (cleanName == "data" || cleanName == "plugins" || cleanName == "openapis" || cleanName == "images" || cleanName == "logs" || cleanName == "runtime_env") {
 		return cleanName, true, nil
 	}
-	if strings.HasPrefix(cleanName, "plugins/") || strings.HasPrefix(cleanName, "openapis/") || strings.HasPrefix(cleanName, "images/") || strings.HasPrefix(cleanName, "logs/") {
+	if strings.HasPrefix(cleanName, "plugins/") || strings.HasPrefix(cleanName, "openapis/") || strings.HasPrefix(cleanName, "images/") || strings.HasPrefix(cleanName, "logs/") || strings.HasPrefix(cleanName, "runtime_env/") {
 		return cleanName, file.FileInfo().IsDir(), nil
 	}
 	return "", false, fmt.Errorf("备份包包含未知路径: %s", cleanName)
