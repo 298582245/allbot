@@ -23,11 +23,11 @@
         <el-input v-model="filters.union_id" placeholder="用户 union_id" clearable />
         <el-input v-model="filters.plugin_id" placeholder="插件 ID" clearable />
         <el-select v-model="filters.status" placeholder="状态" clearable>
-          <el-option label="pending" value="pending" />
-          <el-option label="paid" value="paid" />
-          <el-option label="failed" value="failed" />
-          <el-option label="expired" value="expired" />
-          <el-option label="cancelled" value="cancelled" />
+          <el-option label="待支付" value="pending" />
+          <el-option label="已支付" value="paid" />
+          <el-option label="支付失败" value="failed" />
+          <el-option label="已过期" value="expired" />
+          <el-option label="已取消" value="cancelled" />
         </el-select>
         <el-input v-model="filters.provider" placeholder="provider" clearable />
         <el-input v-model="filters.method" placeholder="method" clearable />
@@ -46,11 +46,11 @@
           <el-input v-model="filters.union_id" placeholder="用户 union_id" clearable />
           <el-input v-model="filters.plugin_id" placeholder="插件 ID" clearable />
           <el-select v-model="filters.status" placeholder="状态" clearable>
-            <el-option label="pending" value="pending" />
-            <el-option label="paid" value="paid" />
-            <el-option label="failed" value="failed" />
-            <el-option label="expired" value="expired" />
-            <el-option label="cancelled" value="cancelled" />
+            <el-option label="待支付" value="pending" />
+            <el-option label="已支付" value="paid" />
+            <el-option label="支付失败" value="failed" />
+            <el-option label="已过期" value="expired" />
+            <el-option label="已取消" value="cancelled" />
           </el-select>
           <el-input v-model="filters.provider" placeholder="provider" clearable />
           <el-input v-model="filters.method" placeholder="method" clearable />
@@ -89,10 +89,10 @@
           </el-table-column>
           <el-table-column prop="points_amount" label="积分" width="90" />
           <el-table-column prop="provider" label="渠道" width="90" />
-          <el-table-column prop="method" label="方式" width="100" />
-          <el-table-column label="状态" width="100">
+          <el-table-column prop="method" label="方式" width="140" />
+          <el-table-column label="状态" width="110">
             <template #default="{ row }">
-              <el-tag :type="statusTagType(row.status)" effect="plain">{{ row.status }}</el-tag>
+              <el-tag class="status-tag" :type="statusTagType(row.status)" effect="plain">{{ statusText(row.status) }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="创建时间" min-width="160">
@@ -127,7 +127,7 @@
               <strong>{{ row.subject || '未命名订单' }}</strong>
               <span>{{ row.order_no }}</span>
             </div>
-            <el-tag :type="statusTagType(row.status)" effect="plain">{{ row.status }}</el-tag>
+            <el-tag class="status-tag" :type="statusTagType(row.status)" effect="plain">{{ statusText(row.status) }}</el-tag>
           </div>
           <div class="mobile-order-fields">
             <div><span>金额</span><strong>{{ formatAmount(row.amount_cents) }} RMB</strong></div>
@@ -173,7 +173,7 @@
           <div class="section-title">订单信息</div>
           <div class="detail-grid">
             <div><span>订单号</span><strong>{{ detail.order.order_no }}</strong></div>
-            <div><span>状态</span><strong>{{ detail.order.status }}</strong></div>
+            <div><span>状态</span><strong>{{ statusText(detail.order.status) }}</strong></div>
             <div><span>用户</span><strong>{{ detail.order.union_id }}</strong></div>
             <div><span>插件</span><strong>{{ detail.order.plugin_id || '-' }}</strong></div>
             <div><span>金额</span><strong>{{ formatAmount(detail.order.amount_cents) }} RMB</strong></div>
@@ -428,6 +428,17 @@ function decodeUnicodeEscapes(text) {
   return String(text).replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
 }
 
+function statusText(status) {
+  const map = {
+    pending: '待支付',
+    paid: '已支付',
+    failed: '支付失败',
+    expired: '已过期',
+    cancelled: '已取消'
+  }
+  return map[status] || status || '-'
+}
+
 function statusTagType(status) {
   if (status === 'paid') return 'success'
   if (status === 'pending') return 'warning'
@@ -452,6 +463,7 @@ onMounted(loadOrders)
 .orders-action-bar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-bottom: 12px; flex-shrink: 0; }
 .selected-count { color: #909399; font-size: 13px; white-space: nowrap; }
 .orders-table-wrap { flex: 1; min-height: 0; }
+.status-tag { max-width: none; }
 .mobile-orders-grid { display: none; }
 .detail-body { display: grid; gap: 16px; }
 .detail-section { padding: 14px; border: 1px solid #ebeef5; border-radius: 10px; background: #fff; }
