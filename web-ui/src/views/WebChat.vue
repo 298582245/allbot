@@ -188,8 +188,8 @@
         </div>
 
         <footer class="composer">
-          <div v-if="activePlugin" class="quick-actions composer-quick-actions">
-            <el-button v-for="action in activePlugin.quick_actions || []" :key="action.label + action.text" size="small" @click="sendQuick(action.text)">{{ action.label }}</el-button>
+          <div v-if="activeQuickActions.length" class="quick-actions composer-quick-actions">
+            <el-button v-for="action in activeQuickActions" :key="action.label + action.text" size="small" @click="sendQuick(action.text)">{{ action.label }}</el-button>
           </div>
           <div class="composer-row">
             <el-input v-model="content" type="textarea" :rows="3" :placeholder="composerPlaceholder" @keydown.ctrl.enter.prevent="sendMessage" />
@@ -259,6 +259,13 @@ import {
 } from '@/api'
 
 const privateSessionId = '__private__'
+const privateQuickActions = [
+  { label: 'myid', text: 'myid' },
+  { label: '积分充值', text: '积分充值' },
+  { label: '我的平台', text: '我的平台' },
+  { label: '绑定码', text: '绑定码' },
+  { label: 'version', text: 'version' }
+]
 
 const authMode = ref('login')
 const loginMode = ref('password')
@@ -297,8 +304,9 @@ const registerForm = reactive({ email: '', code: '', username: '', display_name:
 const resetForm = reactive({ email: '', code: '', password: '', confirmPassword: '' })
 
 const activePlugin = computed(() => activeSessionId.value === privateSessionId ? null : plugins.value.find((item) => item.id === activeSessionId.value))
+const activeQuickActions = computed(() => activeSessionId.value === privateSessionId ? privateQuickActions : (activePlugin.value?.quick_actions || []))
 const activeSessionTitle = computed(() => activePlugin.value?.title || activePlugin.value?.name || (activeSessionId.value === privateSessionId ? '固定私聊' : '请选择会话'))
-const activeSessionDescription = computed(() => activePlugin.value?.description || (activeSessionId.value === privateSessionId ? '接收机器人主动消息，也可以发送 myid、绑定码等内置函数' : `${session.value?.user?.email || ''} · ${session.value?.user?.union_id || ''}`))
+const activeSessionDescription = computed(() => activePlugin.value?.description || (activeSessionId.value === privateSessionId ? '接收机器人主动消息，可使用 myid、积分充值、我的平台、绑定码、version 等内置函数' : `${session.value?.user?.email || ''} · ${session.value?.user?.union_id || ''}`))
 const composerPlaceholder = computed(() => activePlugin.value?.placeholder || '输入内置函数或普通文本，按 Ctrl+Enter 发送')
 const codeDialogTitle = computed(() => expandedCodeLang.value ? `代码块 · ${expandedCodeLang.value}` : '代码块')
 const filteredPlugins = computed(() => {
