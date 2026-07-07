@@ -77,6 +77,7 @@ type BackupSettings struct {
 	IncludePlugins bool              `json:"include_plugins"`
 	IncludeData    bool              `json:"include_data"`
 	IncludeImages  bool              `json:"include_images"`
+	IncludeLogs    bool              `json:"include_logs"`
 	OSS            OSSBackupSettings `json:"oss"`
 }
 
@@ -252,7 +253,7 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 }
 
 func DefaultBackupSettings() BackupSettings {
-	return BackupSettings{Enabled: false, Cron: "0 3 * * *", Retention: 7, BackupDir: "./backups", IncludePlugins: true, IncludeData: true, IncludeImages: true, OSS: OSSBackupSettings{Provider: "", Prefix: "allbot/"}}
+	return BackupSettings{Enabled: false, Cron: "0 3 * * *", Retention: 7, BackupDir: "./backups", IncludePlugins: true, IncludeData: true, IncludeImages: true, IncludeLogs: true, OSS: OSSBackupSettings{Provider: "", Prefix: "allbot/"}}
 }
 
 func (d *Database) GetBackupSettings() (BackupSettings, error) {
@@ -275,6 +276,9 @@ func (d *Database) GetBackupSettings() (BackupSettings, error) {
 	if err := json.Unmarshal(data, &raw); err == nil {
 		if _, ok := raw["include_images"]; !ok {
 			settings.IncludeImages = true
+		}
+		if _, ok := raw["include_logs"]; !ok {
+			settings.IncludeLogs = true
 		}
 	}
 	return NormalizeBackupSettings(settings), nil

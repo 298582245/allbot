@@ -34,6 +34,7 @@ type Service struct {
 	database   *config.Database
 	pluginDir  string
 	openAPIDir string
+	logDir     string
 	uploader   OSSUploader
 	now        func() time.Time
 
@@ -78,6 +79,7 @@ type BackupSummary struct {
 	HasPlugins     bool   `json:"has_plugins"`
 	HasOpenAPIs    bool   `json:"has_openapis"`
 	HasImages      bool   `json:"has_images"`
+	HasLogs        bool   `json:"has_logs"`
 	FileCount      int    `json:"file_count"`
 	TotalSize      uint64 `json:"total_size"`
 	CompressedSize uint64 `json:"compressed_size"`
@@ -97,6 +99,7 @@ type RestoreOptions struct {
 	IncludePlugins  bool `json:"include_plugins"`
 	IncludeOpenAPIs bool `json:"include_openapis"`
 	IncludeImages   bool `json:"include_images"`
+	IncludeLogs     bool `json:"include_logs"`
 	Confirm         bool `json:"confirm"`
 }
 
@@ -108,7 +111,7 @@ type RestoreResult struct {
 }
 
 func NewService(database *config.Database, pluginDir string) *Service {
-	return &Service{database: database, pluginDir: pluginDir, openAPIDir: "openapis", now: time.Now}
+	return &Service{database: database, pluginDir: pluginDir, openAPIDir: "openapis", logDir: "logs", now: time.Now}
 }
 
 func (s *Service) SetOSSUploader(uploader OSSUploader) {
@@ -193,8 +196,8 @@ func (s *Service) createWithSettings(ctx context.Context, trigger string, settin
 	defer s.createMu.Unlock()
 
 	settings = config.NormalizeBackupSettings(settings)
-	if !settings.IncludePlugins && !settings.IncludeData && !settings.IncludeImages {
-		return BackupFile{}, fmt.Errorf("至少需要选择插件、数据或图片中的一项")
+	if !settings.IncludePlugins && !settings.IncludeData && !settings.IncludeImages && !settings.IncludeLogs {
+		return BackupFile{}, fmt.Errorf("至少需要选择插件、数据、图片或日志中的一项")
 	}
 	backupDir, err := normalizePath(settings.BackupDir)
 	if err != nil {
@@ -233,6 +236,9 @@ func (s *Service) createWithSettings(ctx context.Context, trigger string, settin
 	}
 	if settings.IncludeImages {
 		includes = append(includes, "images")
+	}
+	if settings.IncludeLogs {
+		includes = append(includes, "logs")
 	}
 
 	manifest := Manifest{Version: 1, CreatedAt: createdAt, Trigger: strings.TrimSpace(trigger), Includes: includes, OSS: "reserved"}
@@ -357,7 +363,7 @@ func (s *Service) Restore(ctx context.Context, name string, options RestoreOptio
 	if !options.Confirm {
 		return RestoreResult{}, fmt.Errorf("请先确认恢复会覆盖当前数据")
 	}
-	if !options.IncludeData && !options.IncludePlugins && !options.IncludeOpenAPIs && !options.IncludeImages {
+	if !options.IncludeData && !options.IncludePlugins && !options.IncludeOpenAPIs && !options.IncludeImages && !options.IncludeLogs {
 		return RestoreResult{}, fmt.Errorf("至少需要选择一项恢复内容")
 	}
 	file, err := s.Resolve(name)
@@ -379,6 +385,9 @@ func (s *Service) Restore(ctx context.Context, name string, options RestoreOptio
 	}
 	if options.IncludeImages && !summary.HasImages {
 		return RestoreResult{}, fmt.Errorf("备份包不包含图片文件")
+	}
+	if options.IncludeLogs && !summary.HasLogs {
+		return RestoreResult{}, fmt.Errorf("备份包不包含日志文件")
 	}
 
 	snapshot, err := s.CreateFullSnapshot(ctx, "pre-restore")
@@ -435,6 +444,12 @@ func (s *Service) Restore(ctx context.Context, name string, options RestoreOptio
 		}
 		restored = append(restored, "images")
 	}
+	if options.IncludeLogs {
+		if err := mergeDirectory(filepath.Join(stagingDir, "logs"), s.logDir); err != nil {
+			return RestoreResult{}, fmt.Errorf("恢复日志文件失败: %w", err)
+		}
+		restored = append(restored, "logs")
+	}
 	return RestoreResult{Restored: restored, Snapshot: snapshot, RestartRequired: true, Warnings: warnings}, nil
 }
 
@@ -447,6 +462,7 @@ func (s *Service) CreateFullSnapshot(ctx context.Context, trigger string) (Backu
 	settings.IncludeData = true
 	settings.IncludePlugins = true
 	settings.IncludeImages = true
+	settings.IncludeLogs = true
 	return s.createWithSettings(ctx, trigger, settings, false)
 }
 
@@ -624,6 +640,11 @@ func (s *Service) writeZip(zipPath, stagingDir, backupDir string, settings confi
 			return err
 		}
 	}
+	if settings.IncludeLogs {
+		if err := addDirIfExists(writer, s.logDir, "logs", backupDir); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -676,6 +697,8 @@ func inspectZipFiles(files []*zip.File) (Manifest, BackupSummary, []string, erro
 			summary.HasOpenAPIs = true
 		case strings.HasPrefix(cleanName, "images/"):
 			summary.HasImages = true
+		case strings.HasPrefix(cleanName, "logs/"):
+			summary.HasLogs = true
 		}
 	}
 	if !manifestFound {
@@ -715,10 +738,10 @@ func validateZipEntry(file *zip.File) (string, bool, error) {
 	if cleanName == "data/config.db" {
 		return cleanName, false, nil
 	}
-	if file.FileInfo().IsDir() && (cleanName == "data" || cleanName == "plugins" || cleanName == "openapis" || cleanName == "images") {
+	if file.FileInfo().IsDir() && (cleanName == "data" || cleanName == "plugins" || cleanName == "openapis" || cleanName == "images" || cleanName == "logs") {
 		return cleanName, true, nil
 	}
-	if strings.HasPrefix(cleanName, "plugins/") || strings.HasPrefix(cleanName, "openapis/") || strings.HasPrefix(cleanName, "images/") {
+	if strings.HasPrefix(cleanName, "plugins/") || strings.HasPrefix(cleanName, "openapis/") || strings.HasPrefix(cleanName, "images/") || strings.HasPrefix(cleanName, "logs/") {
 		return cleanName, file.FileInfo().IsDir(), nil
 	}
 	return "", false, fmt.Errorf("备份包包含未知路径: %s", cleanName)
@@ -842,6 +865,77 @@ func replaceDirectory(sourceDir, targetDir string) error {
 		_ = os.RemoveAll(backupOld)
 	}
 	return nil
+}
+
+func mergeDirectory(sourceDir, targetDir string) error {
+	info, err := os.Stat(sourceDir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("恢复来源不是目录: %s", sourceDir)
+	}
+	targetAbs, err := filepath.Abs(filepath.Clean(targetDir))
+	if err != nil {
+		return err
+	}
+	if targetAbs == string(filepath.Separator) || strings.TrimSpace(targetDir) == "" {
+		return fmt.Errorf("恢复目标目录无效")
+	}
+	if err := os.MkdirAll(targetAbs, 0755); err != nil {
+		return err
+	}
+	sourceAbs, err := filepath.Abs(sourceDir)
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(sourceAbs, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relPath, err := filepath.Rel(sourceAbs, path)
+		if err != nil {
+			return err
+		}
+		targetPath, err := safeJoin(targetAbs, filepath.ToSlash(relPath))
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			return err
+		}
+		if _, err := os.Stat(targetPath); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		return copyRegularFile(path, targetPath, entry)
+	})
+}
+
+func copyRegularFile(sourcePath, targetPath string, entry os.DirEntry) error {
+	info, err := entry.Info()
+	if err != nil {
+		return err
+	}
+	input, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	output, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	closeErr := output.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 func validateSQLiteDatabase(path string) error {

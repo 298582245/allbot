@@ -57,6 +57,7 @@ func TestCreateBackupIncludesDataPluginsAndOpenAPIs(t *testing.T) {
 	if err := database.SaveImageHostSettings(imageSettings); err != nil {
 		t.Fatal(err)
 	}
+	mustWriteFile(t, filepath.Join(workspace, "logs", "2026-06-08.log"), "log")
 
 	settings := config.DefaultBackupSettings()
 	settings.BackupDir = filepath.Join(workspace, "backups")
@@ -72,7 +73,7 @@ func TestCreateBackupIncludesDataPluginsAndOpenAPIs(t *testing.T) {
 	}
 
 	entries := zipEntries(t, file.Path)
-	for _, name := range []string{"manifest.json", "data/config.db", "plugins/demo/plugin.json", "openapis/hello/config.json", "images/2026/demo.png"} {
+	for _, name := range []string{"manifest.json", "data/config.db", "plugins/demo/plugin.json", "openapis/hello/config.json", "images/2026/demo.png", "logs/2026-06-08.log"} {
 		if !entries[name] {
 			t.Fatalf("备份包缺少文件: %s", name)
 		}
@@ -89,13 +90,14 @@ func TestImportBackupValidatesAndListsFile(t *testing.T) {
 		"plugins/demo/plugin.json":  []byte(`{"id":"demo"}`),
 		"openapis/demo/config.json": []byte(`{"id":"demo"}`),
 		"images/demo.png":           []byte("image"),
+		"logs/2026-06-30.log":       []byte("log"),
 	})
 	service.now = func() time.Time { return time.Date(2026, 6, 30, 1, 2, 3, 0, time.Local) }
 	result, err := service.Import(context.Background(), ImportOptions{Reader: bytes.NewReader(data), OriginalName: "external.zip"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.File.Name != "allbot-backup-import-20260630-010203.zip" || !result.Summary.HasData || !result.Summary.HasPlugins || !result.Summary.HasOpenAPIs || !result.Summary.HasImages {
+	if result.File.Name != "allbot-backup-import-20260630-010203.zip" || !result.Summary.HasData || !result.Summary.HasPlugins || !result.Summary.HasOpenAPIs || !result.Summary.HasImages || !result.Summary.HasLogs {
 		t.Fatalf("导入结果不正确: %+v", result)
 	}
 	files, err := service.List()
@@ -139,6 +141,8 @@ func TestRestoreBackupReplacesDirectoriesAndCreatesSnapshot(t *testing.T) {
 	pluginDir := filepath.Join(workspace, "plugins")
 	openAPIDir := filepath.Join(workspace, "openapis")
 	imageDir := filepath.Join(workspace, "runtime", "image_assets")
+	logDir := filepath.Join(workspace, "logs")
+	service.logDir = logDir
 	imageSettings := config.DefaultImageHostSettings()
 	imageSettings.StorageDir = imageDir
 	if err := database.SaveImageHostSettings(imageSettings); err != nil {
@@ -147,6 +151,7 @@ func TestRestoreBackupReplacesDirectoriesAndCreatesSnapshot(t *testing.T) {
 	mustWriteFile(t, filepath.Join(pluginDir, "old", "stale.txt"), "old")
 	mustWriteFile(t, filepath.Join(openAPIDir, "old.json"), "old")
 	mustWriteFile(t, filepath.Join(imageDir, "old.png"), "old")
+	mustWriteFile(t, filepath.Join(logDir, "old.log"), "old")
 	service.now = func() time.Time { return time.Date(2026, 6, 30, 2, 0, 0, 0, time.Local) }
 	backupFile, err := service.Create(context.Background(), "manual")
 	if err != nil {
@@ -155,8 +160,9 @@ func TestRestoreBackupReplacesDirectoriesAndCreatesSnapshot(t *testing.T) {
 	mustWriteFile(t, filepath.Join(pluginDir, "current", "stale.txt"), "current")
 	mustWriteFile(t, filepath.Join(openAPIDir, "current.json"), "current")
 	mustWriteFile(t, filepath.Join(imageDir, "current.png"), "current")
+	mustWriteFile(t, filepath.Join(logDir, "current.log"), "current")
 	service.now = func() time.Time { return time.Date(2026, 6, 30, 3, 0, 0, 0, time.Local) }
-	result, err := service.Restore(context.Background(), backupFile.Name, RestoreOptions{IncludePlugins: true, IncludeOpenAPIs: true, IncludeImages: true, Confirm: true})
+	result, err := service.Restore(context.Background(), backupFile.Name, RestoreOptions{IncludePlugins: true, IncludeOpenAPIs: true, IncludeImages: true, IncludeLogs: true, Confirm: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,8 +184,14 @@ func TestRestoreBackupReplacesDirectoriesAndCreatesSnapshot(t *testing.T) {
 	if string(mustReadFile(t, filepath.Join(imageDir, "old.png"))) != "old" {
 		t.Fatal("图片旧内容未恢复")
 	}
+	if string(mustReadFile(t, filepath.Join(logDir, "current.log"))) != "current" {
+		t.Fatal("日志恢复不应删除当前日志文件")
+	}
+	if string(mustReadFile(t, filepath.Join(logDir, "old.log"))) != "old" {
+		t.Fatal("日志旧内容未恢复")
+	}
 	entries := zipEntries(t, result.Snapshot.Path)
-	if !entries["plugins/current/stale.txt"] || !entries["openapis/current.json"] || !entries["images/current.png"] {
+	if !entries["plugins/current/stale.txt"] || !entries["openapis/current.json"] || !entries["images/current.png"] || !entries["logs/current.log"] {
 		t.Fatal("恢复前快照应包含恢复前状态")
 	}
 }
