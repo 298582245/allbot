@@ -97,12 +97,6 @@ if [ -z "$(find "${DATA_DIR}/openapis" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; 
     cp -a /opt/allbot/openapis/. "${DATA_DIR}/openapis/"
 fi
 
-for manifest in package.json package-lock.json python_deps.json; do
-    if [ ! -f "${DATA_DIR}/runtime/${manifest}" ]; then
-        cp "/opt/allbot/runtime/${manifest}" "${DATA_DIR}/runtime/${manifest}"
-    fi
-done
-
 apply_update_if_requested() {
     if [ ! -f "${UPGRADE_REQUEST}" ]; then
         return 1

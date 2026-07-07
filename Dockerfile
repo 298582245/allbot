@@ -43,7 +43,6 @@ WORKDIR /data
 COPY --from=go-builder /out/allbot /opt/allbot/allbot
 COPY sdk/ /opt/allbot/sdk/
 COPY openapis/ /opt/allbot/openapis/
-COPY runtime/package.json runtime/package-lock.json runtime/python_deps.json /opt/allbot/runtime/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh /opt/allbot/allbot \
