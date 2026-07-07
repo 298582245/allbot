@@ -23,17 +23,64 @@ type rawProcessCPUTimes struct {
 func (s *Server) systemResourceStatus() map[string]interface{} {
 	memory := readMemoryStatus()
 	memoryPercent := percentOf(memory.used, memory.total)
+	allBotCPUPercent := s.sampleAllBotCPUUsage()
 	allBotMemoryUsed := readAllBotMemoryUsed()
 	allBotMemoryPercent := percentOf(allBotMemoryUsed, memory.total)
+	allBotResourceStats := s.updateAllBotResourceStats(allBotCPUPercent, allBotMemoryUsed, allBotMemoryPercent)
 	return map[string]interface{}{
-		"cpuUsagePercent":          roundPercent(s.sampleCPUUsage()),
-		"memoryUsedBytes":          memory.used,
-		"memoryTotalBytes":         memory.total,
-		"memoryUsagePercent":       roundPercent(memoryPercent),
-		"allBotCpuUsagePercent":    roundPercent(s.sampleAllBotCPUUsage()),
-		"allBotMemoryUsedBytes":    allBotMemoryUsed,
-		"allBotMemoryTotalBytes":   memory.total,
-		"allBotMemoryUsagePercent": roundPercent(allBotMemoryPercent),
+		"cpuUsagePercent":                 roundPercent(s.sampleCPUUsage()),
+		"memoryUsedBytes":                 memory.used,
+		"memoryTotalBytes":                memory.total,
+		"memoryUsagePercent":              roundPercent(memoryPercent),
+		"allBotCpuUsagePercent":           roundPercent(allBotCPUPercent),
+		"allBotMemoryUsedBytes":           allBotMemoryUsed,
+		"allBotMemoryTotalBytes":          memory.total,
+		"allBotMemoryUsagePercent":        roundPercent(allBotMemoryPercent),
+		"allBotPeakCpuUsagePercent":       roundPercent(allBotResourceStats.peakCPUPercent),
+		"allBotPeakMemoryUsedBytes":       allBotResourceStats.peakMemoryUsed,
+		"allBotPeakMemoryUsagePercent":    roundPercent(allBotResourceStats.peakMemoryPercent),
+		"allBotAverageCpuUsagePercent":    roundPercent(allBotResourceStats.averageCPUPercent),
+		"allBotAverageMemoryUsedBytes":    allBotResourceStats.averageMemoryUsed,
+		"allBotAverageMemoryUsagePercent": roundPercent(allBotResourceStats.averageMemoryPercent),
+	}
+}
+
+type allBotResourceStats struct {
+	peakCPUPercent       float64
+	peakMemoryUsed       uint64
+	peakMemoryPercent    float64
+	averageCPUPercent    float64
+	averageMemoryUsed    uint64
+	averageMemoryPercent float64
+}
+
+func (s *Server) updateAllBotResourceStats(cpuPercent float64, memoryUsed uint64, memoryPercent float64) allBotResourceStats {
+	s.resourceMu.Lock()
+	defer s.resourceMu.Unlock()
+	if isFinite(cpuPercent) && cpuPercent > s.peakAllBotCPUPercent {
+		s.peakAllBotCPUPercent = cpuPercent
+	}
+	if memoryUsed > s.peakAllBotMemoryUsedBytes {
+		s.peakAllBotMemoryUsedBytes = memoryUsed
+	}
+	if isFinite(memoryPercent) && memoryPercent > s.peakAllBotMemoryUsagePercent {
+		s.peakAllBotMemoryUsagePercent = memoryPercent
+	}
+	s.allBotResourceSampleCount++
+	if isFinite(cpuPercent) {
+		s.allBotCPUTotalPercent += cpuPercent
+	}
+	s.allBotMemoryTotalUsedBytes += memoryUsed
+	if isFinite(memoryPercent) {
+		s.allBotMemoryTotalPercent += memoryPercent
+	}
+	return allBotResourceStats{
+		peakCPUPercent:       s.peakAllBotCPUPercent,
+		peakMemoryUsed:       s.peakAllBotMemoryUsedBytes,
+		peakMemoryPercent:    s.peakAllBotMemoryUsagePercent,
+		averageCPUPercent:    s.allBotCPUTotalPercent / float64(s.allBotResourceSampleCount),
+		averageMemoryUsed:    s.allBotMemoryTotalUsedBytes / s.allBotResourceSampleCount,
+		averageMemoryPercent: s.allBotMemoryTotalPercent / float64(s.allBotResourceSampleCount),
 	}
 }
 

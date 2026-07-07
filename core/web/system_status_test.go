@@ -54,11 +54,21 @@ func TestSystemStatusIncludesAllBotResourceFields(t *testing.T) {
 	}
 	assertPercentField(t, response, "allBotCpuUsagePercent")
 	assertPercentField(t, response, "allBotMemoryUsagePercent")
+	assertPercentField(t, response, "allBotPeakCpuUsagePercent")
+	assertPercentField(t, response, "allBotPeakMemoryUsagePercent")
+	assertPercentField(t, response, "allBotAverageCpuUsagePercent")
+	assertPercentField(t, response, "allBotAverageMemoryUsagePercent")
 	if response["allBotMemoryUsedBytes"].(float64) <= 0 {
 		t.Fatalf("allBotMemoryUsedBytes = %#v", response["allBotMemoryUsedBytes"])
 	}
 	if _, ok := response["allBotMemoryTotalBytes"]; !ok {
 		t.Fatal("missing allBotMemoryTotalBytes")
+	}
+	if response["allBotPeakMemoryUsedBytes"].(float64) <= 0 {
+		t.Fatalf("allBotPeakMemoryUsedBytes = %#v", response["allBotPeakMemoryUsedBytes"])
+	}
+	if response["allBotAverageMemoryUsedBytes"].(float64) <= 0 {
+		t.Fatalf("allBotAverageMemoryUsedBytes = %#v", response["allBotAverageMemoryUsedBytes"])
 	}
 }
 

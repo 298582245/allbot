@@ -72,12 +72,16 @@
               <div class="resource-title">CPU 占用</div>
               <div ref="cpuChartRef" class="resource-chart"></div>
               <div class="resource-value">{{ formatPercent(resourceStatus.allBotCpuUsagePercent) }}</div>
+              <div class="resource-detail">平均占用：{{ formatPercent(resourceStatus.allBotAverageCpuUsagePercent) }}</div>
+              <div class="resource-detail">历史最高：{{ formatPercent(resourceStatus.allBotPeakCpuUsagePercent) }}</div>
               <div class="resource-detail">系统 CPU：{{ formatPercent(resourceStatus.cpuUsagePercent) }}</div>
             </div>
             <div class="resource-panel">
               <div class="resource-title">内存占用</div>
               <div ref="memoryChartRef" class="resource-chart"></div>
               <div class="resource-value">{{ formatUsageWithPercent(resourceStatus.allBotMemoryUsedBytes, resourceStatus.allBotMemoryTotalBytes) }}</div>
+              <div class="resource-detail">平均占用：{{ formatUsageWithPercent(resourceStatus.allBotAverageMemoryUsedBytes, resourceStatus.allBotMemoryTotalBytes) }}</div>
+              <div class="resource-detail">历史最高：{{ formatUsageWithPercent(resourceStatus.allBotPeakMemoryUsedBytes, resourceStatus.allBotMemoryTotalBytes) }}</div>
               <div class="resource-detail">系统内存：{{ formatBytes(resourceStatus.memoryUsedBytes) }} / {{ formatBytes(resourceStatus.memoryTotalBytes) }}</div>
             </div>
           </div>
@@ -126,7 +130,13 @@ const resourceStatus = ref({
   allBotCpuUsagePercent: 0,
   allBotMemoryUsagePercent: 0,
   allBotMemoryUsedBytes: 0,
-  allBotMemoryTotalBytes: 0
+  allBotMemoryTotalBytes: 0,
+  allBotPeakCpuUsagePercent: 0,
+  allBotPeakMemoryUsedBytes: 0,
+  allBotPeakMemoryUsagePercent: 0,
+  allBotAverageCpuUsagePercent: 0,
+  allBotAverageMemoryUsedBytes: 0,
+  allBotAverageMemoryUsagePercent: 0
 })
 const messageChartRef = ref(null)
 const cpuChartRef = ref(null)
@@ -278,7 +288,13 @@ function setResourceStatus(status) {
     allBotCpuUsagePercent: clampPercent(status?.allBotCpuUsagePercent),
     allBotMemoryUsagePercent: clampPercent(status?.allBotMemoryUsagePercent),
     allBotMemoryUsedBytes: normalizeBytes(status?.allBotMemoryUsedBytes),
-    allBotMemoryTotalBytes: normalizeBytes(status?.allBotMemoryTotalBytes)
+    allBotMemoryTotalBytes: normalizeBytes(status?.allBotMemoryTotalBytes),
+    allBotPeakCpuUsagePercent: clampPercent(status?.allBotPeakCpuUsagePercent),
+    allBotPeakMemoryUsedBytes: normalizeBytes(status?.allBotPeakMemoryUsedBytes),
+    allBotPeakMemoryUsagePercent: clampPercent(status?.allBotPeakMemoryUsagePercent),
+    allBotAverageCpuUsagePercent: clampPercent(status?.allBotAverageCpuUsagePercent),
+    allBotAverageMemoryUsedBytes: normalizeBytes(status?.allBotAverageMemoryUsedBytes),
+    allBotAverageMemoryUsagePercent: clampPercent(status?.allBotAverageMemoryUsagePercent)
   }
 }
 

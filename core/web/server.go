@@ -51,41 +51,48 @@ const (
 )
 
 type Server struct {
-	port                        string
-	pluginManager               *plugin.Manager
-	router                      *router.Router
-	adapterManager              *config.AdapterManager
-	logManager                  *LogManager
-	startTime                   time.Time
-	webFS                       fs.FS
-	webAssetMode                WebAssetMode
-	externalWebDir              string
-	updateService               *updater.Service
-	releaseClient               updater.ReleaseClient
-	upgradeRunner               func(updater.ApplyUpdateRequest) error
-	upgradeExit                 func()
-	upgradeMu                   sync.Mutex
-	upgradeState                updater.UpgradeState
-	backupService               *backup.Service
-	imageHostService            *imagehost.Service
-	webChatMailer               webChatEmailSender
-	runtimeInitJobs             *runtimeProfileInitJobStore
-	runtimeMu                   sync.Mutex
-	runtimeBaseSeconds          int64
-	runtimeLoaded               bool
-	lastPersistedRuntimeSeconds int64
-	sessionMu                   sync.RWMutex
-	sessions                    map[string]time.Time
-	resourceMu                  sync.Mutex
-	lastCPUIdle                 uint64
-	lastCPUTotal                uint64
-	lastCPUPercent              float64
-	lastCPUAt                   time.Time
-	lastProcessSystemCPUTotal   uint64
-	lastProcessCPUTotal         uint64
-	lastProcessCPUPercent       float64
-	serverMu                    sync.Mutex
-	httpServer                  *http.Server
+	port                         string
+	pluginManager                *plugin.Manager
+	router                       *router.Router
+	adapterManager               *config.AdapterManager
+	logManager                   *LogManager
+	startTime                    time.Time
+	webFS                        fs.FS
+	webAssetMode                 WebAssetMode
+	externalWebDir               string
+	updateService                *updater.Service
+	releaseClient                updater.ReleaseClient
+	upgradeRunner                func(updater.ApplyUpdateRequest) error
+	upgradeExit                  func()
+	upgradeMu                    sync.Mutex
+	upgradeState                 updater.UpgradeState
+	backupService                *backup.Service
+	imageHostService             *imagehost.Service
+	webChatMailer                webChatEmailSender
+	runtimeInitJobs              *runtimeProfileInitJobStore
+	runtimeMu                    sync.Mutex
+	runtimeBaseSeconds           int64
+	runtimeLoaded                bool
+	lastPersistedRuntimeSeconds  int64
+	sessionMu                    sync.RWMutex
+	sessions                     map[string]time.Time
+	resourceMu                   sync.Mutex
+	lastCPUIdle                  uint64
+	lastCPUTotal                 uint64
+	lastCPUPercent               float64
+	lastCPUAt                    time.Time
+	lastProcessSystemCPUTotal    uint64
+	lastProcessCPUTotal          uint64
+	lastProcessCPUPercent        float64
+	peakAllBotCPUPercent         float64
+	peakAllBotMemoryUsedBytes    uint64
+	peakAllBotMemoryUsagePercent float64
+	allBotResourceSampleCount    uint64
+	allBotCPUTotalPercent        float64
+	allBotMemoryTotalUsedBytes   uint64
+	allBotMemoryTotalPercent     float64
+	serverMu                     sync.Mutex
+	httpServer                   *http.Server
 }
 
 func NewServer(port string, pluginManager *plugin.Manager, router *router.Router, adapterManager *config.AdapterManager, webFS fs.FS) *Server {
