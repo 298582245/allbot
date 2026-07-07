@@ -17,7 +17,6 @@
         :unique-opened="!collapsed"
         :collapse="collapsed"
         :collapse-transition="true"
-        router
         class="sidebar-menu"
         @open="handleMenuOpen"
         @select="handleMenuSelect"
@@ -247,7 +246,7 @@
 
 <script setup>
 import { computed, ref, watch, onMounted } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessageBox } from "element-plus";
 import {
   DataAnalysis,
@@ -278,6 +277,7 @@ import { usePluginWebPanelsStore } from "@/stores/pluginWebPanels";
 import TagsView from "@/components/TagsView.vue";
 
 const route = useRoute();
+const router = useRouter();
 const authStore = useAuthStore();
 const tabsStore = useTabsStore();
 const pluginWebPanelsStore = usePluginWebPanelsStore();
@@ -366,8 +366,15 @@ const handleMenuOpen = (index) => {
 };
 
 const handleMenuSelect = (index) => {
+  if (index === "/chat") {
+    window.open(router.resolve({ path: "/chat" }).href, "_blank", "noopener");
+    return;
+  }
   if (topLevelMenuIndexes.includes(index)) {
     submenuKeys.forEach((key) => menuRef.value?.close(key));
+  }
+  if (index.startsWith("/") && index !== route.path) {
+    router.push(index);
   }
 };
 

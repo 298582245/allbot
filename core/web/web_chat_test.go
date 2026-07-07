@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
+	"github.com/allbot/allbot/core/adapter/_contract"
+	"github.com/allbot/allbot/core/adapter/_registry"
 	webadapter "github.com/allbot/allbot/core/adapter/web"
 	"github.com/allbot/allbot/core/config"
 	"os"
@@ -22,9 +25,52 @@ import (
 
 type fakeWebChatMailer struct{ code string }
 
+type webChatPlatformFakeAdapter struct {
+	platform string
+	target   string
+	text     string
+}
+
 func (m *fakeWebChatMailer) SendWebChatCode(to, code string) error {
 	m.code = code
 	return nil
+}
+
+func (a *webChatPlatformFakeAdapter) GetPlatform() string { return a.platform }
+func (a *webChatPlatformFakeAdapter) SendMessage(target string, text string) error {
+	a.target = target
+	a.text = text
+	return nil
+}
+func (a *webChatPlatformFakeAdapter) SendImage(target string, imageURL string) error { return nil }
+func (a *webChatPlatformFakeAdapter) SendFile(target string, filePath string) error  { return nil }
+func (a *webChatPlatformFakeAdapter) GetUserInfo(userID string) (*contract.UserInfo, error) {
+	return &contract.UserInfo{UserID: userID}, nil
+}
+func (a *webChatPlatformFakeAdapter) GetGroupInfo(groupID string) (*contract.GroupInfo, error) {
+	return &contract.GroupInfo{GroupID: groupID}, nil
+}
+func (a *webChatPlatformFakeAdapter) AtUser(groupID string, userID string) error     { return nil }
+func (a *webChatPlatformFakeAdapter) Start() error                                   { return nil }
+func (a *webChatPlatformFakeAdapter) Stop() error                                    { return nil }
+func (a *webChatPlatformFakeAdapter) SetMessageHandler(handler func(*types.Message)) {}
+func (a *webChatPlatformFakeAdapter) SendTarget(userID string, groupID string) string {
+	return "user_" + userID
+}
+
+const webChatTestPlatform = "webchat_test"
+
+func init() {
+	registry.Register(registry.Descriptor{
+		Platform:     webChatTestPlatform,
+		DisplayName:  "WebChat 测试平台",
+		Description:  "WebChat 平台验证码测试适配器",
+		Capabilities: registry.Capabilities{SendText: true, PrivateMessage: true},
+		ParseConfig:  func(raw string) (interface{}, error) { return raw, nil },
+		NewAdapter: func(config interface{}) (contract.Adapter, error) {
+			return &webChatPlatformFakeAdapter{platform: webChatTestPlatform}, nil
+		},
+	})
 }
 
 func TestBuildWebChatCodeEmailUsesCustomSubject(t *testing.T) {
@@ -213,6 +259,117 @@ func TestWebChatEmailCodeRejectsInvalidPurpose(t *testing.T) {
 	server.handleWebChatAPI(rr, jsonRequest("/api/open/web-chat/email-code", map[string]string{"email": "u@example.com", "purpose": "unknown"}, ""))
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid purpose 400, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestWebChatPlatformCodeAndLoginFlow(t *testing.T) {
+	server, _ := newWebChatTestServer(t, true)
+	platformAdapter, adapterID := saveRunningWebChatTestPlatformAdapter(t, server.adapterManager)
+	user := createWebChatRuntimeUser(t, server.runtimeDatabase(), "platform_user", "platform@example.com")
+	bindCode, err := server.runtimeDatabase().CreateUserBindCode(webChatTestPlatform, "u-platform")
+	if err != nil {
+		t.Fatalf("CreateUserBindCode returned error: %v", err)
+	}
+	if _, _, err := server.runtimeDatabase().BindWebChatUserByCode(user.UserID, bindCode.Code); err != nil {
+		t.Fatalf("BindWebChatUserByCode returned error: %v", err)
+	}
+	account, err := server.runtimeDatabase().GetUserAccount(webChatTestPlatform, "u-platform")
+	if err != nil {
+		t.Fatalf("GetUserAccount returned error: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	server.handleWebChatAPI(rr, httptest.NewRequest(http.MethodGet, "/api/open/web-chat/platforms", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("platforms status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "WebChat 测试平台") || strings.Contains(rr.Body.String(), "token") {
+		t.Fatalf("unexpected platforms response: %s", rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	server.handleWebChatAPI(rr, jsonRequest("/api/open/web-chat/platform-code", map[string]string{"adapter_id": adapterID, "platform": webChatTestPlatform, "username": "platform_user"}, ""))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("platform-code status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if platformAdapter.target != "user_"+account.UserID || !strings.Contains(platformAdapter.text, "你的web登录验证码为：") {
+		t.Fatalf("expected captured platform code, target=%q text=%q", platformAdapter.target, platformAdapter.text)
+	}
+	code := platformAdapter.text[strings.LastIndex(platformAdapter.text, "：")+len("："):]
+	rr = httptest.NewRecorder()
+	server.handleWebChatAPI(rr, jsonRequest("/api/open/web-chat/platform-login", map[string]string{"adapter_id": adapterID, "platform": webChatTestPlatform, "username": "platform_user", "code": code}, ""))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("platform-login status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(rr.Result().Cookies()) == 0 {
+		t.Fatal("expected platform login cookie")
+	}
+}
+
+func TestWebChatPlatformCodeHidesMissingUser(t *testing.T) {
+	server, _ := newWebChatTestServer(t, true)
+	platformAdapter, adapterID := saveRunningWebChatTestPlatformAdapter(t, server.adapterManager)
+	rr := httptest.NewRecorder()
+	server.handleWebChatAPI(rr, jsonRequest("/api/open/web-chat/platform-code", map[string]string{"adapter_id": adapterID, "platform": webChatTestPlatform, "username": "missing_user"}, ""))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected missing user to return ok, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if platformAdapter.text != "" {
+		t.Fatalf("expected no platform message for missing user, got %q", platformAdapter.text)
+	}
+}
+
+func TestWebChatPlatformCodeHidesUnboundUser(t *testing.T) {
+	server, _ := newWebChatTestServer(t, true)
+	platformAdapter, adapterID := saveRunningWebChatTestPlatformAdapter(t, server.adapterManager)
+	createWebChatRuntimeUser(t, server.runtimeDatabase(), "unbound_user", "unbound@example.com")
+	rr := httptest.NewRecorder()
+	server.handleWebChatAPI(rr, jsonRequest("/api/open/web-chat/platform-code", map[string]string{"adapter_id": adapterID, "platform": webChatTestPlatform, "username": "unbound_user"}, ""))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected unbound user to return ok, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if platformAdapter.text != "" {
+		t.Fatalf("expected no platform message for unbound user, got %q", platformAdapter.text)
+	}
+}
+
+func TestWebChatPlatformLoginRejectsWrongCode(t *testing.T) {
+	server, _ := newWebChatTestServer(t, true)
+	_, adapterID := saveRunningWebChatTestPlatformAdapter(t, server.adapterManager)
+	user := createWebChatRuntimeUser(t, server.runtimeDatabase(), "wrong_code_user", "wrong-code@example.com")
+	bindCode, err := server.runtimeDatabase().CreateUserBindCode(webChatTestPlatform, "wrong-platform")
+	if err != nil {
+		t.Fatalf("CreateUserBindCode returned error: %v", err)
+	}
+	if _, _, err := server.runtimeDatabase().BindWebChatUserByCode(user.UserID, bindCode.Code); err != nil {
+		t.Fatalf("BindWebChatUserByCode returned error: %v", err)
+	}
+	account, err := server.runtimeDatabase().GetUserAccount(webChatTestPlatform, "wrong-platform")
+	if err != nil {
+		t.Fatalf("GetUserAccount returned error: %v", err)
+	}
+	if err := server.runtimeDatabase().CreateWebChatPlatformCode(webChatTestPlatform, adapterID, account.UserID, account.UnionID, "123456", ""); err != nil {
+		t.Fatalf("CreateWebChatPlatformCode returned error: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	server.handleWebChatAPI(rr, jsonRequest("/api/open/web-chat/platform-login", map[string]string{"adapter_id": adapterID, "platform": webChatTestPlatform, "username": "wrong_code_user", "code": "000000"}, ""))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected wrong code 401, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestWebChatPlatformsExcludeWebAndDingTalk(t *testing.T) {
+	server, _ := newWebChatTestServer(t, true)
+	if err := server.adapterManager.SaveAdapterConfig(0, "dingtalk", "钉钉", "", false, map[string]interface{}{"client_id": "id", "client_secret": "secret", "robot_code": "robot"}); err != nil {
+		t.Fatalf("SaveAdapterConfig dingtalk returned error: %v", err)
+	}
+	saveRunningWebChatTestPlatformAdapter(t, server.adapterManager)
+	rr := httptest.NewRecorder()
+	server.handleWebChatAPI(rr, httptest.NewRequest(http.MethodGet, "/api/open/web-chat/platforms", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("platforms status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, `"platform":"web"`) || strings.Contains(body, `"platform":"dingtalk"`) || !strings.Contains(body, webChatTestPlatform) {
+		t.Fatalf("unexpected platforms response: %s", body)
 	}
 }
 
@@ -769,6 +926,29 @@ func saveRunningWebChatAdapter(t *testing.T, adapterManager *config.AdapterManag
 	}
 }
 
+func saveRunningWebChatTestPlatformAdapter(t *testing.T, adapterManager *config.AdapterManager) (*webChatPlatformFakeAdapter, string) {
+	t.Helper()
+	if err := adapterManager.SaveAdapterConfig(0, webChatTestPlatform, "测试机器人", "公开描述", true, map[string]interface{}{"token": "secret"}); err != nil {
+		t.Fatalf("SaveAdapterConfig test platform returned error: %v", err)
+	}
+	items, err := adapterManager.GetDatabase().GetAllAdapters()
+	if err != nil {
+		t.Fatalf("GetAllAdapters returned error: %v", err)
+	}
+	for _, item := range items {
+		if item.Platform != webChatTestPlatform {
+			continue
+		}
+		adp, ok := adapterManager.GetAdapterByID(item.ID).(*webChatPlatformFakeAdapter)
+		if !ok || adp == nil {
+			t.Fatalf("unexpected test platform adapter: %#v", adapterManager.GetAdapterByID(item.ID))
+		}
+		return adp, strconv.FormatInt(item.ID, 10)
+	}
+	t.Fatal("test platform adapter not found")
+	return nil, ""
+}
+
 func registerWebChatTestUser(t *testing.T, server *Server, mailer *fakeWebChatMailer) (*http.Cookie, string) {
 	t.Helper()
 	rr := httptest.NewRecorder()
@@ -784,6 +964,18 @@ func registerWebChatTestUser(t *testing.T, server *Server, mailer *fakeWebChatMa
 	var sessionResp config.WebChatSession
 	_ = json.Unmarshal(rr.Body.Bytes(), &sessionResp)
 	return rr.Result().Cookies()[0], sessionResp.CSRFToken
+}
+
+func createWebChatRuntimeUser(t *testing.T, db *config.Database, username, email string) *config.WebChatUser {
+	t.Helper()
+	if err := db.CreateWebChatEmailCode(email, "123456", config.WebChatEmailPurposeRegister, ""); err != nil {
+		t.Fatalf("CreateWebChatEmailCode returned error: %v", err)
+	}
+	user, err := db.RegisterWebChatUser(config.WebChatRegisterInput{Email: email, Code: "123456", Username: username, Password: "password123"})
+	if err != nil {
+		t.Fatalf("RegisterWebChatUser returned error: %v", err)
+	}
+	return user
 }
 
 func jsonRequest(path string, payload interface{}, csrf string) *http.Request {

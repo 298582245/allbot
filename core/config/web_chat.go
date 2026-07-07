@@ -102,6 +102,29 @@ func (d *Database) CreateWebChatEmailCode(email, code, purpose, sentIP string) e
 	return err
 }
 
+func (d *Database) CreateWebChatPlatformCode(platform, adapterID, userID, unionID, code, sentIP string) error {
+	platform, adapterID, userID, unionID = strings.TrimSpace(platform), strings.TrimSpace(adapterID), strings.TrimSpace(userID), strings.TrimSpace(unionID)
+	code = strings.TrimSpace(code)
+	if platform == "" || adapterID == "" || userID == "" || unionID == "" {
+		return fmt.Errorf("平台、实例、用户和 UnionID 不能为空")
+	}
+	if code == "" {
+		return fmt.Errorf("验证码不能为空")
+	}
+	if err := d.ensureWebChatPlatformRate(platform, adapterID, userID, sentIP); err != nil {
+		return err
+	}
+	hash, err := HashAdminPassword(code)
+	if err != nil {
+		return err
+	}
+	_, err = d.db.Exec(`
+		INSERT INTO web_chat_platform_codes (platform, adapter_id, user_id, union_id, code_hash, purpose, expires_at, sent_ip, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, platform, adapterID, userID, unionID, hash, WebChatEmailPurposeLogin, time.Now().Add(webChatCodeTTL), strings.TrimSpace(sentIP))
+	return err
+}
+
 func (d *Database) RegisterWebChatUser(input WebChatRegisterInput) (*WebChatUser, error) {
 	email := normalizeWebChatEmail(input.Email)
 	username := strings.TrimSpace(input.Username)
@@ -217,6 +240,112 @@ func (d *Database) VerifyWebChatEmailLogin(email, code string) (*WebChatUser, er
 		return nil, err
 	}
 	return d.GetWebChatUser(userID)
+}
+
+func (d *Database) VerifyWebChatPlatformLogin(platform, adapterID, userID, code string) (*WebChatUser, error) {
+	platform, adapterID, userID = strings.TrimSpace(platform), strings.TrimSpace(adapterID), strings.TrimSpace(userID)
+	code = strings.TrimSpace(code)
+	if platform == "" || adapterID == "" || userID == "" || code == "" {
+		return nil, fmt.Errorf("平台验证码错误")
+	}
+	var precheckID, precheckAttempts int64
+	var precheckHash string
+	err := d.db.QueryRow(`
+		SELECT id, code_hash, attempts FROM web_chat_platform_codes
+		WHERE platform = ? AND adapter_id = ? AND user_id = ? AND purpose = ? AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+		ORDER BY created_at DESC, id DESC LIMIT 1
+	`, platform, adapterID, userID, WebChatEmailPurposeLogin).Scan(&precheckID, &precheckHash, &precheckAttempts)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("平台验证码错误")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if precheckAttempts >= webChatMaxCodeAttempts {
+		return nil, fmt.Errorf("验证码错误次数过多，请重新获取")
+	}
+	if !VerifyAdminPasswordHash(code, precheckHash) {
+		_, _ = d.db.Exec(`UPDATE web_chat_platform_codes SET attempts = attempts + 1 WHERE id = ?`, precheckID)
+		return nil, fmt.Errorf("平台验证码错误")
+	}
+	tx, err := d.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	unionID, err := consumeWebChatPlatformCodeTx(tx, platform, adapterID, userID, code)
+	if err != nil {
+		return nil, err
+	}
+	webUserID, err := ensureWebChatUserForUnionTx(tx, unionID, platform, userID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = tx.Exec(`UPDATE web_chat_users SET last_login_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?`, webUserID); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return d.GetWebChatUser(webUserID)
+}
+
+func (d *Database) EnsureWebChatUserForUnion(unionID, sourcePlatform, sourceUserID string) (*WebChatUser, error) {
+	unionID, sourcePlatform, sourceUserID = strings.TrimSpace(unionID), strings.TrimSpace(sourcePlatform), strings.TrimSpace(sourceUserID)
+	if unionID == "" {
+		return nil, fmt.Errorf("UnionID 不能为空")
+	}
+	tx, err := d.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	webUserID, err := ensureWebChatUserForUnionTx(tx, unionID, sourcePlatform, sourceUserID)
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return d.GetWebChatUser(webUserID)
+}
+
+func (d *Database) ResolveWebChatPlatformLoginByUsername(webUsername, platform string) (*UserAccount, bool, error) {
+	webUsername, platform = strings.TrimSpace(webUsername), strings.TrimSpace(platform)
+	if webUsername == "" || platform == "" {
+		return nil, false, fmt.Errorf("Web 用户名和平台不能为空")
+	}
+	webUser, err := d.GetWebChatUserByUsername(webUsername)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	webAccount, err := d.GetUserAccount(WebChatPlatform, webUser.UserID)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	accounts, err := d.ListUserAccountsByUnionID(webAccount.UnionID)
+	if err != nil {
+		return nil, false, err
+	}
+	matched := make([]*UserAccount, 0)
+	for _, account := range accounts {
+		if account != nil && account.Platform == platform {
+			matched = append(matched, account)
+		}
+	}
+	if len(matched) == 0 {
+		return nil, false, nil
+	}
+	if len(matched) > 1 {
+		return nil, true, nil
+	}
+	return matched[0], false, nil
 }
 
 func (d *Database) ResetWebChatUserPassword(email, code, password string) error {
@@ -400,6 +529,14 @@ func (d *Database) GetWebChatUser(userID string) (*WebChatUser, error) {
 	return scanWebChatUser(d.db.QueryRow(webChatUserSelectSQL()+` WHERE u.user_id = ?`, userID))
 }
 
+func (d *Database) GetWebChatUserByUsername(username string) (*WebChatUser, error) {
+	username = strings.ToLower(strings.TrimSpace(username))
+	if username == "" {
+		return nil, sql.ErrNoRows
+	}
+	return scanWebChatUser(d.db.QueryRow(webChatUserSelectSQL()+` WHERE LOWER(u.username) = ? AND u.disabled = 0`, username))
+}
+
 func (d *Database) SaveWebChatMessage(message *WebChatMessage) (*WebChatMessage, error) {
 	if message == nil {
 		return nil, fmt.Errorf("消息不能为空")
@@ -543,13 +680,17 @@ func WebChatTokenHash(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func RandomWebChatEmailCode() (string, error) {
+func RandomWebChatCode() (string, error) {
 	max := big.NewInt(1000000)
 	n, err := rand.Int(rand.Reader, max)
 	if err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("%06d", n.Int64()), nil
+}
+
+func RandomWebChatEmailCode() (string, error) {
+	return RandomWebChatCode()
 }
 
 func normalizeWebChatEmail(value string) string {
@@ -604,6 +745,33 @@ func (d *Database) ensureWebChatEmailRate(email, purpose, sentIP string) error {
 	return nil
 }
 
+func (d *Database) ensureWebChatPlatformRate(platform, adapterID, userID, sentIP string) error {
+	var recent int
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM web_chat_platform_codes WHERE platform = ? AND adapter_id = ? AND user_id = ? AND purpose = ? AND created_at > datetime('now', '-60 seconds')`, platform, adapterID, userID, WebChatEmailPurposeLogin).Scan(&recent); err != nil {
+		return err
+	}
+	if recent > 0 {
+		return fmt.Errorf("验证码发送过于频繁，请稍后再试")
+	}
+	var targetCount int
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM web_chat_platform_codes WHERE platform = ? AND adapter_id = ? AND user_id = ? AND purpose = ? AND created_at > datetime('now', '-10 minutes')`, platform, adapterID, userID, WebChatEmailPurposeLogin).Scan(&targetCount); err != nil {
+		return err
+	}
+	if targetCount >= 5 {
+		return fmt.Errorf("验证码发送次数过多，请稍后再试")
+	}
+	if strings.TrimSpace(sentIP) != "" {
+		var ipCount int
+		if err := d.db.QueryRow(`SELECT COUNT(*) FROM web_chat_platform_codes WHERE sent_ip = ? AND created_at > datetime('now', '-10 minutes')`, strings.TrimSpace(sentIP)).Scan(&ipCount); err != nil {
+			return err
+		}
+		if ipCount >= 5 {
+			return fmt.Errorf("验证码发送次数过多，请稍后再试")
+		}
+	}
+	return nil
+}
+
 func consumeWebChatEmailCodeTx(tx *sql.Tx, email, code, purpose string) error {
 	var id, attempts int64
 	var hash string
@@ -627,6 +795,104 @@ func consumeWebChatEmailCodeTx(tx *sql.Tx, email, code, purpose string) error {
 	}
 	_, err = tx.Exec(`UPDATE web_chat_email_codes SET used_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
 	return err
+}
+
+func consumeWebChatPlatformCodeTx(tx *sql.Tx, platform, adapterID, userID, code string) (string, error) {
+	var id, attempts int64
+	var hash, unionID string
+	err := tx.QueryRow(`
+		SELECT id, code_hash, attempts, union_id FROM web_chat_platform_codes
+		WHERE platform = ? AND adapter_id = ? AND user_id = ? AND purpose = ? AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+		ORDER BY created_at DESC, id DESC LIMIT 1
+	`, platform, adapterID, userID, WebChatEmailPurposeLogin).Scan(&id, &hash, &attempts, &unionID)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("平台验证码错误")
+	}
+	if err != nil {
+		return "", err
+	}
+	if attempts >= webChatMaxCodeAttempts {
+		return "", fmt.Errorf("验证码错误次数过多，请重新获取")
+	}
+	if !VerifyAdminPasswordHash(code, hash) {
+		_, _ = tx.Exec(`UPDATE web_chat_platform_codes SET attempts = attempts + 1 WHERE id = ?`, id)
+		return "", fmt.Errorf("平台验证码错误")
+	}
+	if _, err = tx.Exec(`UPDATE web_chat_platform_codes SET used_at = CURRENT_TIMESTAMP WHERE id = ?`, id); err != nil {
+		return "", err
+	}
+	return unionID, nil
+}
+
+func ensureWebChatUserForUnionTx(tx *sql.Tx, unionID, sourcePlatform, sourceUserID string) (string, error) {
+	var userID string
+	err := tx.QueryRow(`
+		SELECT ua.user_id
+		FROM user_accounts ua
+		JOIN web_chat_users u ON u.user_id = ua.user_id AND u.disabled = 0
+		WHERE ua.platform = ? AND ua.union_id = ?
+		ORDER BY ua.id ASC LIMIT 1
+	`, WebChatPlatform, unionID).Scan(&userID)
+	if err == nil {
+		return userID, nil
+	}
+	if err != sql.ErrNoRows {
+		return "", err
+	}
+	userID, err = newWebChatUserID()
+	if err != nil {
+		return "", err
+	}
+	password, err := randomHex(24)
+	if err != nil {
+		return "", err
+	}
+	passwordHash, err := HashAdminPassword(password)
+	if err != nil {
+		return "", err
+	}
+	username := uniqueWebChatInternalUsername(tx, sourcePlatform, sourceUserID, userID)
+	email := userID + "@webchat.local"
+	displayName := username
+	if _, err = tx.Exec(`
+		INSERT INTO web_chat_users (user_id, username, email, password_hash, display_name, email_verified, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, userID, username, email, passwordHash, displayName); err != nil {
+		return "", err
+	}
+	if _, err = tx.Exec(`INSERT INTO user_accounts (platform, user_id, union_id, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, WebChatPlatform, userID, unionID); err != nil {
+		return "", err
+	}
+	if _, err = tx.Exec(`INSERT OR IGNORE INTO user_points (union_id, points, created_at, updated_at) VALUES (?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, unionID); err != nil {
+		return "", err
+	}
+	return userID, nil
+}
+
+func uniqueWebChatInternalUsername(tx *sql.Tx, sourcePlatform, sourceUserID, fallback string) string {
+	base := "web_" + sanitizeIdentityPart(sourcePlatform) + "_" + sanitizeIdentityPart(sourceUserID)
+	if len(base) > 32 {
+		base = base[:32]
+	}
+	if len(base) < 3 {
+		base = fallback
+	}
+	for i := 0; i < 100; i++ {
+		candidate := base
+		if i > 0 {
+			suffix := fmt.Sprintf("_%d", i)
+			candidate = base
+			if len([]rune(candidate))+len(suffix) > 32 {
+				candidate = string([]rune(candidate)[:32-len(suffix)])
+			}
+			candidate += suffix
+		}
+		var count int
+		if err := tx.QueryRow(`SELECT COUNT(1) FROM web_chat_users WHERE username = ?`, candidate).Scan(&count); err == nil && count == 0 {
+			return candidate
+		}
+	}
+	return fallback
 }
 
 func userBindCodeByCodeTx(tx *sql.Tx, code string) (*UserAccount, error) {

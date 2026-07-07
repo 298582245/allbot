@@ -286,7 +286,7 @@ onMounted(async () => {
   await loadSettings()
   await loadLogs()
   logInterval = setInterval(() => {
-    if (isTodaySelected.value && pagination.value.page === 1) loadLogs()
+    if (!pauseScroll.value && isTodaySelected.value && pagination.value.page === 1) loadLogs()
   }, 3000)
 })
 

@@ -96,6 +96,182 @@ func TestVerifyWebChatEmailLoginRejectsRegisterCode(t *testing.T) {
 	}
 }
 
+func TestResolveWebChatPlatformLoginByUsernameFindsBoundAccount(t *testing.T) {
+	db, user := newWebChatPasswordResetTestUser(t)
+	bindCode, err := db.CreateUserBindCode("telegram", "tg1")
+	if err != nil {
+		t.Fatalf("CreateUserBindCode returned error: %v", err)
+	}
+	if _, _, err := db.BindWebChatUserByCode(user.UserID, bindCode.Code); err != nil {
+		t.Fatalf("BindWebChatUserByCode returned error: %v", err)
+	}
+	account, ambiguous, err := db.ResolveWebChatPlatformLoginByUsername("reset_user", "telegram")
+	if err != nil {
+		t.Fatalf("ResolveWebChatPlatformLoginByUsername returned error: %v", err)
+	}
+	if ambiguous || account == nil || account.UserID != "tg1" {
+		t.Fatalf("unexpected resolved account ambiguous=%v account=%#v", ambiguous, account)
+	}
+	if err := db.CreateWebChatPlatformCode("telegram", "1", account.UserID, account.UnionID, "123456", ""); err != nil {
+		t.Fatalf("CreateWebChatPlatformCode returned error: %v", err)
+	}
+	loginUser, err := db.VerifyWebChatPlatformLogin("telegram", "1", account.UserID, "123456")
+	if err != nil {
+		t.Fatalf("VerifyWebChatPlatformLogin returned error: %v", err)
+	}
+	if loginUser.UserID != user.UserID {
+		t.Fatalf("expected existing web user %s, got %s", user.UserID, loginUser.UserID)
+	}
+}
+
+func TestResolveWebChatPlatformLoginByUsernameMissingAndUnbound(t *testing.T) {
+	db, _ := newWebChatPasswordResetTestUser(t)
+	account, ambiguous, err := db.ResolveWebChatPlatformLoginByUsername("missing_user", "telegram")
+	if err != nil || ambiguous || account != nil {
+		t.Fatalf("expected missing user to resolve empty, ambiguous=%v account=%#v err=%v", ambiguous, account, err)
+	}
+	account, ambiguous, err = db.ResolveWebChatPlatformLoginByUsername("reset_user", "telegram")
+	if err != nil || ambiguous || account != nil {
+		t.Fatalf("expected unbound platform to resolve empty, ambiguous=%v account=%#v err=%v", ambiguous, account, err)
+	}
+}
+
+func TestResolveWebChatPlatformLoginByUsernameAmbiguous(t *testing.T) {
+	db, user := newWebChatPasswordResetTestUser(t)
+	bindCode, err := db.CreateUserBindCode("telegram", "tg1")
+	if err != nil {
+		t.Fatalf("CreateUserBindCode returned error: %v", err)
+	}
+	if _, _, err := db.BindWebChatUserByCode(user.UserID, bindCode.Code); err != nil {
+		t.Fatalf("BindWebChatUserByCode returned error: %v", err)
+	}
+	webAccount, err := db.GetUserAccount(WebChatPlatform, user.UserID)
+	if err != nil {
+		t.Fatalf("GetUserAccount web returned error: %v", err)
+	}
+	second, err := db.EnsureUserAccount("telegram", "tg2")
+	if err != nil {
+		t.Fatalf("EnsureUserAccount second returned error: %v", err)
+	}
+	if _, err := db.db.Exec(`UPDATE user_accounts SET union_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, webAccount.UnionID, second.ID); err != nil {
+		t.Fatalf("update second union returned error: %v", err)
+	}
+	account, ambiguous, err := db.ResolveWebChatPlatformLoginByUsername("reset_user", "telegram")
+	if err != nil {
+		t.Fatalf("ResolveWebChatPlatformLoginByUsername returned error: %v", err)
+	}
+	if !ambiguous || account != nil {
+		t.Fatalf("expected ambiguous account, ambiguous=%v account=%#v", ambiguous, account)
+	}
+}
+
+func TestWebChatPlatformLoginCreatesWebUser(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+	account, err := db.EnsureUserAccount("telegram", "tg1")
+	if err != nil {
+		t.Fatalf("EnsureUserAccount returned error: %v", err)
+	}
+	if err := db.CreateWebChatPlatformCode("telegram", "1", "tg1", account.UnionID, "123456", "1.1.1.1"); err != nil {
+		t.Fatalf("CreateWebChatPlatformCode returned error: %v", err)
+	}
+	user, err := db.VerifyWebChatPlatformLogin("telegram", "1", "tg1", "123456")
+	if err != nil {
+		t.Fatalf("VerifyWebChatPlatformLogin returned error: %v", err)
+	}
+	if user.UserID == "" || user.UnionID != account.UnionID || user.EmailVerified {
+		t.Fatalf("unexpected platform login user: %#v", user)
+	}
+	webAccount, err := db.GetUserAccount(WebChatPlatform, user.UserID)
+	if err != nil {
+		t.Fatalf("GetUserAccount web returned error: %v", err)
+	}
+	if webAccount.UnionID != account.UnionID {
+		t.Fatalf("expected web account union %s, got %s", account.UnionID, webAccount.UnionID)
+	}
+}
+
+func TestWebChatPlatformLoginReusesExistingWebUser(t *testing.T) {
+	db, user := newWebChatPasswordResetTestUser(t)
+	bindCode, err := db.CreateUserBindCode("telegram", "tg1")
+	if err != nil {
+		t.Fatalf("CreateUserBindCode returned error: %v", err)
+	}
+	if _, _, err := db.BindWebChatUserByCode(user.UserID, bindCode.Code); err != nil {
+		t.Fatalf("BindWebChatUserByCode returned error: %v", err)
+	}
+	account, err := db.GetUserAccount("telegram", "tg1")
+	if err != nil {
+		t.Fatalf("GetUserAccount telegram returned error: %v", err)
+	}
+	if err := db.CreateWebChatPlatformCode("telegram", "1", "tg1", account.UnionID, "123456", ""); err != nil {
+		t.Fatalf("CreateWebChatPlatformCode returned error: %v", err)
+	}
+	loginUser, err := db.VerifyWebChatPlatformLogin("telegram", "1", "tg1", "123456")
+	if err != nil {
+		t.Fatalf("VerifyWebChatPlatformLogin returned error: %v", err)
+	}
+	if loginUser.UserID != user.UserID {
+		t.Fatalf("expected existing web user %s, got %s", user.UserID, loginUser.UserID)
+	}
+}
+
+func TestWebChatPlatformCodeConsumesOnceAndTracksAttempts(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+	account, err := db.EnsureUserAccount("telegram", "tg1")
+	if err != nil {
+		t.Fatalf("EnsureUserAccount returned error: %v", err)
+	}
+	if err := db.CreateWebChatPlatformCode("telegram", "1", "tg1", account.UnionID, "123456", ""); err != nil {
+		t.Fatalf("CreateWebChatPlatformCode returned error: %v", err)
+	}
+	for i := 0; i < webChatMaxCodeAttempts; i++ {
+		if _, err := db.VerifyWebChatPlatformLogin("telegram", "1", "tg1", "000000"); err == nil {
+			t.Fatal("expected wrong platform code to fail")
+		}
+	}
+	if _, err := db.VerifyWebChatPlatformLogin("telegram", "1", "tg1", "123456"); err == nil {
+		t.Fatal("expected code to be rejected after max attempts")
+	}
+	if _, err := db.db.Exec(`DELETE FROM web_chat_platform_codes`); err != nil {
+		t.Fatalf("cleanup platform codes returned error: %v", err)
+	}
+	if err := db.CreateWebChatPlatformCode("telegram", "1", "tg1", account.UnionID, "654321", ""); err != nil {
+		t.Fatalf("CreateWebChatPlatformCode second returned error: %v", err)
+	}
+	if _, err := db.VerifyWebChatPlatformLogin("telegram", "1", "tg1", "654321"); err != nil {
+		t.Fatalf("expected platform code to login: %v", err)
+	}
+	if _, err := db.VerifyWebChatPlatformLogin("telegram", "1", "tg1", "654321"); err == nil {
+		t.Fatal("expected consumed platform code to fail")
+	}
+}
+
+func TestWebChatPlatformCodeRateLimit(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+	account, err := db.EnsureUserAccount("telegram", "tg1")
+	if err != nil {
+		t.Fatalf("EnsureUserAccount returned error: %v", err)
+	}
+	if err := db.CreateWebChatPlatformCode("telegram", "1", "tg1", account.UnionID, "123456", "1.1.1.1"); err != nil {
+		t.Fatalf("CreateWebChatPlatformCode returned error: %v", err)
+	}
+	if err := db.CreateWebChatPlatformCode("telegram", "1", "tg1", account.UnionID, "222222", "1.1.1.1"); err == nil {
+		t.Fatal("expected platform code target rate limit")
+	}
+}
+
 func TestResetWebChatUserPasswordConsumesResetCode(t *testing.T) {
 	db, user := newWebChatPasswordResetTestUser(t)
 	if err := db.CreateWebChatEmailCode(user.Email, "654321", WebChatEmailPurposeResetPassword, ""); err != nil {

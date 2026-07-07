@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/allbot/allbot/core/adapter"
+	"github.com/allbot/allbot/core/adapter/_registry"
 	webadapter "github.com/allbot/allbot/core/adapter/web"
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/imagehost"
@@ -52,6 +53,12 @@ func (s *Server) handleWebChatAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleWebChatLogin(w, r)
 	case "email-login":
 		s.handleWebChatEmailLogin(w, r)
+	case "platforms":
+		s.handleWebChatPlatforms(w, r)
+	case "platform-code":
+		s.handleWebChatPlatformCode(w, r)
+	case "platform-login":
+		s.handleWebChatPlatformLogin(w, r)
 	case "logout":
 		s.handleWebChatLogout(w, r)
 	case "me":
@@ -308,6 +315,154 @@ func (s *Server) handleWebChatEmailLogin(w http.ResponseWriter, r *http.Request)
 	user, err := database.VerifyWebChatEmailLogin(req.Email, req.Code)
 	if err != nil {
 		s.jsonError(w, "邮箱验证码错误", http.StatusUnauthorized)
+		return
+	}
+	session, err := database.CreateWebChatSession(user.UserID, r.UserAgent(), webChatClientIP(r))
+	if err != nil {
+		s.jsonError(w, "创建会话失败", http.StatusInternalServerError)
+		return
+	}
+	s.setWebChatCookie(w, r, session.Token)
+	s.jsonResponse(w, session)
+}
+
+func (s *Server) handleWebChatPlatforms(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := s.requireRunningWebChatAdapter(w); !ok {
+		return
+	}
+	if s.adapterManager == nil || s.adapterManager.GetDatabase() == nil {
+		s.jsonError(w, "适配器管理器不可用", http.StatusInternalServerError)
+		return
+	}
+	configs, err := s.adapterManager.GetDatabase().GetAllAdapters()
+	if err != nil {
+		s.jsonError(w, "读取平台实例失败", http.StatusInternalServerError)
+		return
+	}
+	items := make([]map[string]interface{}, 0)
+	for _, item := range configs {
+		if item == nil || !item.Enabled || !webChatPlatformLoginAllowed(item.Platform) || s.adapterManager.GetAdapterByID(item.ID) == nil {
+			continue
+		}
+		desc, _ := registry.Get(item.Platform)
+		if !webChatDescriptorSupportsPlatformLogin(desc) {
+			continue
+		}
+		displayName := strings.TrimSpace(desc.DisplayName)
+		if displayName == "" {
+			displayName = item.Platform
+		}
+		items = append(items, map[string]interface{}{
+			"id":           strconv.FormatInt(item.ID, 10),
+			"platform":     item.Platform,
+			"display_name": displayName,
+			"remark":       item.Remark,
+			"description":  item.Description,
+			"running":      true,
+		})
+	}
+	s.jsonResponse(w, items)
+}
+
+func (s *Server) handleWebChatPlatformCode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.validWebChatOrigin(r) {
+		s.jsonError(w, "请求来源无效", http.StatusForbidden)
+		return
+	}
+	if _, ok := s.requireRunningWebChatAdapter(w); !ok {
+		return
+	}
+	var req webChatPlatformLoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, "请求数据无效", http.StatusBadRequest)
+		return
+	}
+	platformConfig, platformAdapter, ok := s.requireWebChatPlatformAdapter(w, req.Platform, req.AdapterID)
+	if !ok {
+		return
+	}
+	username := strings.TrimSpace(req.Username)
+	if !defaultWebChatLimiter.Allow("platform-code:"+webChatClientIP(r)+":"+strconv.FormatInt(platformConfig.ID, 10)+":"+strings.ToLower(username), time.Minute, 1) {
+		s.jsonError(w, "请求过于频繁", http.StatusTooManyRequests)
+		return
+	}
+	database, ok := s.requireWebChatDatabase(w)
+	if !ok {
+		return
+	}
+	account, _, err := database.ResolveWebChatPlatformLoginByUsername(username, platformConfig.Platform)
+	if err != nil {
+		s.jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if account == nil {
+		s.jsonResponse(w, map[string]bool{"success": true})
+		return
+	}
+	code, err := config.RandomWebChatCode()
+	if err != nil {
+		s.jsonError(w, "生成验证码失败", http.StatusInternalServerError)
+		return
+	}
+	adapterID := strconv.FormatInt(platformConfig.ID, 10)
+	if err := database.CreateWebChatPlatformCode(platformConfig.Platform, adapterID, account.UserID, account.UnionID, code, webChatClientIP(r)); err != nil {
+		s.jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := sendWebChatPlatformLoginCode(platformAdapter, account.UserID, code); err != nil {
+		s.jsonError(w, "发送平台验证码失败："+err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.jsonResponse(w, map[string]bool{"success": true})
+}
+
+func (s *Server) handleWebChatPlatformLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.validWebChatOrigin(r) {
+		s.jsonError(w, "请求来源无效", http.StatusForbidden)
+		return
+	}
+	if _, ok := s.requireRunningWebChatAdapter(w); !ok {
+		return
+	}
+	var req webChatPlatformLoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, "请求数据无效", http.StatusBadRequest)
+		return
+	}
+	platformConfig, _, ok := s.requireWebChatPlatformAdapter(w, req.Platform, req.AdapterID)
+	if !ok {
+		return
+	}
+	username := strings.TrimSpace(req.Username)
+	key := "platform-login:" + webChatClientIP(r) + ":" + strconv.FormatInt(platformConfig.ID, 10) + ":" + strings.ToLower(username)
+	if !defaultWebChatLimiter.Allow(key, 10*time.Minute, 20) {
+		s.jsonError(w, "登录请求过于频繁", http.StatusTooManyRequests)
+		return
+	}
+	database, ok := s.requireWebChatDatabase(w)
+	if !ok {
+		return
+	}
+	account, ambiguous, err := database.ResolveWebChatPlatformLoginByUsername(username, platformConfig.Platform)
+	if err != nil || ambiguous || account == nil {
+		s.jsonError(w, "平台验证码错误", http.StatusUnauthorized)
+		return
+	}
+	user, err := database.VerifyWebChatPlatformLogin(platformConfig.Platform, strconv.FormatInt(platformConfig.ID, 10), account.UserID, req.Code)
+	if err != nil || !strings.EqualFold(user.Username, username) {
+		s.jsonError(w, "平台验证码错误", http.StatusUnauthorized)
 		return
 	}
 	session, err := database.CreateWebChatSession(user.UserID, r.UserAgent(), webChatClientIP(r))
@@ -650,6 +805,75 @@ func (s *Server) handleWebChatImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.jsonResponse(w, asset)
+}
+
+type webChatPlatformLoginRequest struct {
+	AdapterID string `json:"adapter_id"`
+	Platform  string `json:"platform"`
+	Username  string `json:"username"`
+	Code      string `json:"code"`
+}
+
+func (s *Server) requireWebChatPlatformAdapter(w http.ResponseWriter, platform, adapterID string) (*config.AdapterConfig, adapter.Adapter, bool) {
+	platform, adapterID = strings.TrimSpace(platform), strings.TrimSpace(adapterID)
+	if s.adapterManager == nil || s.adapterManager.GetDatabase() == nil {
+		s.jsonError(w, "适配器管理器不可用", http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	id, err := strconv.ParseInt(adapterID, 10, 64)
+	if err != nil || id <= 0 || platform == "" {
+		s.jsonError(w, "平台实例无效", http.StatusBadRequest)
+		return nil, nil, false
+	}
+	item, err := s.adapterManager.GetDatabase().GetAdapterByID(id)
+	if err != nil {
+		s.jsonError(w, "读取平台实例失败", http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	if item == nil || !item.Enabled || item.Platform != platform || !webChatPlatformLoginAllowed(item.Platform) {
+		s.jsonError(w, "平台实例不可用", http.StatusBadRequest)
+		return nil, nil, false
+	}
+	desc, ok := registry.Get(item.Platform)
+	if !ok || !webChatDescriptorSupportsPlatformLogin(desc) {
+		s.jsonError(w, "平台不支持验证码登录", http.StatusBadRequest)
+		return nil, nil, false
+	}
+	adp := s.adapterManager.GetAdapterByID(item.ID)
+	if adp == nil {
+		s.jsonError(w, "平台实例未运行", http.StatusBadRequest)
+		return nil, nil, false
+	}
+	return item, adp, true
+}
+
+func webChatPlatformLoginAllowed(platform string) bool {
+	switch strings.TrimSpace(platform) {
+	case "", config.WebChatPlatform, "dingtalk":
+		return false
+	default:
+		return true
+	}
+}
+
+func webChatDescriptorSupportsPlatformLogin(desc registry.Descriptor) bool {
+	return desc.Platform != "" && desc.Capabilities.SendText && desc.Capabilities.PrivateMessage
+}
+
+func sendWebChatPlatformLoginCode(adp adapter.Adapter, userID, code string) error {
+	if adp == nil {
+		return fmt.Errorf("平台实例未运行")
+	}
+	target := strings.TrimSpace(userID)
+	if resolver, ok := adp.(adapter.SendTargetResolver); ok {
+		if resolved := strings.TrimSpace(resolver.SendTarget(userID, "")); resolved != "" {
+			target = resolved
+		}
+	}
+	if target == "" {
+		return fmt.Errorf("发送目标不能为空")
+	}
+	return adp.SendMessage(target, "你的web登录验证码为："+code)
 }
 
 func (s *Server) requireWebChatDatabase(w http.ResponseWriter) (*config.Database, bool) {

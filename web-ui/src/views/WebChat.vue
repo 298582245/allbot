@@ -17,7 +17,7 @@
             </el-form-item>
             <el-button type="primary" :loading="loading" class="full-button" @click="handleLogin">登录</el-button>
           </el-form>
-          <el-form v-else label-position="top" @submit.prevent>
+          <el-form v-else-if="loginMode === 'email'" label-position="top" @submit.prevent>
             <el-form-item label="邮箱">
               <div class="inline-row">
                 <el-input v-model="emailLoginForm.email" placeholder="请输入注册邮箱" />
@@ -28,6 +28,23 @@
               <el-input v-model="emailLoginForm.code" placeholder="6 位数字验证码" @keyup.enter="handleEmailLogin" />
             </el-form-item>
             <el-button type="primary" :loading="loading" class="full-button" @click="handleEmailLogin">验证码登录</el-button>
+          </el-form>
+          <el-form v-else label-position="top" @submit.prevent>
+            <el-form-item label="Web 用户名">
+              <div class="inline-row">
+                <el-input v-model="platformLoginForm.username" placeholder="请输入 Web 用户名" />
+                <el-button :loading="platformLoginCodeLoading" @click="sendPlatformLoginCode">获取验证码</el-button>
+              </div>
+            </el-form-item>
+            <el-form-item label="接收平台">
+              <el-select v-model="platformLoginForm.adapter_id" class="full-button" placeholder="请选择正在运行的平台" @change="handlePlatformChange">
+                <el-option v-for="item in platformLoginPlatforms" :key="item.id" :label="platformOptionLabel(item)" :value="item.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="验证码">
+              <el-input v-model="platformLoginForm.code" placeholder="6 位数字验证码" @keyup.enter="handlePlatformLogin" />
+            </el-form-item>
+            <el-button type="primary" :loading="loading" class="full-button" @click="handlePlatformLogin">平台验证码登录</el-button>
           </el-form>
         </el-tab-pane>
         <el-tab-pane label="注册" name="register">
@@ -227,31 +244,36 @@ import {
   getWebChatMe,
   getWebChatMessageCounts,
   getWebChatMessages,
+  getWebChatPlatforms,
   getWebChatPlugins,
   loginWebChat,
   loginWebChatByEmailCode,
+  loginWebChatByPlatformCode,
   logoutWebChat,
   markWebChatRead,
   registerWebChat,
   resetWebChatPassword,
   sendWebChatEmailCode,
-  sendWebChatMessage
+  sendWebChatMessage,
+  sendWebChatPlatformCode
 } from '@/api'
 
 const privateSessionId = '__private__'
 
 const authMode = ref('login')
 const loginMode = ref('password')
-const loginModeOptions = [{ label: '密码登录', value: 'password' }, { label: '邮箱验证码', value: 'email' }]
+const loginModeOptions = [{ label: '密码登录', value: 'password' }, { label: '邮箱验证码', value: 'email' }, { label: '平台验证码', value: 'platform' }]
 const loading = ref(false)
 const codeLoading = ref(false)
 const resetCodeLoading = ref(false)
 const emailLoginCodeLoading = ref(false)
+const platformLoginCodeLoading = ref(false)
 const sending = ref(false)
 const session = ref(null)
 const csrfToken = ref('')
 const messages = ref([])
 const plugins = ref([])
+const platformLoginPlatforms = ref([])
 const activeSessionId = ref(privateSessionId)
 const pluginKeyword = ref('')
 const unreadMap = reactive({})
@@ -270,6 +292,7 @@ let eventSource = null
 
 const loginForm = reactive({ login: '', password: '' })
 const emailLoginForm = reactive({ email: '', code: '' })
+const platformLoginForm = reactive({ adapter_id: '', platform: '', username: '', code: '' })
 const registerForm = reactive({ email: '', code: '', username: '', display_name: '', password: '', bind_code: '' })
 const resetForm = reactive({ email: '', code: '', password: '', confirmPassword: '' })
 
@@ -297,6 +320,7 @@ onMounted(async () => {
     setSession(data)
   } catch {
     session.value = null
+    await loadPlatformLoginPlatforms()
   }
 })
 
@@ -320,6 +344,18 @@ async function loadMessageCounts() {
   const counts = await getWebChatMessageCounts()
   for (const item of counts || []) {
     updateSessionStats(item)
+  }
+}
+
+async function loadPlatformLoginPlatforms() {
+  try {
+    platformLoginPlatforms.value = await getWebChatPlatforms()
+    if (!platformLoginForm.adapter_id && platformLoginPlatforms.value.length > 0) {
+      platformLoginForm.adapter_id = platformLoginPlatforms.value[0].id
+      platformLoginForm.platform = platformLoginPlatforms.value[0].platform
+    }
+  } catch {
+    platformLoginPlatforms.value = []
   }
 }
 
@@ -389,6 +425,20 @@ async function sendResetCode() {
     ElMessage.error(error.message)
   } finally {
     resetCodeLoading.value = false
+  }
+}
+
+async function sendPlatformLoginCode() {
+  const payload = buildPlatformLoginPayload()
+  if (!payload) return
+  platformLoginCodeLoading.value = true
+  try {
+    await sendWebChatPlatformCode(payload)
+    ElMessage.success('如果账号和平台绑定可用，验证码将发送到对应平台私聊，请注意查收。')
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    platformLoginCodeLoading.value = false
   }
 }
 
@@ -473,6 +523,26 @@ async function handleEmailLogin() {
   }
 }
 
+async function handlePlatformLogin() {
+  const payload = buildPlatformLoginPayload()
+  if (!payload) return
+  const code = platformLoginForm.code.trim()
+  if (!code) {
+    ElMessage.warning('请填写平台验证码')
+    return
+  }
+  loading.value = true
+  try {
+    const data = await loginWebChatByPlatformCode({ ...payload, code })
+    setSession(data)
+    ElMessage.success('登录成功')
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    loading.value = false
+  }
+}
+
 async function handleLogout() {
   try {
     await logoutWebChat(csrfToken.value)
@@ -488,6 +558,7 @@ async function handleLogout() {
   clearReactiveMap(lastMessageIdMap)
   messageCountMap[privateSessionId] = 0
   lastMessageIdMap[privateSessionId] = 0
+  await loadPlatformLoginPlatforms()
 }
 
 async function bindCodeSubmit() {
@@ -546,6 +617,36 @@ function buildPayload() {
   const payload = { type: 'text', content: text }
   if (activeSessionId.value !== privateSessionId) payload.plugin_id = activeSessionId.value
   return payload
+}
+
+function buildPlatformLoginPayload() {
+  const adapter = platformLoginPlatforms.value.find((item) => item.id === platformLoginForm.adapter_id)
+  if (!adapter) {
+    ElMessage.warning('请选择正在运行的平台实例')
+    return null
+  }
+  const username = platformLoginForm.username.trim()
+  if (!username) {
+    ElMessage.warning('请填写 Web 用户名')
+    return null
+  }
+  platformLoginForm.platform = adapter.platform
+  return {
+    adapter_id: adapter.id,
+    platform: adapter.platform,
+    username
+  }
+}
+
+function handlePlatformChange(value) {
+  const adapter = platformLoginPlatforms.value.find((item) => item.id === value)
+  platformLoginForm.platform = adapter?.platform || ''
+}
+
+function platformOptionLabel(item) {
+  const title = item.display_name || item.platform
+  const remark = item.remark ? ` / ${item.remark}` : ''
+  return `${title}${remark} / #${item.id}`
 }
 
 function handleMessageListClick(event) {
