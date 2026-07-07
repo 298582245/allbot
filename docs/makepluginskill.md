@@ -49,17 +49,44 @@
   - `allowed_adapter_ids`：允许的适配器 ID 列表
   - `script_env`：脚本环境变量开关与变量名
   - `open_api`：开放接口配置
+  - `web_ui`：插件 Web 面板配置
+  - `web_chat`：WebChat 入口展示配置
   - `user_config`：用户配置默认值
-  - `user_config_schema`：用户配置表单
+  - `user_config_schema`：后台插件参数面板表单
+- `user_config_schema` 字段规则：
+  - `key`：配置键名，必须和 `user_config`、代码里的 `ctx.config(key)` 一致；`divider` 可不填
+  - `label`：后台表单显示名
+  - `type`：表单类型
+  - `required`：是否必填
+  - `default`：默认值，创建插件和初始化配置时使用
+  - `placeholder`：输入提示
+  - `description`：字段说明，后台会显示为提示文案
+  - `options`：`select` 下拉选项，格式为 `[{"label":"显示名","value":"实际值"}]`
 - `user_config_schema` 常见类型：
-  - `divider`
-  - `text`
-  - `number`
-  - `boolean`
-  - `password`
-  - `textarea`
-- 普通插件重点关注 `trigger`、`dependencies`、`user_config`。
+  - `divider`：分组标题，只展示 `label` / `description`
+  - `text`：单行文本
+  - `number`：数字输入
+  - `boolean` / `bool`：开关
+  - `password`：密码类字段；当前后台保存仍走普通配置值，插件回复时不要回显
+  - `textarea`：多行文本
+  - `select`：下拉选择，需要配套 `options`
+- `web_ui` 字段规则：
+  - `enabled`：为 `true` 时显示插件面板入口
+  - `title`：插件面板标题；为空时回退插件名称
+  - `entry`：插件目录内前端入口文件，例如 `web/index.html` 或 `web/dist/index.html`
+  - `icon`：可选菜单图标名，主 WebUI 不识别时使用默认图标
+  - `order`：面板菜单排序，数字越小越靠前
+- `web_chat` 字段规则：
+  - `enabled`：是否在 WebChat 中展示插件入口
+  - `title`：入口标题
+  - `description`：入口说明
+  - `placeholder`：输入框提示
+  - `entry_text`：点击入口后默认发送或填入的文本
+  - `keywords`：搜索/分类关键词
+  - `quick_actions`：快捷动作，格式为 `[{"label":"显示名","text":"发送文本"}]`
+- 普通插件重点关注 `trigger`、`dependencies`、`user_config`、`user_config_schema`。
 - 账号类插件重点关注 `trigger`、`priority`、`user_config_schema`、`script_env`、`open_api`、`access_control`。
+- 带后台面板的插件必须同时维护 `web_ui`、插件前端静态文件和 `ctx.web` API 路由。
 - OpenAPI 插件需要保持 `open_api.enabled`、`open_api.method`、`open_api.path`、`open_api.runtime`、`open_api.runtime_profile` 和入口逻辑一致。
 - 触发规则要与插件业务强匹配，建议用 `^...$` 锚定边界，避免和其他插件冲突。
 - 用户配置项要和代码里的 `ctx.config()` / `ctx.config(key)` / `ctx.config(key, default)` 保持一致。
@@ -131,6 +158,45 @@
 - 查询推荐使用结构化条件，避免拼接复杂 `where` 字符串。
 - 表结构、展示列、分组说明要保持清晰，便于后台维护。
 
+### 插件参数面板
+- 后台“插件管理”的参数配置表单来自 `plugin.json.user_config_schema`。
+- `user_config` 保存默认值和当前值；代码读取时使用 `ctx.config(key, default)`。
+- 新增配置项时必须同步三处：
+  1. `plugin.json.user_config_schema` 表单字段
+  2. `plugin.json.user_config` 默认值
+  3. 插件代码中的 `ctx.config(...)` 读取和兜底
+- `select` 类型必须提供 `options`；`boolean` 默认值用布尔值，`number` 默认值用数字。
+- `divider` 只用于分组展示，不要在 `user_config` 中保存同名键。
+- 密码、Token、Cookie 类字段可以用 `password` 类型，但不要在机器人回复、日志和 Web 面板里明文回显。
+
+### 插件 Web 面板和 Web API
+- 需要后台独立页面时，在 `plugin.json` 中声明 `web_ui`，并把前端构建产物放在插件目录内，例如 `plugins/<插件>/web/index.html`。
+- `web_ui.entry` 必须是插件目录内相对路径，不能使用绝对路径或 `../`。
+- 主后台会通过 `/api/plugin-web/panels` 读取面板，并在菜单中打开 `/plugin-panels/<pluginId>`，页面内部 iframe 加载 `/plugin-web/<pluginId>/<entry>`。
+- 插件前端调用后端 API 时使用 `/api/plugin-web/<pluginId>/<path>`。
+- Node.js 插件注册 Web API：
+  - `ctx.web.get('/path', async (req, ctx) => {...})`
+  - `ctx.web.post('/path', async (req, ctx) => {...})`
+  - `ctx.web.put('/path', async (req, ctx) => {...})`
+  - `ctx.web.delete('/path', async (req, ctx) => {...})`
+  - 返回普通对象会自动转 JSON；需要状态码、响应头或文本下载时返回 `new WebResponse(data, status, headers)`。
+- Python 插件注册 Web API：
+  - `@ctx.web.get('/path')`
+  - `@ctx.web.post('/path')`
+  - `@ctx.web.put('/path')`
+  - `@ctx.web.delete('/path')`
+  - handler 可接收 `req` 或 `(req, ctx)`，返回普通对象会自动转 JSON；需要状态码或响应头时返回 `WebResponse(data, status, headers)`。
+- Web API 请求对象常用字段：
+  - `req.method`
+  - `req.path`
+  - `req.query`
+  - `req.headers`
+  - `req.body`
+  - `await req.json()`：Node.js / Python 均可用
+- Web API 路由只做精确路径匹配，动态 ID 建议放到 query 或请求体中，例如 `/products?id=1` 或 `POST /products/update`。
+- 同一个插件既处理机器人消息又处理 Web API 时，初始化阶段先注册 `ctx.web` 路由；聊天命令分支必须基于 `ctx.content` / `ctx.text` 明确匹配，避免 Web API 请求误触发聊天回复。
+- 参考实现：`plugins/mall_shop/plugin.json`、`plugins/mall_shop/main.js`、`plugins/mall_shop/web/`。
+
 ### 账号、授权、定时任务和脚本
 - 需要系统统一用户 ID 时使用 `ctx.getUnionId()` / `ctx.get_union_id()`。
 - 需要积分扣减或增加时使用：
@@ -157,6 +223,23 @@
 4. 需要外部请求时再引入依赖，如 `axios`、`requests`。
 5. 保持回复简洁、明确，避免一次输出过长。
 6. 为关键分支补测试。
+
+## 带参数面板的插件编写流程
+1. 先列出需要后台配置的业务参数，并确定类型、默认值和说明。
+2. 在 `plugin.json.user_config` 写入默认值。
+3. 在 `plugin.json.user_config_schema` 写入表单字段，确保 `key` 与默认值一致。
+4. 在代码中统一用 `ctx.config(key, default)` 读取，不要散落硬编码默认值。
+5. 对数字、布尔、JSON 文本等值做类型归一化，避免后台保存后类型变化影响运行。
+6. 修改或新增参数后，验证后台插件配置弹窗可以正确展示、保存并被插件读取。
+
+## 带 Web 面板的插件编写流程
+1. 在 `plugin.json.web_ui` 中启用面板，设置 `title`、`entry`、`order` 和可选 `icon`。
+2. 在插件目录内放置前端页面或构建产物，入口路径必须和 `web_ui.entry` 一致。
+3. 在插件入口初始化时注册 `ctx.web` 路由，覆盖前端需要的列表、详情、保存、删除等接口。
+4. 前端统一请求 `/api/plugin-web/<pluginId>/<path>`，不要直接访问插件文件或数据库。
+5. 机器人消息处理逻辑必须基于 `ctx.content` / `ctx.text` 明确匹配；Web API 请求没有普通聊天内容，不要写无条件回复分支。
+6. 为 Web API 路由补最小测试，至少覆盖一个 GET、一个写入类请求和一个错误输入。
+7. 若 Web 面板依赖插件数据表，初始化阶段要先建表、迁移字段，再注册或处理 Web 请求。
 
 ## 账号类插件编写流程
 1. 先确定账号唯一键、展示名、环境变量名。
@@ -246,6 +329,12 @@
 - `entry` 是否与入口文件匹配。
 - `trigger` 是否能准确命中目标消息。
 - `user_config` 是否和代码读取逻辑一致。
+- `user_config_schema` 是否能完整生成后台参数配置面板。
+- `select`、`boolean`、`number`、`textarea`、`password` 等字段类型是否和默认值匹配。
+- 若声明 `web_ui`，`entry` 文件是否存在，路径是否相对插件目录，面板标题和排序是否符合预期。
+- 若开发插件 Web 前端，是否使用 `/api/plugin-web/<pluginId>/<path>` 调用插件 API。
+- 若注册 `ctx.web` 路由，是否覆盖前端所需接口，并避免 Web API 事件误走聊天命令逻辑。
+- 若声明 `web_chat`，入口文案、快捷动作和触发命令是否与插件实际能力一致。
 - 是否复用 `sdk/` 里已有的上下文 API。
 - 账号类插件是否统一走 `account_ql_plugin`。
 - 是否提供查询、运行、授权、删除、检测的完整闭环。

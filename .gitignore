@@ -29,6 +29,9 @@ runtime/envs/
 runtime/image_assets/
 runtime/interpreters/
 runtime/runtime_profiles.json
+runtime/package.json
+runtime/package-lock.json
+runtime/python_deps.json
 
 # 本地编译产物与 Release 产物
 allbot
@@ -83,7 +86,5 @@ openapis/*
 # 忽略 docs 下的所有内容
 docs/*
 
-# 恢复 docs 根目录下的所有文件和发布流程文档
+# 恢复 docs 根目录下的所有文件
 !docs/*.*
-!docs/plan/
-!docs/plan/UPDATE.md
