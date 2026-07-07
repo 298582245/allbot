@@ -33,12 +33,12 @@ func TestHandleBackupImportAndRestore(t *testing.T) {
 	if err := json.Unmarshal(importRecorder.Body.Bytes(), &importResult); err != nil {
 		t.Fatal(err)
 	}
-	if importResult.File.Name == "" || !importResult.Summary.HasPlugins {
+	if importResult.File.Name == "" || !importResult.Summary.HasPlugins || !importResult.Summary.HasImages {
 		t.Fatalf("导入响应不正确: %+v", importResult)
 	}
 
 	restoreRecorder := httptest.NewRecorder()
-	payload := backup.RestoreOptions{IncludePlugins: true, IncludeOpenAPIs: true, Confirm: true}
+	payload := backup.RestoreOptions{IncludePlugins: true, IncludeOpenAPIs: true, IncludeImages: true, Confirm: true}
 	server.handleBackupDetail(restoreRecorder, newJSONRequest(t, http.MethodPost, "/api/backups/"+importResult.File.Name+"/restore", payload))
 	if restoreRecorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", restoreRecorder.Code, restoreRecorder.Body.String())
@@ -115,8 +115,15 @@ func newBackupWebTestServer(t *testing.T) (*Server, *config.Database, *backup.Se
 	}
 	pluginDir := filepath.Join(workspace, "plugins")
 	openAPIDir := filepath.Join(workspace, "openapis")
+	imageDir := filepath.Join(workspace, "runtime", "image_assets")
 	mustWriteWebFile(t, filepath.Join(pluginDir, "demo", "plugin.json"), `{"id":"demo"}`)
 	mustWriteWebFile(t, filepath.Join(openAPIDir, "demo.json"), `{"id":"demo"}`)
+	mustWriteWebFile(t, filepath.Join(imageDir, "demo.png"), "image")
+	imageSettings := config.DefaultImageHostSettings()
+	imageSettings.StorageDir = imageDir
+	if err := database.SaveImageHostSettings(imageSettings); err != nil {
+		t.Fatal(err)
+	}
 	adapterManager := config.NewAdapterManager(database)
 	server = NewServer("0", nil, nil, adapterManager, nil)
 	service := backup.NewService(database, pluginDir)

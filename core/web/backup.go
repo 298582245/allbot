@@ -103,8 +103,8 @@ func (s *Server) handleBackupSettings(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "定时表达式无效: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		if !settings.IncludePlugins && !settings.IncludeData {
-			s.jsonError(w, "至少需要选择插件或数据中的一项", http.StatusBadRequest)
+		if !settings.IncludePlugins && !settings.IncludeData && !settings.IncludeImages {
+			s.jsonError(w, "至少需要选择插件、数据或图片中的一项", http.StatusBadRequest)
 			return
 		}
 		if err := s.adapterManager.GetDatabase().SaveBackupSettings(settings); err != nil {
@@ -195,7 +195,7 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request, nam
 		s.jsonError(w, "请求数据无效", http.StatusBadRequest)
 		return
 	}
-	if !options.Confirm || (!options.IncludeData && !options.IncludePlugins && !options.IncludeOpenAPIs) {
+	if !options.Confirm || (!options.IncludeData && !options.IncludePlugins && !options.IncludeOpenAPIs && !options.IncludeImages) {
 		s.jsonError(w, "请确认并至少选择一项恢复内容", http.StatusBadRequest)
 		return
 	}

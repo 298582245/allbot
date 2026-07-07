@@ -77,6 +77,7 @@ type BackupSummary struct {
 	HasData        bool   `json:"has_data"`
 	HasPlugins     bool   `json:"has_plugins"`
 	HasOpenAPIs    bool   `json:"has_openapis"`
+	HasImages      bool   `json:"has_images"`
 	FileCount      int    `json:"file_count"`
 	TotalSize      uint64 `json:"total_size"`
 	CompressedSize uint64 `json:"compressed_size"`
@@ -95,6 +96,7 @@ type RestoreOptions struct {
 	IncludeData     bool `json:"include_data"`
 	IncludePlugins  bool `json:"include_plugins"`
 	IncludeOpenAPIs bool `json:"include_openapis"`
+	IncludeImages   bool `json:"include_images"`
 	Confirm         bool `json:"confirm"`
 }
 
@@ -191,8 +193,8 @@ func (s *Service) createWithSettings(ctx context.Context, trigger string, settin
 	defer s.createMu.Unlock()
 
 	settings = config.NormalizeBackupSettings(settings)
-	if !settings.IncludePlugins && !settings.IncludeData {
-		return BackupFile{}, fmt.Errorf("至少需要选择插件或数据中的一项")
+	if !settings.IncludePlugins && !settings.IncludeData && !settings.IncludeImages {
+		return BackupFile{}, fmt.Errorf("至少需要选择插件、数据或图片中的一项")
 	}
 	backupDir, err := normalizePath(settings.BackupDir)
 	if err != nil {
@@ -218,7 +220,7 @@ func (s *Service) createWithSettings(ctx context.Context, trigger string, settin
 	}
 	defer os.RemoveAll(stagingDir)
 
-	includes := make([]string, 0, 3)
+	includes := make([]string, 0, 4)
 	if settings.IncludeData {
 		snapshotPath := filepath.Join(stagingDir, "config.db")
 		if err := s.database.SnapshotTo(snapshotPath); err != nil {
@@ -228,6 +230,9 @@ func (s *Service) createWithSettings(ctx context.Context, trigger string, settin
 	}
 	if settings.IncludePlugins {
 		includes = append(includes, "plugins")
+	}
+	if settings.IncludeImages {
+		includes = append(includes, "images")
 	}
 
 	manifest := Manifest{Version: 1, CreatedAt: createdAt, Trigger: strings.TrimSpace(trigger), Includes: includes, OSS: "reserved"}
@@ -352,7 +357,7 @@ func (s *Service) Restore(ctx context.Context, name string, options RestoreOptio
 	if !options.Confirm {
 		return RestoreResult{}, fmt.Errorf("请先确认恢复会覆盖当前数据")
 	}
-	if !options.IncludeData && !options.IncludePlugins && !options.IncludeOpenAPIs {
+	if !options.IncludeData && !options.IncludePlugins && !options.IncludeOpenAPIs && !options.IncludeImages {
 		return RestoreResult{}, fmt.Errorf("至少需要选择一项恢复内容")
 	}
 	file, err := s.Resolve(name)
@@ -371,6 +376,9 @@ func (s *Service) Restore(ctx context.Context, name string, options RestoreOptio
 	}
 	if options.IncludeOpenAPIs && !summary.HasOpenAPIs {
 		return RestoreResult{}, fmt.Errorf("备份包不包含 OpenAPI 文件")
+	}
+	if options.IncludeImages && !summary.HasImages {
+		return RestoreResult{}, fmt.Errorf("备份包不包含图片文件")
 	}
 
 	snapshot, err := s.CreateFullSnapshot(ctx, "pre-restore")
@@ -417,6 +425,16 @@ func (s *Service) Restore(ctx context.Context, name string, options RestoreOptio
 		}
 		restored = append(restored, "openapis")
 	}
+	if options.IncludeImages {
+		imageDir, err := s.imageStorageDir()
+		if err != nil {
+			return RestoreResult{}, err
+		}
+		if err := replaceDirectory(filepath.Join(stagingDir, "images"), imageDir); err != nil {
+			return RestoreResult{}, fmt.Errorf("恢复图片文件失败: %w", err)
+		}
+		restored = append(restored, "images")
+	}
 	return RestoreResult{Restored: restored, Snapshot: snapshot, RestartRequired: true, Warnings: warnings}, nil
 }
 
@@ -428,6 +446,7 @@ func (s *Service) CreateFullSnapshot(ctx context.Context, trigger string) (Backu
 	settings = config.NormalizeBackupSettings(settings)
 	settings.IncludeData = true
 	settings.IncludePlugins = true
+	settings.IncludeImages = true
 	return s.createWithSettings(ctx, trigger, settings, false)
 }
 
@@ -558,6 +577,15 @@ func (s *Service) isRunning() bool {
 	return s.stop != nil
 }
 
+func (s *Service) imageStorageDir() (string, error) {
+	settings, err := s.database.GetImageHostSettings()
+	if err != nil {
+		return "", fmt.Errorf("获取图片存储目录失败: %w", err)
+	}
+	settings = config.NormalizeImageHostSettings(settings)
+	return settings.StorageDir, nil
+}
+
 func (s *Service) writeZip(zipPath, stagingDir, backupDir string, settings config.BackupSettings, manifest Manifest) error {
 	zipFile, err := os.Create(zipPath)
 	if err != nil {
@@ -584,6 +612,15 @@ func (s *Service) writeZip(zipPath, stagingDir, backupDir string, settings confi
 	}
 	if settings.IncludePlugins {
 		if err := addDirIfExists(writer, s.pluginDir, "plugins", backupDir); err != nil {
+			return err
+		}
+	}
+	if settings.IncludeImages {
+		imageDir, err := s.imageStorageDir()
+		if err != nil {
+			return err
+		}
+		if err := addDirIfExists(writer, imageDir, "images", backupDir); err != nil {
 			return err
 		}
 	}
@@ -637,6 +674,8 @@ func inspectZipFiles(files []*zip.File) (Manifest, BackupSummary, []string, erro
 			summary.HasPlugins = true
 		case strings.HasPrefix(cleanName, "openapis/"):
 			summary.HasOpenAPIs = true
+		case strings.HasPrefix(cleanName, "images/"):
+			summary.HasImages = true
 		}
 	}
 	if !manifestFound {
@@ -676,10 +715,10 @@ func validateZipEntry(file *zip.File) (string, bool, error) {
 	if cleanName == "data/config.db" {
 		return cleanName, false, nil
 	}
-	if file.FileInfo().IsDir() && (cleanName == "data" || cleanName == "plugins" || cleanName == "openapis") {
+	if file.FileInfo().IsDir() && (cleanName == "data" || cleanName == "plugins" || cleanName == "openapis" || cleanName == "images") {
 		return cleanName, true, nil
 	}
-	if strings.HasPrefix(cleanName, "plugins/") || strings.HasPrefix(cleanName, "openapis/") {
+	if strings.HasPrefix(cleanName, "plugins/") || strings.HasPrefix(cleanName, "openapis/") || strings.HasPrefix(cleanName, "images/") {
 		return cleanName, file.FileInfo().IsDir(), nil
 	}
 	return "", false, fmt.Errorf("备份包包含未知路径: %s", cleanName)
