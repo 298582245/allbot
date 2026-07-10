@@ -5,14 +5,21 @@ FROM golang:1.26-bookworm AS go-builder
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY . ./
 
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
 
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 \
+    GOOS=linux \
+    GOMAXPROCS=2 \
+    GOMEMLIMIT=1GiB \
+    go build -p=1 \
     -ldflags="-s -w \
     -X github.com/allbot/allbot/core/version.Commit=${COMMIT} \
     -X github.com/allbot/allbot/core/version.BuildTime=${BUILD_TIME} \
