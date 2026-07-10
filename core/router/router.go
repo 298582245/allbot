@@ -267,6 +267,9 @@ func (r *Router) HandleMessage(msg *types.Message) {
 		msg.Metadata = map[string]string{}
 	}
 	isEvent := isEventMessage(msg)
+	if !isEvent && r.rejectDisabledUser(msg, database) {
+		return
+	}
 	if !isEvent && msg.Metadata["fake"] != "true" && r.sessionManager.HandleMessage(msg.UserID, msg.GroupID, msg.Content) {
 		log.Printf("%s Message intercepted by waiting session", listenLogPrefix(msg))
 		return
@@ -330,6 +333,9 @@ func (r *Router) HandleMessageForPlugin(msg *types.Message, pluginID string) err
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}
 	}
+	if !isEventMessage(msg) && r.rejectDisabledUser(msg, database) {
+		return fmt.Errorf("账号已被封禁，请联系管理员")
+	}
 	msg.Metadata["web_chat_plugin_id"] = pluginID
 	sessionGroupID := messageSessionGroupID(msg)
 	if msg.Metadata["fake"] != "true" && r.sessionManager != nil && r.sessionManager.HandleMessageForPlugin(msg.UserID, sessionGroupID, pluginID, msg.Content) {
@@ -375,6 +381,26 @@ func isEventMessage(msg *types.Message) bool {
 		return false
 	}
 	return msg.Metadata["message_type"] == "event" || strings.TrimSpace(msg.Metadata["event_name"]) != ""
+}
+
+func (r *Router) rejectDisabledUser(msg *types.Message, database *config.Database) bool {
+	if msg == nil || database == nil {
+		return false
+	}
+	disabled, err := database.IsUserDisabled(msg.Platform, msg.UserID)
+	if err != nil {
+		log.Printf("[SYSTEM] Check user disabled failed: platform=%s user=%s err=%v", msg.Platform, msg.UserID, err)
+		return false
+	}
+	if !disabled {
+		return false
+	}
+	adp := r.getAdapterForMessage(msg)
+	if adp != nil {
+		_ = adp.SendMessage(resolveReplyTarget(adp, msg), formatReplyText(adp, msg, "账号已被封禁，请联系管理员"))
+	}
+	log.Printf("[SYSTEM] Message blocked for banned user: platform=%s user=%s", msg.Platform, msg.UserID)
+	return true
 }
 
 func (r *Router) matchPlugins(msg *types.Message) []*types.Plugin {

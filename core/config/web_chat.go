@@ -161,9 +161,6 @@ func (d *Database) RegisterWebChatUser(input WebChatRegisterInput) (*WebChatUser
 		return nil, err
 	}
 	defer tx.Rollback()
-	if err := consumeWebChatEmailCodeTx(tx, email, code, WebChatEmailPurposeRegister); err != nil {
-		return nil, err
-	}
 	unionID := newUnionID(WebChatPlatform, userID)
 	if bindCode != "" {
 		source, err := userBindCodeByCodeTx(tx, bindCode)
@@ -173,7 +170,27 @@ func (d *Database) RegisterWebChatUser(input WebChatRegisterInput) (*WebChatUser
 		if source.Platform == WebChatPlatform {
 			return nil, fmt.Errorf("不能绑定另一个 web 账号")
 		}
+		hasWeb, err := unionHasPlatformTx(tx, source.UnionID, WebChatPlatform)
+		if err != nil {
+			return nil, err
+		}
+		if hasWeb {
+			return nil, ErrUserBindingConflict
+		}
+		var disabled int
+		if err := tx.QueryRow(`SELECT disabled FROM users WHERE union_id = ?`, source.UnionID).Scan(&disabled); err != nil {
+			return nil, err
+		}
+		if disabled == 1 {
+			return nil, fmt.Errorf("账号已被封禁")
+		}
 		unionID = source.UnionID
+	}
+	if err := consumeWebChatEmailCodeTx(tx, email, code, WebChatEmailPurposeRegister); err != nil {
+		return nil, err
+	}
+	if err := ensureUserTx(tx, unionID); err != nil {
+		return nil, err
 	}
 	if _, err = tx.Exec(`
 		INSERT INTO web_chat_users (user_id, username, email, password_hash, display_name, email_verified, created_at, updated_at)
@@ -225,7 +242,12 @@ func (d *Database) VerifyWebChatEmailLogin(email, code string) (*WebChatUser, er
 	}
 	defer tx.Rollback()
 	var userID string
-	if err = tx.QueryRow(`SELECT user_id FROM web_chat_users WHERE email = ? AND disabled = 0`, email).Scan(&userID); err == sql.ErrNoRows {
+	if err = tx.QueryRow(`
+		SELECT w.user_id FROM web_chat_users w
+		JOIN user_accounts ua ON ua.platform = ? AND ua.user_id = w.user_id
+		JOIN users u ON u.union_id = ua.union_id
+		WHERE w.email = ? AND w.disabled = 0 AND u.disabled = 0
+	`, WebChatPlatform, email).Scan(&userID); err == sql.ErrNoRows {
 		return nil, fmt.Errorf("邮箱验证码错误")
 	} else if err != nil {
 		return nil, err
@@ -367,7 +389,12 @@ func (d *Database) ResetWebChatUserPassword(email, code, password string) error 
 	}
 	defer tx.Rollback()
 	var userID string
-	if err = tx.QueryRow(`SELECT user_id FROM web_chat_users WHERE email = ? AND disabled = 0`, email).Scan(&userID); err == sql.ErrNoRows {
+	if err = tx.QueryRow(`
+		SELECT w.user_id FROM web_chat_users w
+		JOIN user_accounts ua ON ua.platform = ? AND ua.user_id = w.user_id
+		JOIN users u ON u.union_id = ua.union_id
+		WHERE w.email = ? AND w.disabled = 0 AND u.disabled = 0
+	`, WebChatPlatform, email).Scan(&userID); err == sql.ErrNoRows {
 		return fmt.Errorf("邮箱账号不存在")
 	} else if err != nil {
 		return err
@@ -393,9 +420,11 @@ func (d *Database) VerifyWebChatLogin(login, password string) (*WebChatUser, err
 	}
 	var userID, hash string
 	err := d.db.QueryRow(`
-		SELECT user_id, password_hash FROM web_chat_users
-		WHERE disabled = 0 AND (LOWER(username) = ? OR LOWER(email) = ?)
-	`, login, login).Scan(&userID, &hash)
+		SELECT w.user_id, w.password_hash FROM web_chat_users w
+		JOIN user_accounts ua ON ua.platform = ? AND ua.user_id = w.user_id
+		JOIN users u ON u.union_id = ua.union_id
+		WHERE w.disabled = 0 AND u.disabled = 0 AND (LOWER(w.username) = ? OR LOWER(w.email) = ?)
+	`, WebChatPlatform, login, login).Scan(&userID, &hash)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("账号或密码错误")
 	}
@@ -413,6 +442,13 @@ func (d *Database) CreateWebChatSession(userID, userAgent, clientIP string) (*We
 	user, err := d.GetWebChatUser(userID)
 	if err != nil {
 		return nil, err
+	}
+	disabled, err := d.IsUserDisabled(WebChatPlatform, userID)
+	if err != nil {
+		return nil, err
+	}
+	if user.Disabled || disabled {
+		return nil, fmt.Errorf("账号已被封禁")
 	}
 	token, err := randomHex(32)
 	if err != nil {
@@ -441,7 +477,14 @@ func (d *Database) GetWebChatSession(token string) (*WebChatSession, error) {
 	}
 	var userID, csrf string
 	var expiresAt time.Time
-	err := d.db.QueryRow(`SELECT user_id, csrf_token, expires_at FROM web_chat_sessions WHERE token_hash = ? AND expires_at > CURRENT_TIMESTAMP`, tokenHash).Scan(&userID, &csrf, &expiresAt)
+	err := d.db.QueryRow(`
+		SELECT s.user_id, s.csrf_token, s.expires_at
+		FROM web_chat_sessions s
+		JOIN web_chat_users w ON w.user_id = s.user_id
+		JOIN user_accounts ua ON ua.platform = ? AND ua.user_id = s.user_id
+		JOIN users u ON u.union_id = ua.union_id
+		WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP AND w.disabled = 0 AND u.disabled = 0
+	`, WebChatPlatform, tokenHash).Scan(&userID, &csrf, &expiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -490,6 +533,17 @@ func (d *Database) BindWebChatUserByCode(userID, code string) (*UserAccount, *Us
 		return nil, nil, fmt.Errorf("不能绑定另一个 web 账号")
 	}
 	if source.UnionID != webAccount.UnionID {
+		conflict, err := userPlatformConflictTx(tx, webAccount.UnionID, source.UnionID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if conflict {
+			return nil, nil, ErrUserBindingConflict
+		}
+		disabled, err := mergeUserDisabledTx(tx, webAccount.UnionID, source.UnionID)
+		if err != nil {
+			return nil, nil, err
+		}
 		if _, err = tx.Exec(`
 			INSERT INTO user_points (union_id, points, created_at, updated_at)
 			VALUES (?, COALESCE((SELECT points FROM user_points WHERE union_id = ?), 0) + COALESCE((SELECT points FROM user_points WHERE union_id = ?), 0), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -501,6 +555,9 @@ func (d *Database) BindWebChatUserByCode(userID, code string) (*UserAccount, *Us
 			return nil, nil, err
 		}
 		if _, err = tx.Exec(`DELETE FROM user_points WHERE union_id = ?`, source.UnionID); err != nil {
+			return nil, nil, err
+		}
+		if err := finalizeMergedUserTx(tx, webAccount.UnionID, source.UnionID, disabled); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -534,7 +591,7 @@ func (d *Database) GetWebChatUserByUsername(username string) (*WebChatUser, erro
 	if username == "" {
 		return nil, sql.ErrNoRows
 	}
-	return scanWebChatUser(d.db.QueryRow(webChatUserSelectSQL()+` WHERE LOWER(u.username) = ? AND u.disabled = 0`, username))
+	return scanWebChatUser(d.db.QueryRow(webChatUserSelectSQL()+` JOIN users unified ON unified.union_id = ua.union_id WHERE LOWER(u.username) = ? AND u.disabled = 0 AND unified.disabled = 0`, username))
 }
 
 func (d *Database) SaveWebChatMessage(message *WebChatMessage) (*WebChatMessage, error) {
@@ -825,11 +882,21 @@ func consumeWebChatPlatformCodeTx(tx *sql.Tx, platform, adapterID, userID, code 
 }
 
 func ensureWebChatUserForUnionTx(tx *sql.Tx, unionID, sourcePlatform, sourceUserID string) (string, error) {
+	if err := ensureUserTx(tx, unionID); err != nil {
+		return "", err
+	}
+	var disabled int
+	if err := tx.QueryRow(`SELECT disabled FROM users WHERE union_id = ?`, unionID).Scan(&disabled); err != nil {
+		return "", err
+	}
+	if disabled == 1 {
+		return "", fmt.Errorf("账号已被封禁")
+	}
 	var userID string
 	err := tx.QueryRow(`
 		SELECT ua.user_id
 		FROM user_accounts ua
-		JOIN web_chat_users u ON u.user_id = ua.user_id AND u.disabled = 0
+		JOIN web_chat_users u ON u.user_id = ua.user_id
 		WHERE ua.platform = ? AND ua.union_id = ?
 		ORDER BY ua.id ASC LIMIT 1
 	`, WebChatPlatform, unionID).Scan(&userID)

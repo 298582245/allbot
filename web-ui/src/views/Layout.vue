@@ -117,6 +117,10 @@
             <el-icon><Lock /></el-icon>
             <span>权限控制</span>
           </el-menu-item>
+          <el-menu-item index="/users">
+            <el-icon><User /></el-icon>
+            <span>用户管理</span>
+          </el-menu-item>
         </el-sub-menu>
 
         <el-sub-menu index="payments">
@@ -348,6 +352,7 @@ const baseMoreMobileNavItems = [
   { path: "/images", title: "图床管理", icon: Picture },
   { path: "/backups", title: "备份中心", icon: FolderChecked },
   { path: "/permissions", title: "权限控制", icon: Lock },
+  { path: "/users", title: "用户管理", icon: User },
   { path: "/payments/config", title: "支付配置", icon: Money },
   { path: "/payments/orders", title: "订单管理", icon: Tickets },
   { path: "/dependencies", title: "依赖管理", icon: Box },

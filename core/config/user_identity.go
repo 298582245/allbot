@@ -52,20 +52,30 @@ func (d *Database) UserUnionExists(unionID string) (bool, error) {
 		return false, nil
 	}
 	var exists int
-	err := d.db.QueryRow(`
-		SELECT 1
-		FROM user_points
-		WHERE union_id = ?
-		UNION
-		SELECT 1
-		FROM user_accounts
-		WHERE union_id = ?
-		LIMIT 1
-	`, unionID, unionID).Scan(&exists)
-	if err == sql.ErrNoRows {
-		return false, nil
+	err := d.db.QueryRow(`SELECT 1 FROM users WHERE union_id = ?`, unionID).Scan(&exists)
+	if err == nil {
+		return true, nil
 	}
-	return err == nil, err
+	if err != sql.ErrNoRows {
+		return false, err
+	}
+	result, err := d.db.Exec(`
+		INSERT OR IGNORE INTO users (union_id, disabled, created_at, updated_at)
+		SELECT ?, 0,
+			COALESCE(MIN(created_at), CURRENT_TIMESTAMP),
+			COALESCE(MAX(updated_at), CURRENT_TIMESTAMP)
+		FROM (
+			SELECT created_at, updated_at FROM user_points WHERE union_id = ?
+			UNION ALL
+			SELECT created_at, updated_at FROM user_accounts WHERE union_id = ?
+		) legacy
+		HAVING COUNT(*) > 0
+	`, unionID, unionID, unionID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected > 0, err
 }
 
 func (d *Database) EnsureUserAccount(platform, userID string) (*UserAccount, error) {
@@ -79,10 +89,21 @@ func (d *Database) EnsureUserAccount(platform, userID string) (*UserAccount, err
 		return nil, err
 	}
 	unionID := newUnionID(platform, userID)
-	if _, err := d.db.Exec(`INSERT INTO user_accounts (platform, user_id, union_id, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, platform, userID, unionID); err != nil {
+	tx, err := d.db.Begin()
+	if err != nil {
 		return nil, err
 	}
-	if err := d.ensureUserPoints(unionID); err != nil {
+	defer tx.Rollback()
+	if err := ensureUserTx(tx, unionID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(`INSERT INTO user_accounts (platform, user_id, union_id, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, platform, userID, unionID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO user_points (union_id, points, created_at, updated_at) VALUES (?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, unionID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return d.GetUserAccount(platform, userID)
@@ -131,6 +152,9 @@ func (d *Database) BindUserByCode(platform, userID, code string) (*UserAccount, 
 	if source.Platform == platform {
 		return nil, nil, fmt.Errorf("同平台账号不能互相绑定")
 	}
+	if err := ensureUserTx(tx, source.UnionID); err != nil {
+		return nil, nil, err
+	}
 
 	var target *UserAccount
 	target, err = scanUserAccount(tx.QueryRow(`SELECT ua.id, ua.platform, ua.user_id, ua.union_id, COALESCE(up.points, 0), ua.created_at, ua.updated_at FROM user_accounts ua LEFT JOIN user_points up ON up.union_id = ua.union_id WHERE ua.platform = ? AND ua.user_id = ?`, platform, userID))
@@ -147,6 +171,17 @@ func (d *Database) BindUserByCode(platform, userID, code string) (*UserAccount, 
 		return nil, nil, err
 	}
 	if target.UnionID != source.UnionID {
+		conflict, err := userPlatformConflictTx(tx, source.UnionID, target.UnionID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if conflict {
+			return nil, nil, ErrUserBindingConflict
+		}
+		disabled, err := mergeUserDisabledTx(tx, source.UnionID, target.UnionID)
+		if err != nil {
+			return nil, nil, err
+		}
 		if _, err = tx.Exec(`
 			INSERT INTO user_points (union_id, points, created_at, updated_at)
 			VALUES (?, COALESCE((SELECT points FROM user_points WHERE union_id = ?), 0) + COALESCE((SELECT points FROM user_points WHERE union_id = ?), 0), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -158,6 +193,9 @@ func (d *Database) BindUserByCode(platform, userID, code string) (*UserAccount, 
 			return nil, nil, err
 		}
 		if _, err = tx.Exec(`UPDATE user_accounts SET union_id = ?, updated_at = CURRENT_TIMESTAMP WHERE union_id = ?`, source.UnionID, target.UnionID); err != nil {
+			return nil, nil, err
+		}
+		if err := finalizeMergedUserTx(tx, source.UnionID, target.UnionID, disabled); err != nil {
 			return nil, nil, err
 		}
 		target.UnionID = source.UnionID
@@ -185,8 +223,18 @@ func (d *Database) DeleteExpiredUserBindCodes() error {
 }
 
 func (d *Database) ensureUserPoints(unionID string) error {
-	_, err := d.db.Exec(`INSERT OR IGNORE INTO user_points (union_id, points, created_at, updated_at) VALUES (?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, unionID)
-	return err
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := ensureUserTx(tx, unionID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO user_points (union_id, points, created_at, updated_at) VALUES (?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, unionID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *Database) GetUserPoints(unionID string) (int64, error) {

@@ -153,6 +153,9 @@ func TestResolveWebChatPlatformLoginByUsernameAmbiguous(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureUserAccount second returned error: %v", err)
 	}
+	if _, err := db.db.Exec(`DROP TRIGGER trg_user_accounts_prevent_union_platform_duplicate_update`); err != nil {
+		t.Fatalf("drop duplicate update trigger returned error: %v", err)
+	}
 	if _, err := db.db.Exec(`UPDATE user_accounts SET union_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, webAccount.UnionID, second.ID); err != nil {
 		t.Fatalf("update second union returned error: %v", err)
 	}
@@ -373,6 +376,42 @@ func TestWebChatBindCodeKeepsWebUnion(t *testing.T) {
 	}
 	if _, _, err := db.BindWebChatUserByCode(user.UserID, secondCode.Code); err == nil {
 		t.Fatal("expected second web bind to fail")
+	}
+}
+
+func TestRegisterWebChatUserRejectsDisabledBoundUnionWithoutConsumingCodes(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	source, err := db.EnsureUserAccount("telegram", "disabled-register")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindCode, err := db.CreateUserBindCode(source.Platform, source.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SetUserDisabled(source.UnionID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateWebChatEmailCode("disabled@example.com", "123456", WebChatEmailPurposeRegister, ""); err != nil {
+		t.Fatal(err)
+	}
+	input := WebChatRegisterInput{Email: "disabled@example.com", Code: "123456", Username: "disabled_register", Password: "password123", BindCode: bindCode.Code}
+	if _, err := db.RegisterWebChatUser(input); err == nil {
+		t.Fatal("封禁身份不应完成 Web Chat 注册")
+	}
+	if _, err := db.SetUserDisabled(source.UnionID, false); err != nil {
+		t.Fatal(err)
+	}
+	user, err := db.RegisterWebChatUser(input)
+	if err != nil {
+		t.Fatalf("解禁后原验证码和绑定码应仍可使用: %v", err)
+	}
+	if user.UnionID != source.UnionID {
+		t.Fatalf("union_id=%s, want %s", user.UnionID, source.UnionID)
 	}
 }
 

@@ -37,6 +37,50 @@ type TelegramConfig struct {
 	ProxyURL string `json:"proxy_url,omitempty"`
 }
 
+type UserSummary struct {
+	UnionID            string    `json:"union_id"`
+	Points             int64     `json:"points"`
+	Disabled           bool      `json:"disabled"`
+	AccountCount       int64     `json:"account_count"`
+	PlatformCount      int64     `json:"platform_count"`
+	Platforms          []string  `json:"platforms"`
+	DuplicatePlatforms []string  `json:"duplicate_platforms"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+type UserDetail struct {
+	UserSummary
+	Accounts []*UserAccountSummary `json:"accounts"`
+}
+
+type UserQuery struct {
+	Keyword  string
+	Platform string
+	Disabled *bool
+	Limit    int
+	Offset   int
+}
+
+type UserAccountSummary struct {
+	ID                int64     `json:"id"`
+	Platform          string    `json:"platform"`
+	UserID            string    `json:"user_id"`
+	UnionID           string    `json:"union_id"`
+	Points            int64     `json:"points"`
+	Disabled          bool      `json:"disabled"`
+	DuplicatePlatform bool      `json:"duplicate_platform"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+type PointAdjustment struct {
+	UnionID      string            `json:"union_id"`
+	Delta        int64             `json:"delta"`
+	BalanceAfter int64             `json:"balance_after"`
+	Transaction  *PointTransaction `json:"transaction"`
+}
+
 type UserAccount struct {
 	ID        int64     `json:"id"`
 	Platform  string    `json:"platform"`

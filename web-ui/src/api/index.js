@@ -413,6 +413,59 @@ export const testRuntimeProfile = (profile) => {
   })
 }
 
+// 获取用户列表
+export const getUsers = (params = {}) => {
+  return request({
+    url: '/users',
+    method: 'get',
+    params
+  })
+}
+
+// 获取用户详情
+export const getUser = (unionId) => {
+  return request({
+    url: `/users/${encodeURIComponent(String(unionId))}`,
+    method: 'get'
+  })
+}
+
+// 更新用户整体状态
+export const updateUserStatus = (unionId, data) => {
+  return request({
+    url: `/users/${encodeURIComponent(String(unionId))}/status`,
+    method: 'patch',
+    data
+  })
+}
+
+// 调整用户积分
+export const adjustUserPoints = (unionId, data) => {
+  return request({
+    url: `/users/${encodeURIComponent(String(unionId))}/points/adjust`,
+    method: 'post',
+    data
+  })
+}
+
+// 获取用户积分流水
+export const getUserPointTransactions = (unionId, params = {}) => {
+  return request({
+    url: `/users/${encodeURIComponent(String(unionId))}/point-transactions`,
+    method: 'get',
+    params
+  })
+}
+
+// 获取平台账号列表
+export const getUserAccounts = (params = {}) => {
+  return request({
+    url: '/user-accounts',
+    method: 'get',
+    params
+  })
+}
+
 // 获取适配器平台列表
 export const getAdapterPlatforms = () => {
   return request({

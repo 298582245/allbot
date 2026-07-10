@@ -38,6 +38,7 @@ const routes = [
       { path: 'adapters', name: 'Adapters', component: () => import('@/views/Adapters.vue'), meta: { title: '对接管理' } },
       { path: 'logs', name: 'Logs', component: () => import('@/views/Logs.vue'), meta: { title: '日志查看' } },
       { path: 'permissions', name: 'PermissionControl', component: () => import('@/views/PermissionControl.vue'), meta: { title: '权限控制' } },
+      { path: 'users', name: 'Users', component: () => import('@/views/Users.vue'), meta: { title: '用户管理' } },
       { path: 'payments', redirect: '/payments/config' },
       { path: 'payments/config', name: 'PaymentConfig', component: () => import('@/views/PaymentConfig.vue'), meta: { title: '支付配置' } },
       { path: 'payments/orders', name: 'PaymentOrders', component: () => import('@/views/PaymentOrders.vue'), meta: { title: '订单管理' } },
