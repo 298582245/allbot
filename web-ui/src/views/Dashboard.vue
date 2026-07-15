@@ -73,7 +73,8 @@
               <div ref="cpuChartRef" class="resource-chart"></div>
               <div class="resource-value">{{ formatPercent(resourceStatus.allBotCpuUsagePercent) }}</div>
               <div class="resource-detail">平均占用：{{ formatPercent(resourceStatus.allBotAverageCpuUsagePercent) }}</div>
-              <div class="resource-detail">历史最高：{{ formatPercent(resourceStatus.allBotPeakCpuUsagePercent) }}</div>
+              <div class="resource-detail">本次运行最高：{{ formatPercent(resourceStatus.allBotPeakCpuUsagePercent) }}</div>
+              <div class="resource-detail">历史最高：{{ formatPercent(resourceStatus.allBotHistoricalPeakCpuUsagePercent) }}</div>
               <div class="resource-detail">系统 CPU：{{ formatPercent(resourceStatus.cpuUsagePercent) }}</div>
             </div>
             <div class="resource-panel">
@@ -81,7 +82,8 @@
               <div ref="memoryChartRef" class="resource-chart"></div>
               <div class="resource-value">{{ formatUsageWithPercent(resourceStatus.allBotMemoryUsedBytes, resourceStatus.allBotMemoryTotalBytes) }}</div>
               <div class="resource-detail">平均占用：{{ formatUsageWithPercent(resourceStatus.allBotAverageMemoryUsedBytes, resourceStatus.allBotMemoryTotalBytes) }}</div>
-              <div class="resource-detail">历史最高：{{ formatUsageWithPercent(resourceStatus.allBotPeakMemoryUsedBytes, resourceStatus.allBotMemoryTotalBytes) }}</div>
+              <div class="resource-detail">本次运行最高：{{ formatUsageWithPercent(resourceStatus.allBotPeakMemoryUsedBytes, resourceStatus.allBotMemoryTotalBytes) }}</div>
+              <div class="resource-detail">历史最高：{{ formatHistoricalUsage(resourceStatus.allBotHistoricalPeakMemoryUsedBytes, resourceStatus.allBotHistoricalPeakMemoryUsagePercent) }}</div>
               <div class="resource-detail">系统内存：{{ formatBytes(resourceStatus.memoryUsedBytes) }} / {{ formatBytes(resourceStatus.memoryTotalBytes) }}</div>
             </div>
           </div>
@@ -134,6 +136,9 @@ const resourceStatus = ref({
   allBotPeakCpuUsagePercent: 0,
   allBotPeakMemoryUsedBytes: 0,
   allBotPeakMemoryUsagePercent: 0,
+  allBotHistoricalPeakCpuUsagePercent: 0,
+  allBotHistoricalPeakMemoryUsedBytes: 0,
+  allBotHistoricalPeakMemoryUsagePercent: 0,
   allBotAverageCpuUsagePercent: 0,
   allBotAverageMemoryUsedBytes: 0,
   allBotAverageMemoryUsagePercent: 0
@@ -292,6 +297,9 @@ function setResourceStatus(status) {
     allBotPeakCpuUsagePercent: clampPercent(status?.allBotPeakCpuUsagePercent),
     allBotPeakMemoryUsedBytes: normalizeBytes(status?.allBotPeakMemoryUsedBytes),
     allBotPeakMemoryUsagePercent: clampPercent(status?.allBotPeakMemoryUsagePercent),
+    allBotHistoricalPeakCpuUsagePercent: clampPercent(status?.allBotHistoricalPeakCpuUsagePercent),
+    allBotHistoricalPeakMemoryUsedBytes: normalizeBytes(status?.allBotHistoricalPeakMemoryUsedBytes),
+    allBotHistoricalPeakMemoryUsagePercent: clampPercent(status?.allBotHistoricalPeakMemoryUsagePercent),
     allBotAverageCpuUsagePercent: clampPercent(status?.allBotAverageCpuUsagePercent),
     allBotAverageMemoryUsedBytes: normalizeBytes(status?.allBotAverageMemoryUsedBytes),
     allBotAverageMemoryUsagePercent: clampPercent(status?.allBotAverageMemoryUsagePercent)
@@ -349,6 +357,10 @@ function formatUsageWithPercent(used, total) {
   const totalBytes = normalizeBytes(total)
   if (totalBytes === 0) return formatCompactBytes(used)
   return `${formatCompactBytes(used)}(${formatPercent(percentOfBytes(used, totalBytes))})`
+}
+
+function formatHistoricalUsage(used, percent) {
+  return `${formatCompactBytes(used)}(${formatPercent(percent)})`
 }
 
 function percentOfBytes(used, total) {

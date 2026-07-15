@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -91,6 +92,12 @@ type Server struct {
 	allBotCPUTotalPercent        float64
 	allBotMemoryTotalUsedBytes   uint64
 	allBotMemoryTotalPercent     float64
+	historicalResourceMu         sync.Mutex
+	historicalResourcePeaks      allBotHistoricalResourcePeaks
+	persistedHistoricalPeaks     allBotHistoricalResourcePeaks
+	historicalResourceLoaded     bool
+	historicalResourceGetSetting func() (string, error)
+	historicalResourceSetSetting func(string) error
 	serverMu                     sync.Mutex
 	httpServer                   *http.Server
 }
@@ -292,6 +299,9 @@ func (s *Server) runtimeDatabase() *config.Database {
 func (s *Server) Shutdown(ctx context.Context) error {
 	totalSeconds, _ := s.runtimeSeconds()
 	s.persistRuntimeSeconds(totalSeconds)
+	if err := s.persistPendingHistoricalResourcePeaks(); err != nil {
+		log.Printf("[SYSTEM] 保存 AllBot 永久资源峰值失败: %v", err)
+	}
 	s.serverMu.Lock()
 	server := s.httpServer
 	s.serverMu.Unlock()
