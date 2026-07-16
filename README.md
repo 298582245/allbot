@@ -56,6 +56,8 @@ go test ./...
 go build -o allbot .
 ```
 
+低配服务器建议不要在服务器现场编译，直接从 GitHub Release 下载与服务器架构匹配的 `allbot-v版本-linux-amd64` 或 `allbot-v版本-linux-arm64`。
+
 ### 4. 启动
 
 Windows：
@@ -96,9 +98,54 @@ $env:ALLBOT_WEB_MODE = "external"
 
 `ALLBOT_WEB_MODE` 仅支持 `embedded` 和 `external`。启用 `external` 后，外部 `web/` 不会随自动更新维护，需要用户自行更新并保证 `web/index.html` 存在。
 
+## Linux 二进制部署（低配服务器推荐）
+
+Release 已提供包含管理后台资源的 Linux 单文件程序，服务器不需要安装 Go，也不需要现场编译。Node.js 和 Python 仅在运行对应语言插件时需要安装。首次部署可保留仓库中的 `sdk/` 和 `openapis/`，只下载二进制替代源码编译。
+
+```bash
+cd /opt/allbot
+# 在仓库根目录下载与服务器架构匹配的 Release 资产和 checksums-v版本.txt 后执行：
+sha256sum -c checksums-v版本.txt --ignore-missing
+chmod +x allbot-v版本-linux-amd64
+mv allbot-v版本-linux-amd64 allbot
+./allbot --plugins=./plugins
+```
+
+正式运行建议交由 systemd 管理，服务工作目录必须保持为 `/opt/allbot`：
+
+```ini
+[Unit]
+Description=AllBot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/allbot
+ExecStart=/opt/allbot/allbot --plugins=/opt/allbot/plugins
+Environment=ALLBOT_WEB_PORT=3000
+Environment=ALLBOT_WEB_MODE=embedded
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+将内容保存为 `/etc/systemd/system/allbot.service` 后执行：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now allbot
+sudo systemctl status allbot
+sudo journalctl -u allbot -f
+```
+
+`config.db`、`plugins/`、`runtime/`、`openapis/`、`sdk/`、`logs/` 和 `backups/` 都保存在 `/opt/allbot`。升级前应备份整个目录；后台一键升级会校验 Release SHA256，并替换当前二进制。
+
 ## Docker Compose 部署
 
-Linux 服务器可直接使用 Docker Compose 构建和运行。Dockerfile 会复用根目录已有的 `web/` 前端产物并嵌入 Go 二进制；如果改动了 `web-ui/`，需要先在本地或 CI 构建前端并提交更新后的 `web/`。
+Dockerfile 会复用根目录已有的 `web/` 前端产物并嵌入 Go 二进制；如果改动了 `web-ui/`，需要先在本地或 CI 构建前端并提交更新后的 `web/`。构建阶段使用较小的 Alpine Go 镜像并限制 Go 编译并发，但服务器仍需下载构建工具链和运行时镜像。网络较慢或内存较小的服务器应优先使用上面的 Release 二进制部署。
 
 ### 1. 准备环境
 
@@ -171,12 +218,17 @@ volumes:
 
 Compose 默认设置 `ALLBOT_UPDATE_MODE=docker`。管理员在系统设置页点击“一键升级”或向机器人发送「更新」时，程序会下载 Release 资产并写入升级请求；容器入口脚本检测到请求后，会备份旧的 `/data/allbot`，替换为新版程序并自动重启应用。
 
-也可以通过重新构建镜像更新：
+也可以通过重新构建镜像更新。建议先单独拉取基础镜像，这样 SSH 断开后再次执行仍可复用已下载的镜像层：
 
 ```bash
 git pull
-docker compose up -d --build
+docker pull golang:1.26-alpine
+docker pull debian:bookworm-slim
+docker compose build --progress=plain allbot
+docker compose up -d allbot
 ```
+
+如果 SSH 会话不稳定，可在 `tmux` 或 `screen` 中执行构建；这只能避免终端断线终止任务，无法解决服务器 OOM、磁盘不足或镜像仓库网络异常。
 
 重新构建镜像时，未被用户修改的 `/data/sdk` 会随镜像内 SDK 自动更新；如果日志提示 `/data/sdk` 已被修改，需要手动备份并删除 `/data/sdk` 后重启容器，才会重新初始化为镜像新版 SDK。
 
