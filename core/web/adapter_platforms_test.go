@@ -39,6 +39,45 @@ func TestHandleAdapterPlatforms(t *testing.T) {
 			t.Fatalf("missing platform %s in %#v", platform, items)
 		}
 	}
+	qq := byPlatform["qq"]
+	qqSchema, ok := qq["config_schema"].([]interface{})
+	if !ok || len(qqSchema) == 0 {
+		t.Fatalf("qq config_schema = %#v", qq["config_schema"])
+	}
+	qqFields := make(map[string]map[string]interface{})
+	for _, field := range qqSchema {
+		fieldMap, ok := field.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		key, _ := fieldMap["key"].(string)
+		qqFields[key] = fieldMap
+	}
+	framework := qqFields["framework"]
+	if framework == nil || framework["type"] != "select" || framework["default"] != "napcat" {
+		t.Fatalf("qq framework field = %#v", framework)
+	}
+	options, ok := framework["options"].([]interface{})
+	if !ok || len(options) != 1 {
+		t.Fatalf("qq framework options = %#v", framework["options"])
+	}
+	napcat, ok := options[0].(map[string]interface{})
+	if !ok || napcat["label"] != "NapCat" || napcat["value"] != "napcat" {
+		t.Fatalf("qq framework option = %#v", options[0])
+	}
+	if field := qqFields["server_url"]; field == nil || field["required"] != true {
+		t.Fatalf("qq server_url field = %#v", field)
+	}
+	if field := qqFields["access_token"]; field == nil || field["required"] != false || field["type"] != "password" {
+		t.Fatalf("qq access_token field = %#v", field)
+	}
+	if field := qqFields["http_api_url"]; field == nil || field["required"] != false {
+		t.Fatalf("qq http_api_url field = %#v", field)
+	}
+	if field := qqFields["http_api_access_token"]; field == nil || field["required"] != false || field["type"] != "password" {
+		t.Fatalf("qq http_api_access_token field = %#v", field)
+	}
+
 	dingTalk := byPlatform["dingtalk"]
 	if dingTalk["display_name"] != "钉钉机器人（Stream）" {
 		t.Fatalf("dingtalk display_name = %#v", dingTalk["display_name"])

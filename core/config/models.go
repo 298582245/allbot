@@ -15,9 +15,14 @@ type AdapterConfig struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+const qqFrameworkNapCat = "napcat"
+
 type QQConfig struct {
-	ServerURL   string `json:"server_url"`
-	AccessToken string `json:"access_token,omitempty"`
+	Framework          string `json:"framework"`
+	ServerURL          string `json:"server_url"`
+	HTTPAPIURL         string `json:"http_api_url,omitempty"`
+	AccessToken        string `json:"access_token,omitempty"`
+	HTTPAPIAccessToken string `json:"http_api_access_token,omitempty"`
 }
 
 type QQOfficeConfig struct {

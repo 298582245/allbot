@@ -67,6 +67,11 @@ func cloneDescriptor(desc Descriptor) Descriptor {
 	cloned := desc
 	if desc.ConfigSchema != nil {
 		cloned.ConfigSchema = append([]ConfigField(nil), desc.ConfigSchema...)
+		for index := range cloned.ConfigSchema {
+			if desc.ConfigSchema[index].Options != nil {
+				cloned.ConfigSchema[index].Options = append([]ConfigOption(nil), desc.ConfigSchema[index].Options...)
+			}
+		}
 	}
 	return cloned
 }

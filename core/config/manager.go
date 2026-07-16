@@ -17,14 +17,16 @@ import (
 type AdapterManager struct {
 	db             *Database
 	adapters       map[int64]adapter.Adapter
+	lifecycleLocks map[int64]*sync.Mutex
 	messageHandler func(*types.Message)
 	mu             sync.RWMutex
 }
 
 func NewAdapterManager(db *Database) *AdapterManager {
 	return &AdapterManager{
-		db:       db,
-		adapters: make(map[int64]adapter.Adapter),
+		db:             db,
+		adapters:       make(map[int64]adapter.Adapter),
+		lifecycleLocks: make(map[int64]*sync.Mutex),
 	}
 }
 
@@ -53,17 +55,39 @@ func (m *AdapterManager) LoadAndStartAdapters() error {
 	return nil
 }
 
-func (m *AdapterManager) startAdapter(config *AdapterConfig) error {
+func (m *AdapterManager) adapterLifecycleLock(id int64) *sync.Mutex {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	lock := m.lifecycleLocks[id]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		m.lifecycleLocks[id] = lock
+	}
+	return lock
+}
 
+func (m *AdapterManager) startAdapter(config *AdapterConfig) error {
 	if config.ID == 0 {
 		return fmt.Errorf("适配器 ID 不能为空")
 	}
+	lifecycleLock := m.adapterLifecycleLock(config.ID)
+	lifecycleLock.Lock()
+	defer lifecycleLock.Unlock()
+	return m.startAdapterLocked(config)
+}
 
-	if existing, ok := m.adapters[config.ID]; ok {
-		existing.Stop()
-		delete(m.adapters, config.ID)
+func (m *AdapterManager) startAdapterLocked(config *AdapterConfig) error {
+	m.mu.Lock()
+	existing := m.adapters[config.ID]
+	delete(m.adapters, config.ID)
+	m.mu.Unlock()
+	if existing != nil {
+		if err := existing.Stop(); err != nil {
+			m.mu.Lock()
+			m.adapters[config.ID] = existing
+			m.mu.Unlock()
+			return fmt.Errorf("停止旧适配器失败: %w", err)
+		}
 	}
 
 	desc, ok := registry.Get(config.Platform)
@@ -105,7 +129,9 @@ func (m *AdapterManager) startAdapter(config *AdapterConfig) error {
 		return fmt.Errorf("启动适配器失败: %w", err)
 	}
 
+	m.mu.Lock()
 	m.adapters[config.ID] = adp
+	m.mu.Unlock()
 	log.Printf("适配器已启动: %s#%d", config.Platform, config.ID)
 
 	return nil
@@ -128,21 +154,29 @@ func (m *AdapterManager) StopAdapter(platform string) error {
 }
 
 func (m *AdapterManager) StopAdapterByID(id int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	lifecycleLock := m.adapterLifecycleLock(id)
+	lifecycleLock.Lock()
+	defer lifecycleLock.Unlock()
+	return m.stopAdapterLocked(id)
+}
 
+func (m *AdapterManager) stopAdapterLocked(id int64) error {
+	m.mu.Lock()
 	adp, ok := m.adapters[id]
+	if ok {
+		delete(m.adapters, id)
+	}
+	m.mu.Unlock()
 	if !ok {
 		return nil
 	}
-
 	if err := adp.Stop(); err != nil {
+		m.mu.Lock()
+		m.adapters[id] = adp
+		m.mu.Unlock()
 		return fmt.Errorf("停止适配器失败: %w", err)
 	}
-
-	delete(m.adapters, id)
 	log.Printf("适配器已停止: #%d", id)
-
 	return nil
 }
 
@@ -163,6 +197,10 @@ func (m *AdapterManager) ReloadAdapter(platform string) error {
 }
 
 func (m *AdapterManager) ReloadAdapterByID(id int64) error {
+	lifecycleLock := m.adapterLifecycleLock(id)
+	lifecycleLock.Lock()
+	defer lifecycleLock.Unlock()
+
 	config, err := m.db.GetAdapterByID(id)
 	if err != nil {
 		return fmt.Errorf("获取配置失败: %w", err)
@@ -171,12 +209,12 @@ func (m *AdapterManager) ReloadAdapterByID(id int64) error {
 		return fmt.Errorf("配置不存在: %d", id)
 	}
 
-	if err := m.StopAdapterByID(id); err != nil {
+	if err := m.stopAdapterLocked(id); err != nil {
 		log.Printf("警告：停止旧适配器失败: %v", err)
 	}
 
 	if config.Enabled {
-		return m.startAdapter(config)
+		return m.startAdapterLocked(config)
 	}
 
 	return nil
@@ -254,16 +292,17 @@ func (m *AdapterManager) GetAllAdapters() map[int64]adapter.Adapter {
 }
 
 func (m *AdapterManager) StopAll() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	for id, adp := range m.adapters {
-		if err := adp.Stop(); err != nil {
+	m.mu.RLock()
+	ids := make([]int64, 0, len(m.adapters))
+	for id := range m.adapters {
+		ids = append(ids, id)
+	}
+	m.mu.RUnlock()
+	for _, id := range ids {
+		if err := m.StopAdapterByID(id); err != nil {
 			log.Printf("警告：停止适配器失败 #%d: %v", id, err)
 		}
 	}
-
-	m.adapters = make(map[int64]adapter.Adapter)
 }
 
 func (m *AdapterManager) SetAdapterPinned(id int64, pinned bool) error {

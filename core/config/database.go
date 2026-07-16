@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1377,23 +1378,78 @@ func (d *Database) Close() error {
 }
 
 func ParseQQConfig(configJSON string) (*QQConfig, error) {
-	var config QQConfig
-	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+	var input struct {
+		QQConfig
+		APIURL string `json:"api_url"`
+	}
+	if err := json.Unmarshal([]byte(configJSON), &input); err != nil {
 		return nil, err
 	}
-	var raw map[string]interface{}
-	_ = json.Unmarshal([]byte(configJSON), &raw)
-	if config.ServerURL == "" {
-		if value, ok := raw["server_url"].(string); ok {
-			config.ServerURL = value
+	config := input.QQConfig
+
+	config.Framework = strings.ToLower(strings.TrimSpace(config.Framework))
+	config.ServerURL = strings.TrimSpace(config.ServerURL)
+	config.HTTPAPIURL = strings.TrimSpace(config.HTTPAPIURL)
+	config.AccessToken = strings.TrimSpace(config.AccessToken)
+	config.HTTPAPIAccessToken = strings.TrimSpace(config.HTTPAPIAccessToken)
+	if config.Framework == "" {
+		config.Framework = qqFrameworkNapCat
+	}
+	if config.Framework != qqFrameworkNapCat {
+		return nil, fmt.Errorf("不支持的 QQ OneBot 框架: %s", config.Framework)
+	}
+
+	input.APIURL = strings.TrimSpace(input.APIURL)
+	if input.APIURL != "" {
+		parsed, err := parseQQConfigURL("旧 api_url", input.APIURL)
+		if err != nil {
+			return nil, err
+		}
+		switch parsed.Scheme {
+		case "ws", "wss":
+			if config.ServerURL == "" {
+				config.ServerURL = input.APIURL
+			}
+		case "http", "https":
+			if config.HTTPAPIURL == "" {
+				config.HTTPAPIURL = input.APIURL
+			}
+		default:
+			return nil, fmt.Errorf("旧 api_url 仅支持 ws、wss、http 或 https 协议")
 		}
 	}
+
 	if config.ServerURL == "" {
-		if value, ok := raw["api_url"].(string); ok {
-			config.ServerURL = value
+		return nil, fmt.Errorf("server_url 不能为空")
+	}
+	serverURL, err := parseQQConfigURL("server_url", config.ServerURL)
+	if err != nil {
+		return nil, err
+	}
+	if serverURL.Scheme != "ws" && serverURL.Scheme != "wss" {
+		return nil, fmt.Errorf("server_url 必须是 ws 或 wss 完整 URL")
+	}
+	if config.HTTPAPIURL != "" {
+		httpAPIURL, err := parseQQConfigURL("http_api_url", config.HTTPAPIURL)
+		if err != nil {
+			return nil, err
+		}
+		if httpAPIURL.Scheme != "http" && httpAPIURL.Scheme != "https" {
+			return nil, fmt.Errorf("http_api_url 必须是 http 或 https 完整 URL")
 		}
 	}
 	return &config, nil
+}
+
+func parseQQConfigURL(label string, value string) (*url.URL, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("%s 必须是包含 host 的完整 URL", label)
+	}
+	if parsed.Fragment != "" || parsed.RawQuery != "" {
+		return nil, fmt.Errorf("%s 不支持 query 或 fragment", label)
+	}
+	return parsed, nil
 }
 
 func ParseQQOfficeConfig(configJSON string) (*QQOfficeConfig, error) {

@@ -2,15 +2,22 @@ package registry
 
 import "github.com/allbot/allbot/core/adapter/_contract"
 
+// ConfigOption 描述 select 配置字段的一个可选项。
+type ConfigOption struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
 // ConfigField 描述适配器配置表单中的一个字段。
 type ConfigField struct {
-	Key         string      `json:"key"`
-	Label       string      `json:"label"`
-	Type        string      `json:"type"`
-	Required    bool        `json:"required"`
-	Placeholder string      `json:"placeholder,omitempty"`
-	Default     interface{} `json:"default,omitempty"`
-	Help        string      `json:"help,omitempty"`
+	Key         string         `json:"key"`
+	Label       string         `json:"label"`
+	Type        string         `json:"type"`
+	Required    bool           `json:"required"`
+	Placeholder string         `json:"placeholder,omitempty"`
+	Default     interface{}    `json:"default,omitempty"`
+	Help        string         `json:"help,omitempty"`
+	Options     []ConfigOption `json:"options,omitempty"`
 }
 
 // Capabilities 描述适配器支持的消息能力。

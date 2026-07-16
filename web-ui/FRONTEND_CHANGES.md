@@ -2,6 +2,15 @@
 
 本文件只记录 `web-ui/src` 下的打包前前端源码改动，不记录 `web/` 下构建产物。
 
+## 2026-07-16
+
+### `src/views/Adapters.vue`
+
+- 时间：00:49
+- 修改范围：164-168
+- 变更摘要：同步 QQ 第三方适配器 fallback schema，新增默认 NapCat 的框架下拉，明确 OneBot 11 正向通用 WebSocket 与可选 HTTP API 地址，并为两个通道提供独立访问令牌字段。
+- 统计：本次改动新增 5 行、删除 2 行，净增 3 行。
+
 ## 2026-07-15
 
 ### `src/views/Dashboard.vue`

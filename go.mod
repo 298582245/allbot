@@ -3,6 +3,7 @@ module github.com/allbot/allbot
 go 1.26.1
 
 require (
+	github.com/gorilla/websocket v1.5.0
 	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	modernc.org/sqlite v1.50.1
@@ -12,7 +13,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gorilla/websocket v1.5.0 // indirect
 	github.com/klauspost/compress v1.19.0 // indirect
 	github.com/larksuite/oapi-sdk-go/v3 v3.9.7 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

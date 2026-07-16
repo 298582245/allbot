@@ -250,7 +250,7 @@ AllBot 使用适配器注册表提供平台能力和配置 schema。当前内置
 
 | 平台标识 | 名称 | 主要配置 | 说明 |
 | --- | --- | --- | --- |
-| `qq` | QQ | `server_url`、`access_token` | 基于 NapCat/OneBot HTTP API |
+| `qq` | QQ 第三方 | `framework`、`server_url`、`access_token`、`http_api_url`、`http_api_access_token` | 当前支持 NapCat 的 OneBot 11 正向通用 WebSocket；WS 与可选 HTTP API 分别配置访问令牌 |
 | `telegram` | Telegram | `bot_token`、`proxy_url` | 基于 Telegram Bot API |
 | `qq_office` | QQ 官方机器人 | `app_id`、`client_secret`、`api_base_url`、`token_url` | 腾讯 QQ 官方机器人接口 |
 | `dingtalk` | 钉钉机器人（Stream） | `client_id`、`client_secret`、`robot_code`、`open_api_host`、`proxy_url` | 钉钉 Stream 模式，无需公网回调地址 |
@@ -259,6 +259,8 @@ AllBot 使用适配器注册表提供平台能力和配置 schema。当前内置
 | `web` | Web 聊天室 | `smtp_host`、`smtp_port`、`smtp_username`、`smtp_password`、`smtp_from` | 浏览器用户通过 Web 聊天室调用插件 |
 
 配置入口：后台 `平台配置` 页面。
+
+QQ 第三方适配器的 `server_url` 必须填写 `ws://` 或 `wss://` 正向通用 WebSocket 地址；`access_token` 仅用于该 WebSocket。`http_api_url` 仅在需要将 action 固定走 HTTP API 时填写，其独立令牌通过 `http_api_access_token` 配置；HTTP API 不会复用 WebSocket 令牌。系统不会在 WS 与 HTTP 之间猜测或重放请求。当前不支持 OneBot 反向 WebSocket，也未声明支持 LLOneBot。
 
 同一平台可以添加多个机器人实例。插件可以通过 `allowed_adapter_ids` 限定允许触发的机器人实例；定时任务也可以指定某个机器人实例执行。
 

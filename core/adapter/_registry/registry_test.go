@@ -106,12 +106,16 @@ func TestListReturnsStableSortedCopies(t *testing.T) {
 	}
 
 	items[0].ConfigSchema[0].Key = "changed"
+	items[0].ConfigSchema[0].Options[0].Label = "changed"
 	got, ok := Get("qq")
 	if !ok {
 		t.Fatal("expected qq descriptor")
 	}
 	if got.ConfigSchema[0].Key != "token" {
 		t.Fatalf("registry descriptor was mutated: %#v", got.ConfigSchema)
+	}
+	if len(got.ConfigSchema[0].Options) != 1 || got.ConfigSchema[0].Options[0] != (ConfigOption{Label: "测试选项", Value: "test"}) {
+		t.Fatalf("registry descriptor options were mutated: %#v", got.ConfigSchema[0].Options)
 	}
 }
 
@@ -121,7 +125,13 @@ func testDescriptor(platform string) Descriptor {
 		DisplayName: "测试平台",
 		Description: "用于注册中心测试",
 		ConfigSchema: []ConfigField{
-			{Key: "token", Label: "Token", Type: "password", Required: true},
+			{
+				Key:      "token",
+				Label:    "Token",
+				Type:     "select",
+				Required: true,
+				Options:  []ConfigOption{{Label: "测试选项", Value: "test"}},
+			},
 		},
 		Capabilities: Capabilities{SendText: true, PrivateMessage: true},
 		ParseConfig:  parseConfigForTest,

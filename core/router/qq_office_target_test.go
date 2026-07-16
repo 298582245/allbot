@@ -33,7 +33,7 @@ func TestRouterQQOfficeReplyTarget(t *testing.T) {
 }
 
 func TestAdapterReplyFormatters(t *testing.T) {
-	qq := qqadapter.NewQQAdapter("ws://127.0.0.1:3001", "")
+	qq := qqadapter.NewQQAdapter(qqadapter.QQAdapterConfig{Framework: "napcat", ServerURL: "ws://127.0.0.1:3001"})
 	qqMsg := &types.Message{Platform: "qq", UserID: "1001", GroupID: "2001"}
 	if got := resolveReplyTarget(qq, qqMsg); got != "group_2001" {
 		t.Fatalf("QQ target = %q", got)

@@ -161,8 +161,11 @@ const adapterPlatformFallback = [
     platform: 'qq',
     display_name: 'QQ',
     config_schema: [
-      { key: 'server_url', label: '服务地址', type: 'text', required: true, placeholder: 'ws://127.0.0.1:3001' },
-      { key: 'access_token', label: '访问令牌', type: 'password', required: false, placeholder: 'NapCat 未设置 token 可留空' }
+      { key: 'framework', label: '框架名称', type: 'select', required: true, default: 'napcat', options: [{ label: 'NapCat', value: 'napcat' }] },
+      { key: 'server_url', label: 'WebSocket 地址', type: 'text', required: true, placeholder: 'ws://127.0.0.1:3001', help: 'OneBot 11 正向通用 WebSocket 地址，支持 ws:// 和 wss://' },
+      { key: 'access_token', label: 'WebSocket 访问令牌', type: 'password', required: false, placeholder: 'WebSocket 未设置 token 可留空' },
+      { key: 'http_api_url', label: 'HTTP API 地址', type: 'text', required: false, placeholder: 'http://127.0.0.1:3000', help: '可选；填写后 action 固定走该地址，事件仍走 WebSocket' },
+      { key: 'http_api_access_token', label: 'HTTP API 访问令牌', type: 'password', required: false, placeholder: 'HTTP API 未设置 token 可留空' }
     ]
   },
   {
