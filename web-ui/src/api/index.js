@@ -306,6 +306,32 @@ export const deleteOpenApi = (id) => {
   })
 }
 
+// 获取开放接口全局设置
+export const getOpenApiSettings = () => {
+  return request({
+    url: '/open-apis/settings',
+    method: 'get'
+  })
+}
+
+// 保存开放接口全局设置
+export const saveOpenApiSettings = (data) => {
+  return request({
+    url: '/open-apis/settings',
+    method: 'put',
+    data
+  })
+}
+
+// 获取开放接口调用明细
+export const getOpenApiCalls = (id, params = {}) => {
+  return request({
+    url: `/open-apis/${encodeURIComponent(String(id))}/calls`,
+    method: 'get',
+    params
+  })
+}
+
 // 获取开放接口代码
 export const getOpenApiCode = (id) => {
   return request({

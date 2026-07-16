@@ -14,6 +14,7 @@
           </div>
           <div class="header-actions">
             <el-input v-model="searchKeyword" class="header-search" clearable placeholder="搜索接口名称、路径、描述或运行时" />
+            <el-button @click="openSettings">全局 IP 设置</el-button>
             <el-button :loading="loading" @click="loadItems">刷新</el-button>
             <el-button type="primary" @click="createItem">
               <el-icon><Plus /></el-icon>
@@ -55,17 +56,33 @@
             <el-table-column label="描述" min-width="180" show-overflow-tooltip>
               <template #default="{ row }">{{ row.description || '-' }}</template>
             </el-table-column>
+            <el-table-column label="IP 策略" min-width="150">
+              <template #default="{ row }">
+                <el-tag :type="ipPolicyTagType(row)" effect="plain">{{ ipPolicyLabel(row) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="总调用" width="105" align="right">
+              <template #default="{ row }">{{ formatCount(callStats(row).total) }}</template>
+            </el-table-column>
             <el-table-column label="Token" width="110">
               <template #default="{ row }">
                 <el-tag :type="hasToken(row) ? 'success' : 'info'">{{ hasToken(row) ? '已设置' : '未设置' }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="340" fixed="right">
+            <el-table-column label="操作" width="290" fixed="right">
               <template #default="{ row }">
                 <el-button size="small" type="primary" @click="editItem(row)">编辑</el-button>
-                <el-button v-if="!isBuiltin(row)" size="small" type="warning" @click="openFile(row)">文件</el-button>
-                <el-button size="small" type="success" @click="copyAddress(row)">复制地址</el-button>
-                <el-button size="small" type="danger" :loading="deletingId === itemId(row)" @click="deleteItem(row)">删除</el-button>
+                <el-button size="small" type="success" @click="openCalls(row)">调用数据</el-button>
+                <el-dropdown trigger="click" @command="command => handleRowCommand(command, row)">
+                  <el-button size="small">更多</el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item v-if="!isBuiltin(row)" command="file">文件</el-dropdown-item>
+                      <el-dropdown-item command="copy">复制地址</el-dropdown-item>
+                      <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
               </template>
             </el-table-column>
           </el-table>
@@ -99,15 +116,31 @@
                 <span class="value-text">{{ row.description || '-' }}</span>
               </div>
               <div class="api-info-row">
+                <span class="label">IP 策略：</span>
+                <el-tag :type="ipPolicyTagType(row)" effect="plain" size="small">{{ ipPolicyLabel(row) }}</el-tag>
+              </div>
+              <div class="api-info-row">
+                <span class="label">总调用：</span>
+                <strong>{{ formatCount(callStats(row).total) }}</strong>
+              </div>
+              <div class="api-info-row">
                 <span class="label">Token：</span>
                 <el-tag :type="hasToken(row) ? 'success' : 'info'" size="small">{{ hasToken(row) ? '已设置' : '未设置' }}</el-tag>
               </div>
             </div>
             <div class="api-card-footer">
               <el-button size="small" type="primary" @click="editItem(row)">编辑</el-button>
-              <el-button v-if="!isBuiltin(row)" size="small" type="warning" @click="openFile(row)">文件</el-button>
-              <el-button size="small" type="success" @click="copyAddress(row)">复制地址</el-button>
-              <el-button size="small" type="danger" :loading="deletingId === itemId(row)" @click="deleteItem(row)">删除</el-button>
+              <el-button size="small" type="success" @click="openCalls(row)">调用数据</el-button>
+              <el-dropdown class="mobile-more" trigger="click" @command="command => handleRowCommand(command, row)">
+                <el-button size="small">更多</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item v-if="!isBuiltin(row)" command="file">文件</el-dropdown-item>
+                    <el-dropdown-item command="copy">复制地址</el-dropdown-item>
+                    <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </div>
           </div>
         </div>
@@ -174,6 +207,24 @@
             :placeholder="dialogMode === 'create' ? '必填，调用接口时需要 Token' : '留空则保留原 Token，填写则更新'"
           />
         </el-form-item>
+        <el-form-item label="IP 白名单">
+          <el-radio-group v-model="form.ipWhitelistMode">
+            <el-radio-button label="inherit">继承全局</el-radio-button>
+            <el-radio-button label="allow_all">允许全部</el-radio-button>
+            <el-radio-button label="custom">自定义</el-radio-button>
+          </el-radio-group>
+          <el-select
+            v-if="form.ipWhitelistMode === 'custom'"
+            v-model="form.ipWhitelist"
+            class="ip-value-input"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            placeholder="输入 IPv4、IPv6 或 CIDR 后回车"
+          />
+          <div class="field-tip">{{ endpointPolicyTip }}</div>
+        </el-form-item>
         <el-form-item label="描述">
           <el-input
             v-model="form.description"
@@ -190,6 +241,123 @@
         <el-button type="primary" :loading="saving" @click="saveDialog">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="settingsVisible"
+      title="开放接口全局 IP 设置"
+      width="620px"
+      class="settings-dialog"
+      :close-on-click-modal="false"
+    >
+      <div v-loading="settingsLoading">
+        <el-alert type="info" :closable="false" show-icon class="settings-alert">
+          <template #title>规则优先级：单接口 &gt; 全局 &gt; 默认 <code>*</code></template>
+          单接口未配置时继承全局；全局配置不存在时默认允许全部。反向代理场景必须正确填写代理出口 IP 或网段。
+        </el-alert>
+        <el-form :model="settingsForm" label-width="128px" class="settings-form">
+          <el-form-item label="全局白名单">
+            <el-radio-group v-model="settingsForm.ipWhitelistMode">
+              <el-radio-button label="allow_all">允许全部</el-radio-button>
+              <el-radio-button label="custom">自定义白名单</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item v-if="settingsForm.ipWhitelistMode === 'custom'" label="IP / CIDR" required>
+            <el-select
+              v-model="settingsForm.ipWhitelist"
+              multiple
+              filterable
+              allow-create
+              default-first-option
+              placeholder="输入 IPv4、IPv6 或 CIDR 后回车"
+              style="width: 100%"
+            />
+            <div class="field-tip">自定义白名单不能为空；<code>*</code> 只能单独使用，最终格式校验以后端为准。</div>
+          </el-form-item>
+          <el-form-item label="可信代理">
+            <el-select
+              v-model="settingsForm.trustedProxies"
+              multiple
+              filterable
+              allow-create
+              default-first-option
+              placeholder="输入代理 IP 或 CIDR 后回车"
+              style="width: 100%"
+            />
+            <div class="field-tip">只有直连来源匹配该列表时才信任 X-Forwarded-For / X-Real-IP；留空表示不信任任何转发头。</div>
+          </el-form-item>
+          <el-form-item label="明细保留天数">
+            <el-input-number v-model="settingsForm.callLogRetentionDays" :min="0" :max="3650" controls-position="right" />
+            <div class="field-tip">0 表示不自动清理调用明细；累计统计永久保留。</div>
+          </el-form-item>
+        </el-form>
+      </div>
+      <template #footer>
+        <el-button @click="settingsVisible = false">取消</el-button>
+        <el-button type="primary" :loading="settingsSaving" :disabled="settingsLoading || !settingsLoaded" @click="saveSettings">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-drawer
+      v-model="callsVisible"
+      :title="callsTitle"
+      size="76%"
+      class="calls-drawer"
+      destroy-on-close
+      @closed="resetCalls"
+    >
+      <div class="calls-body">
+        <div class="stats-grid">
+          <div><span>总调用</span><strong>{{ formatCount(callsSummary.total) }}</strong></div>
+          <div><span>成功</span><strong class="success-text">{{ formatCount(callsSummary.success) }}</strong></div>
+          <div><span>拒绝</span><strong class="warning-text">{{ formatCount(callsSummary.rejected) }}</strong></div>
+          <div><span>失败</span><strong class="danger-text">{{ formatCount(callsSummary.failed) }}</strong></div>
+          <div><span>最近调用</span><strong>{{ formatTime(callsSummary.last_called_at) }}</strong></div>
+        </div>
+
+        <div class="calls-filters">
+          <el-select v-model="callsFilters.outcome" clearable placeholder="全部结果">
+            <el-option label="成功" value="success" />
+            <el-option label="IP 拒绝" value="ip_denied" />
+            <el-option label="Token 拒绝" value="token_denied" />
+            <el-option label="失败" value="failed" />
+          </el-select>
+          <el-input v-model="callsFilters.clientIp" clearable placeholder="客户端 IP（精确匹配）" @keyup.enter="searchCalls" />
+          <el-input v-model="callsFilters.statusCode" clearable inputmode="numeric" placeholder="HTTP 状态码" @keyup.enter="searchCalls" />
+          <el-date-picker
+            v-model="callsFilters.timeRange"
+            type="datetimerange"
+            range-separator="至"
+            start-placeholder="开始时间"
+            end-placeholder="结束时间"
+          />
+          <el-button type="primary" :loading="callsLoading" @click="searchCalls">查询</el-button>
+          <el-button @click="resetCallFilters">重置</el-button>
+        </div>
+
+        <div class="calls-table-wrap" v-loading="callsLoading">
+          <el-table :data="callItems" border stripe height="100%" empty-text="暂无调用数据">
+            <el-table-column label="调用时间" min-width="180"><template #default="{ row }">{{ formatTime(row.started_at || row.startedAt) }}</template></el-table-column>
+            <el-table-column prop="method" label="方法" width="85" />
+            <el-table-column label="路径" min-width="170" show-overflow-tooltip><template #default="{ row }">{{ displayCallPath(row) }}</template></el-table-column>
+            <el-table-column label="客户端 IP" min-width="165" show-overflow-tooltip><template #default="{ row }">{{ row.client_ip || row.clientIp || '-' }}</template></el-table-column>
+            <el-table-column label="HTTP" width="80" align="center"><template #default="{ row }">{{ row.status_code ?? row.statusCode ?? '-' }}</template></el-table-column>
+            <el-table-column label="结果" width="110"><template #default="{ row }"><el-tag :type="outcomeTagType(row.outcome)" effect="plain">{{ outcomeLabel(row.outcome) }}</el-tag></template></el-table-column>
+            <el-table-column label="耗时" width="100" align="right"><template #default="{ row }">{{ formatDuration(row.duration_ms ?? row.durationMs) }}</template></el-table-column>
+          </el-table>
+        </div>
+        <div class="calls-footer">
+          <span>筛选明细 {{ formatCount(callsTotal) }} 条，保留 {{ callsRetentionText }}</span>
+          <StdPagination
+            v-model:current-page="callsPage"
+            v-model:page-size="callsPageSize"
+            :total="callsTotal"
+            :page-sizes="[10, 20, 50, 100]"
+            @current-change="loadCalls"
+            @size-change="handleCallsPageSize"
+          />
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -199,13 +367,21 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled, Plus } from '@element-plus/icons-vue'
-import { createOpenApi, deleteOpenApi, getOpenApis, updateOpenApi, getRuntimeProfiles } from '@/api'
+import {
+  createOpenApi,
+  deleteOpenApi,
+  getOpenApiCalls,
+  getOpenApiSettings,
+  getOpenApis,
+  getRuntimeProfiles,
+  saveOpenApiSettings,
+  updateOpenApi
+} from '@/api'
 import StdPagination from '@/components/StdPagination.vue'
 
 const router = useRouter()
 const loading = ref(false)
 const saving = ref(false)
-const deletingId = ref('')
 const items = ref([])
 const searchKeyword = ref('')
 const runtimeProfiles = ref([])
@@ -215,9 +391,39 @@ const dialogVisible = ref(false)
 const dialogMode = ref('create')
 const editingId = ref('')
 const form = reactive(createEmptyForm())
+const settingsVisible = ref(false)
+const settingsLoading = ref(false)
+const settingsSaving = ref(false)
+const settingsLoaded = ref(false)
+const settingsForm = reactive(createEmptySettingsForm())
+const callsVisible = ref(false)
+const callsLoading = ref(false)
+const callsTarget = ref(null)
+const callItems = ref([])
+const callsSummary = reactive(createEmptySummary())
+const callsTotal = ref(0)
+const callsRetentionDays = ref(30)
+const callsPage = ref(1)
+const callsPageSize = ref(20)
+const callsFilters = reactive(createEmptyCallFilters())
+let settingsRequestVersion = 0
+let callsRequestVersion = 0
 const singlePathPattern = /^[A-Za-z0-9_-]+$/
 const httpMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
-const pageDescription = '独立管理对外 HTTP 接口、运行时和调用代码。'
+const pageDescription = '独立管理对外 HTTP 接口、运行时、IP 访问策略和调用数据。'
+
+const endpointPolicyTip = computed(() => {
+  if (form.ipWhitelistMode === 'allow_all') return '此接口显式允许全部来源，将覆盖全局限制。'
+  if (form.ipWhitelistMode === 'custom') return '自定义规则优先于全局；支持 IPv4、IPv6 和 CIDR，最终校验以后端为准。'
+  if (dialogMode.value !== 'edit') return '未配置单接口规则时继承全局设置。'
+  const current = items.value.find(row => itemId(row) === editingId.value)
+  const effective = effectiveWhitelist(current || {})
+  const source = String(current?.ip_whitelist_source || '') === 'default' ? '默认规则' : '全局规则'
+  return `当前继承${source}：${effective.length ? effective.join('、') : '*'}`
+})
+
+const callsTitle = computed(() => `调用数据 - ${callsTarget.value?.name || itemId(callsTarget.value || {}) || '-'}`)
+const callsRetentionText = computed(() => callsRetentionDays.value === 0 ? '永久' : `${callsRetentionDays.value} 天`)
 
 const filteredItems = computed(() => {
   const keyword = searchKeyword.value.trim().toLowerCase()
@@ -243,6 +449,21 @@ watch(() => form.runtime, (runtime) => {
   if (!form.runtime_profile) return
   const matched = runtimeProfiles.value.some(profile => profile.id === form.runtime_profile && profile.runtime === runtime)
   if (!matched) form.runtime_profile = ''
+})
+
+watch(settingsVisible, (visible) => {
+  if (!visible) {
+    settingsRequestVersion++
+    settingsLoading.value = false
+    settingsLoaded.value = false
+  }
+})
+
+watch(callsVisible, (visible) => {
+  if (!visible) {
+    callsRequestVersion++
+    callsLoading.value = false
+  }
 })
 
 const loadItems = async () => {
@@ -312,6 +533,48 @@ const hasToken = (row) => {
   return Boolean(String(row.token || '').trim())
 }
 
+const normalizeSummary = (stats = {}) => ({
+  total: Number(stats?.total ?? stats?.total_count ?? 0),
+  success: Number(stats?.success ?? stats?.success_count ?? 0),
+  rejected: Number(stats?.rejected ?? stats?.rejected_count ?? 0),
+  failed: Number(stats?.failed ?? stats?.failed_count ?? 0),
+  last_called_at: stats?.last_called_at || stats?.lastCalledAt || ''
+})
+
+const callStats = (row) => normalizeSummary(row?.call_stats || row?.callStats || {})
+
+const configuredWhitelist = (row) => Array.isArray(row?.ip_whitelist)
+  ? row.ip_whitelist
+  : Array.isArray(row?.ipWhitelist) ? row.ipWhitelist : null
+const effectiveWhitelist = (row) => Array.isArray(row?.effective_ip_whitelist)
+  ? row.effective_ip_whitelist
+  : Array.isArray(row?.effectiveIpWhitelist) ? row.effectiveIpWhitelist : []
+
+const ipPolicyMode = (row) => {
+  const mode = String(row?.ip_whitelist_mode || row?.ipWhitelistMode || '').trim()
+  if (['inherit', 'allow_all', 'custom'].includes(mode)) return mode
+  const configured = configuredWhitelist(row)
+  if (!configured?.length) return 'inherit'
+  return configured.length === 1 && configured[0] === '*' ? 'allow_all' : 'custom'
+}
+
+const ipPolicyLabel = (row) => {
+  const mode = ipPolicyMode(row)
+  if (mode === 'allow_all') return '允许全部'
+  if (mode === 'custom') return `自定义（${configuredWhitelist(row)?.length || 0}）`
+  return `继承${ipPolicySourceLabel(row)}`
+}
+
+const ipPolicySourceLabel = (row) => {
+  const source = String(row?.ip_whitelist_source || row?.ipWhitelistSource || '').trim()
+  if (source === 'default') return '默认'
+  if (source === 'endpoint') return '单接口'
+  return '全局'
+}
+
+const ipPolicyTagType = (row) => ipPolicyMode(row) === 'custom' ? 'warning' : ipPolicyMode(row) === 'allow_all' ? 'success' : 'info'
+const formatCount = (value) => Math.max(0, Number(value) || 0).toLocaleString('zh-CN')
+
 const isBuiltin = (row) => Boolean(String(row.builtin || '').trim())
 
 const itemId = (row) => String(row.id || row.api_id || row.apiId || normalizePath(resolvePath(row)) || '')
@@ -327,6 +590,9 @@ const getOpenApiSearchText = (row) => [
   displayRuntimeProfile(row.runtime_profile),
   row.description,
   hasToken(row) ? '已设置 token' : '未设置 token',
+  ipPolicyLabel(row),
+  effectiveWhitelist(row).join(' '),
+  formatCount(callStats(row).total),
   row.enabled ? '启用 开启' : '停用 关闭',
   row.builtin
 ].filter(value => value !== undefined && value !== null).join(' ').toLowerCase()
@@ -360,6 +626,8 @@ const editItem = (row) => {
     runtime: normalizeRuntime(row.runtime),
     runtime_profile: row.runtime_profile || '',
     token: '',
+    ipWhitelistMode: ipPolicyMode(row),
+    ipWhitelist: ipPolicyMode(row) === 'custom' ? [...(configuredWhitelist(row) || [])] : [],
     description: row.description || '',
     method: normalizeMethod(row.method)
   })
@@ -374,6 +642,163 @@ const openFile = (row) => {
   }
   router.push(`/open-apis/${encodeURIComponent(id)}/edit`)
 }
+
+const handleRowCommand = (command, row) => {
+  if (command === 'file') return openFile(row)
+  if (command === 'copy') return copyAddress(row)
+  if (command === 'delete') return deleteItem(row)
+}
+
+const openSettings = async () => {
+  const requestVersion = ++settingsRequestVersion
+  settingsVisible.value = true
+  settingsLoaded.value = false
+  settingsLoading.value = true
+  try {
+    const data = await getOpenApiSettings()
+    if (requestVersion !== settingsRequestVersion || !settingsVisible.value) return
+    const ipWhitelist = normalizeStringList(data?.ip_whitelist ?? data?.ipWhitelist)
+    Object.assign(settingsForm, {
+      ipWhitelistMode: ipWhitelist.length === 0 || (ipWhitelist.length === 1 && ipWhitelist[0] === '*') ? 'allow_all' : 'custom',
+      ipWhitelist: ipWhitelist.includes('*') ? [] : ipWhitelist,
+      trustedProxies: normalizeStringList(data?.trusted_proxies ?? data?.trustedProxies),
+      callLogRetentionDays: Math.max(0, Number(data?.call_log_retention_days ?? data?.callLogRetentionDays ?? 30) || 0)
+    })
+    settingsLoaded.value = true
+  } finally {
+    if (requestVersion === settingsRequestVersion) settingsLoading.value = false
+  }
+}
+
+const saveSettings = async () => {
+  const ipWhitelist = settingsForm.ipWhitelistMode === 'allow_all' ? ['*'] : normalizeStringList(settingsForm.ipWhitelist)
+  if (settingsForm.ipWhitelistMode === 'custom' && ipWhitelist.length === 0) {
+    ElMessage.warning('自定义全局白名单至少需要填写一项')
+    return
+  }
+  if (settingsForm.ipWhitelistMode === 'custom' && ipWhitelist.includes('*')) {
+    ElMessage.warning('自定义全局白名单不能混用 *，如需全放行请选择“允许全部”')
+    return
+  }
+  settingsSaving.value = true
+  try {
+    await saveOpenApiSettings({
+      ip_whitelist: ipWhitelist,
+      trusted_proxies: normalizeStringList(settingsForm.trustedProxies),
+      call_log_retention_days: Math.max(0, Number(settingsForm.callLogRetentionDays) || 0)
+    })
+    ElMessage.success('开放接口全局 IP 设置已保存')
+    settingsVisible.value = false
+    await loadItems()
+  } finally {
+    settingsSaving.value = false
+  }
+}
+
+const openCalls = (row) => {
+  const id = itemId(row)
+  if (!id) {
+    ElMessage.warning('接口缺少 ID，无法查看调用数据')
+    return
+  }
+  callsRequestVersion++
+  callsTarget.value = row
+  callsVisible.value = true
+  callsPage.value = 1
+  Object.assign(callsFilters, createEmptyCallFilters())
+  Object.assign(callsSummary, callStats(row))
+  callItems.value = []
+  callsTotal.value = 0
+  loadCalls()
+}
+
+const loadCalls = async () => {
+  const targetId = itemId(callsTarget.value || {})
+  if (!targetId || !callsVisible.value) return
+  const requestVersion = ++callsRequestVersion
+  callsLoading.value = true
+  try {
+    const data = await getOpenApiCalls(targetId, buildCallParams())
+    if (requestVersion !== callsRequestVersion || targetId !== itemId(callsTarget.value || {}) || !callsVisible.value) return
+    callItems.value = Array.isArray(data?.items) ? data.items : []
+    callsTotal.value = Math.max(0, Number(data?.total) || 0)
+    callsRetentionDays.value = Math.max(0, Number(data?.retention_days ?? data?.retentionDays ?? 30) || 0)
+    Object.assign(callsSummary, normalizeSummary(data?.summary))
+    const maxPage = Math.max(1, Math.ceil(callsTotal.value / callsPageSize.value))
+    if (callsPage.value > maxPage) {
+      callsPage.value = maxPage
+      return loadCalls()
+    }
+  } finally {
+    if (requestVersion === callsRequestVersion) callsLoading.value = false
+  }
+}
+
+const buildCallParams = () => {
+  const params = {
+    limit: callsPageSize.value,
+    offset: (callsPage.value - 1) * callsPageSize.value
+  }
+  if (callsFilters.outcome) params.outcome = callsFilters.outcome
+  if (callsFilters.clientIp.trim()) params.client_ip = callsFilters.clientIp.trim()
+  if (String(callsFilters.statusCode).trim()) params.status_code = String(callsFilters.statusCode).trim()
+  if (Array.isArray(callsFilters.timeRange) && callsFilters.timeRange.length === 2) {
+    params.start = toApiTime(callsFilters.timeRange[0])
+    params.end = toApiTime(callsFilters.timeRange[1])
+  }
+  return params
+}
+
+const searchCalls = () => {
+  callsPage.value = 1
+  loadCalls()
+}
+
+const resetCallFilters = () => {
+  Object.assign(callsFilters, createEmptyCallFilters())
+  searchCalls()
+}
+
+const handleCallsPageSize = () => {
+  callsPage.value = 1
+  loadCalls()
+}
+
+const resetCalls = () => {
+  callsRequestVersion++
+  callsLoading.value = false
+  callsTarget.value = null
+  callItems.value = []
+  callsTotal.value = 0
+  Object.assign(callsSummary, createEmptySummary())
+}
+
+const normalizeStringList = (values) => Array.from(new Set(
+  (Array.isArray(values) ? values : [])
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+))
+
+const toApiTime = (value) => {
+  const date = value instanceof Date ? value : new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString()
+}
+
+const formatTime = (value) => {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+const displayCallPath = (row) => {
+  const path = normalizePath(row?.endpoint_path || row?.endpointPath || row?.path || '')
+  return path ? `/api/open/${path}` : '/api/open'
+}
+
+const outcomeLabel = (outcome) => ({ success: '成功', ip_denied: 'IP 拒绝', token_denied: 'Token 拒绝', failed: '失败' }[outcome] || outcome || '-')
+const outcomeTagType = (outcome) => outcome === 'success' ? 'success' : outcome === 'failed' ? 'danger' : 'warning'
+const formatDuration = (value) => `${Math.max(0, Number(value) || 0).toLocaleString('zh-CN')} ms`
 
 const saveDialog = async () => {
   const payload = buildPayload()
@@ -418,6 +843,8 @@ const buildPayload = () => {
     ElMessage.warning('请输入 Open API token')
     return null
   }
+  const ipWhitelist = buildEndpointWhitelist()
+  if (ipWhitelist === undefined) return null
   const payload = {
     id: dialogMode.value === 'create' ? validation.path : editingId.value,
     name,
@@ -426,11 +853,27 @@ const buildPayload = () => {
     enabled: Boolean(form.enabled),
     runtime,
     runtime_profile: runtime === 'builtin' ? '' : String(form.runtime_profile || '').trim(),
+    ip_whitelist: ipWhitelist,
     description: String(form.description || '').trim(),
     entry: codeFileName(validation.path, runtime)
   }
   if (dialogMode.value === 'create' || token) payload.token = token
   return payload
+}
+
+const buildEndpointWhitelist = () => {
+  if (form.ipWhitelistMode === 'inherit') return null
+  if (form.ipWhitelistMode === 'allow_all') return ['*']
+  const values = normalizeStringList(form.ipWhitelist)
+  if (values.length === 0) {
+    ElMessage.warning('自定义 IP 白名单至少需要填写一项')
+    return undefined
+  }
+  if (values.includes('*')) {
+    ElMessage.warning('自定义 IP 白名单不能混用 *，如需全放行请选择“允许全部”')
+    return undefined
+  }
+  return values
 }
 
 const validatePath = (value) => {
@@ -464,9 +907,28 @@ function createEmptyForm() {
     runtime: 'nodejs',
     runtime_profile: '',
     token: '',
+    ipWhitelistMode: 'inherit',
+    ipWhitelist: [],
     description: '',
     method: 'POST'
   }
+}
+
+function createEmptySettingsForm() {
+  return {
+    ipWhitelistMode: 'allow_all',
+    ipWhitelist: [],
+    trustedProxies: [],
+    callLogRetentionDays: 30
+  }
+}
+
+function createEmptySummary() {
+  return { total: 0, success: 0, rejected: 0, failed: 0, last_called_at: '' }
+}
+
+function createEmptyCallFilters() {
+  return { outcome: '', clientIp: '', statusCode: '', timeRange: [] }
 }
 
 const deleteItem = async (row) => {
@@ -480,14 +942,9 @@ const deleteItem = async (row) => {
   } catch {
     return
   }
-  deletingId.value = id
-  try {
-    await deleteOpenApi(id)
-    ElMessage.success('开放接口已删除')
-    await loadItems()
-  } finally {
-    deletingId.value = ''
-  }
+  await deleteOpenApi(id)
+  ElMessage.success('开放接口已删除')
+  await loadItems()
 }
 
 const copyAddress = async (row) => {
@@ -676,15 +1133,20 @@ onMounted(() => {
 
 .api-card-footer {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   padding-top: 10px;
   border-top: 1px solid #f0f0f0;
 }
 
-.api-card-footer .el-button {
+.api-card-footer .el-button,
+.mobile-more {
   width: 100%;
   margin-left: 0;
+}
+
+.mobile-more :deep(.el-button) {
+  width: 100%;
 }
 
 .dialog-form {
@@ -692,18 +1154,104 @@ onMounted(() => {
 }
 
 .field-tip {
+  width: 100%;
   margin-top: 6px;
   color: #909399;
   font-size: 12px;
   line-height: 1.5;
 }
 
-.api-dialog :deep(.el-dialog__header) {
+.ip-value-input {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.settings-alert {
+  margin-bottom: 18px;
+  line-height: 1.6;
+}
+
+.settings-form {
+  padding: 0 4px;
+}
+
+.calls-body {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr)) minmax(200px, 1.5fr);
+  gap: 12px;
+}
+
+.stats-grid > div {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.stats-grid span {
+  display: block;
+  margin-bottom: 7px;
+  color: #909399;
+  font-size: 12px;
+}
+
+.stats-grid strong {
+  color: #303133;
+  font-size: 20px;
+  word-break: break-all;
+}
+
+.stats-grid > div:last-child strong {
+  font-size: 14px;
+}
+
+.success-text { color: #67c23a !important; }
+.warning-text { color: #e6a23c !important; }
+.danger-text { color: #f56c6c !important; }
+
+.calls-filters {
+  display: grid;
+  grid-template-columns: 150px minmax(180px, 1fr) 140px minmax(320px, 1.6fr) auto auto;
+  gap: 10px;
+}
+
+.calls-table-wrap {
+  flex: 1;
+  min-height: 260px;
+}
+
+.calls-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: #909399;
+  font-size: 12px;
+}
+
+.calls-footer :deep(.std-pagination) {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.api-dialog :deep(.el-dialog__header),
+.settings-dialog :deep(.el-dialog__header) {
   padding-bottom: 12px;
   border-bottom: 1px solid #edf0f5;
 }
 
-.api-dialog :deep(.el-dialog__footer) {
+.api-dialog :deep(.el-dialog__footer),
+.settings-dialog :deep(.el-dialog__footer) {
   padding-top: 12px;
   border-top: 1px solid #edf0f5;
 }
@@ -789,25 +1337,87 @@ onMounted(() => {
   }
 
   .api-card-footer {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .api-dialog :deep(.el-dialog) {
+  .api-dialog :deep(.el-dialog),
+  .settings-dialog :deep(.el-dialog) {
     width: 94vw !important;
   }
 
-  .api-dialog :deep(.el-form-item) {
+  .api-dialog :deep(.el-form-item),
+  .settings-dialog :deep(.el-form-item) {
     display: block;
   }
 
-  .api-dialog :deep(.el-form-item__label) {
+  .api-dialog :deep(.el-form-item__label),
+  .settings-dialog :deep(.el-form-item__label) {
     width: 100% !important;
     justify-content: flex-start;
     padding: 0 0 6px;
   }
 
-  .api-dialog :deep(.el-form-item__content) {
+  .api-dialog :deep(.el-form-item__content),
+  .settings-dialog :deep(.el-form-item__content) {
     margin-left: 0 !important;
+  }
+
+  :global(.calls-drawer) {
+    width: 96vw !important;
+  }
+
+  :global(.calls-drawer .el-drawer__header) {
+    margin-bottom: 12px;
+  }
+
+  :global(.calls-drawer .el-drawer__body) {
+    padding: 0 12px 12px;
+    overflow: hidden;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .stats-grid > div:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .stats-grid > div {
+    padding: 10px;
+  }
+
+  .stats-grid strong {
+    font-size: 17px;
+  }
+
+  .calls-filters {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .calls-filters .el-date-editor {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .calls-table-wrap {
+    min-height: 240px;
+    overflow-x: auto;
+  }
+
+  .calls-table-wrap :deep(.el-table) {
+    min-width: 900px;
+  }
+
+  .calls-footer {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .calls-footer :deep(.std-pagination) {
+    width: 100%;
   }
 
   .api-dialog :deep(.el-input-group__prepend) {

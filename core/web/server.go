@@ -100,11 +100,16 @@ type Server struct {
 	historicalResourceSetSetting func(string) error
 	serverMu                     sync.Mutex
 	httpServer                   *http.Server
+	openAPIAccess                atomicOpenAPIAccess
+	openAPIStats                 *openAPIStatsRecorder
 }
 
 func NewServer(port string, pluginManager *plugin.Manager, router *router.Router, adapterManager *config.AdapterManager, webFS fs.FS) *Server {
 	updateService := updater.NewService(updater.NewGitHubClient(), updater.DefaultUpgradeRunner)
-	return &Server{port: port, pluginManager: pluginManager, router: router, adapterManager: adapterManager, logManager: NewLogManager(500), startTime: time.Now(), webFS: webFS, webAssetMode: WebAssetModeEmbedded, externalWebDir: "web", updateService: updateService, releaseClient: updater.NewGitHubClient(), upgradeRunner: updater.DefaultUpgradeRunner, upgradeState: updater.UpgradeState{Status: updater.UpgradeStatusIdle, Message: "暂无升级任务"}, runtimeInitJobs: newRuntimeProfileInitJobStore(), sessions: map[string]time.Time{}}
+	server := &Server{port: port, pluginManager: pluginManager, router: router, adapterManager: adapterManager, logManager: NewLogManager(500), startTime: time.Now(), webFS: webFS, webAssetMode: WebAssetModeEmbedded, externalWebDir: "web", updateService: updateService, releaseClient: updater.NewGitHubClient(), upgradeRunner: updater.DefaultUpgradeRunner, upgradeState: updater.UpgradeState{Status: updater.UpgradeStatusIdle, Message: "暂无升级任务"}, runtimeInitJobs: newRuntimeProfileInitJobStore(), sessions: map[string]time.Time{}}
+	server.initializeOpenAPIAccess()
+	server.openAPIStats = newOpenAPIStatsRecorder(server.runtimeDatabase(), server.openAPIRetentionDays)
+	return server
 }
 
 func (s *Server) SetWebAssetMode(mode WebAssetMode) {
@@ -297,18 +302,27 @@ func (s *Server) runtimeDatabase() *config.Database {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.serverMu.Lock()
+	server := s.httpServer
+	s.serverMu.Unlock()
+	var shutdownErr error
+	if server != nil {
+		shutdownErr = server.Shutdown(ctx)
+	}
+	if s.openAPIStats != nil {
+		if err := s.openAPIStats.Close(); err != nil {
+			log.Printf("[WARN] OpenAPI 调用统计关闭失败: %v", err)
+			if shutdownErr == nil {
+				shutdownErr = err
+			}
+		}
+	}
 	totalSeconds, _ := s.runtimeSeconds()
 	s.persistRuntimeSeconds(totalSeconds)
 	if err := s.persistPendingHistoricalResourcePeaks(); err != nil {
 		log.Printf("[SYSTEM] 保存 AllBot 永久资源峰值失败: %v", err)
 	}
-	s.serverMu.Lock()
-	server := s.httpServer
-	s.serverMu.Unlock()
-	if server == nil {
-		return nil
-	}
-	return server.Shutdown(ctx)
+	return shutdownErr
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {

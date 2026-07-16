@@ -133,7 +133,7 @@ func (s *Server) handlePluginWebAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	requestData, _ := buildOpenAPIRequest(r, "/"+strings.Trim(apiPath, "/"), body)
+	requestData, _ := buildOpenAPIRequest(r, "/"+strings.Trim(apiPath, "/"), body, parseOpenAPIAddress(r.RemoteAddr))
 	requestData.RawPath = r.URL.Path
 	payload, err := json.Marshal(map[string]interface{}{
 		"event_type": "web_api",

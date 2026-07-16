@@ -106,17 +106,18 @@ type PluginWebChatConfig struct {
 }
 
 type OpenAPIEndpoint struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	Path           string `json:"path"`
-	Method         string `json:"method"`
-	Enabled        bool   `json:"enabled"`
-	Token          string `json:"token"`
-	Runtime        string `json:"runtime"`
-	RuntimeProfile string `json:"runtime_profile,omitempty"`
-	Entry          string `json:"entry"`
-	Description    string `json:"description"`
-	Builtin        string `json:"builtin,omitempty"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Path           string    `json:"path"`
+	Method         string    `json:"method"`
+	Enabled        bool      `json:"enabled"`
+	Token          string    `json:"token"`
+	Runtime        string    `json:"runtime"`
+	RuntimeProfile string    `json:"runtime_profile,omitempty"`
+	Entry          string    `json:"entry"`
+	Description    string    `json:"description"`
+	Builtin        string    `json:"builtin,omitempty"`
+	IPWhitelist    *[]string `json:"ip_whitelist,omitempty"`
 }
 
 type OpenAPIRequest struct {
