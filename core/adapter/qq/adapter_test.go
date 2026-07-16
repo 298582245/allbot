@@ -365,12 +365,18 @@ func TestQQAdapterHTTPProbeFailsWhenWebSocketCloses(t *testing.T) {
 		}
 		<-probeStarted
 		_ = conn.Close()
-		close(allowProbeResponse)
 	}))
 	defer wsServer.Close()
 
 	adapter := NewQQAdapter(QQAdapterConfig{Framework: "napcat", ServerURL: websocketURL(wsServer), HTTPAPIURL: httpServer.URL})
-	err := adapter.Start()
+	startResult := make(chan error, 1)
+	go func() {
+		startResult <- adapter.Start()
+	}()
+	<-probeStarted
+	<-adapter.closed
+	close(allowProbeResponse)
+	err := <-startResult
 	if err == nil || (!strings.Contains(err.Error(), "WebSocket") && !strings.Contains(err.Error(), "context canceled")) {
 		t.Fatalf("Start error = %v", err)
 	}
