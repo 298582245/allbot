@@ -2,7 +2,7 @@ package version
 
 import "strings"
 
-var Version = "v1.0.2"
+var Version = "v1.0.3"
 var Commit = "unknown"
 var BuildTime = "unknown"
 var BuildChannel = "release"
