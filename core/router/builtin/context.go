@@ -29,24 +29,26 @@ type ListenUntilFunc func(msg *types.Message, timeout int, done <-chan struct{})
 type RestartHandler func(RestartRequest) error
 
 type Context struct {
-	Database       *config.Database
-	Message        *types.Message
-	Target         string
-	StartTime      time.Time
-	ReleaseClient  updater.ReleaseClient
-	UpdateHandler  UpdateHandler
-	PluginStore    PluginAdminStore
-	RegisterPlugin func(*types.Plugin) error
-	Listen         ListenFunc
-	ListenUntil    ListenUntilFunc
-	AdminCheck     func(platform, userID string) bool
-	Reply          func(text string) error
-	ReplyButtons   func(text string, buttons [][]types.ButtonOption) error
-	SendImage      func(imageURL string) error
-	SendRich       func(message types.RichMessage) error
-	ReserveRestart func() (RestartHandler, bool)
-	ReleaseRestart func()
-	MessageKey     func(msg *types.Message) string
+	Database         *config.Database
+	Message          *types.Message
+	Target           string
+	StartTime        time.Time
+	ReleaseClient    updater.ReleaseClient
+	UpdateHandler    UpdateHandler
+	PluginStore      PluginAdminStore
+	RegisterPlugin   func(*types.Plugin) error
+	Listen           ListenFunc
+	ListenUntil      ListenUntilFunc
+	AdminCheck       func(platform, userID string) bool
+	Reply            func(text string) error
+	ReplyButtons     func(text string, buttons [][]types.ButtonOption) error
+	SendImage        func(imageURL string) error
+	SendRich         func(message types.RichMessage) error
+	ReserveRestart   func() (RestartHandler, bool)
+	ReleaseRestart   func()
+	MessageKey       func(msg *types.Message) string
+	BotIdentityLabel string
+	BotIdentityValue string
 }
 
 func (c *Context) SendText(text string) error {

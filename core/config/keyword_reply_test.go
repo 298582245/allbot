@@ -77,6 +77,39 @@ func TestBuiltinKeywordRepliesUseCurrentContentAsTrigger(t *testing.T) {
 	}
 }
 
+func TestBuiltinBotIDKeywordReplySeededIdempotently(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	if err := ensureBuiltinKeywordReplies(db.db); err != nil {
+		t.Fatalf("second ensureBuiltinKeywordReplies returned error: %v", err)
+	}
+	items, err := db.ListKeywordReplies()
+	if err != nil {
+		t.Fatalf("ListKeywordReplies returned error: %v", err)
+	}
+	var botID *KeywordReply
+	count := 0
+	for _, item := range items {
+		if item.Keyword == "botid" || item.Content == "botid" {
+			botID = item
+			count++
+		}
+	}
+	if count != 1 || botID == nil {
+		t.Fatalf("botid seed count = %d", count)
+	}
+	if !botID.AdminOnly || !botID.Builtin || !botID.Pinned || !botID.Enabled {
+		t.Fatalf("botid flags unexpected: admin=%v builtin=%v pinned=%v enabled=%v", botID.AdminOnly, botID.Builtin, botID.Pinned, botID.Enabled)
+	}
+	if botID.MatchType != "exact" || botID.ReplyType != "builtin" || botID.Content != "botid" {
+		t.Fatalf("botid seed unexpected: match=%q reply=%q content=%q", botID.MatchType, botID.ReplyType, botID.Content)
+	}
+}
+
 func TestBuiltinRechargeKeywordReplyIsUserAvailable(t *testing.T) {
 	db, err := NewDatabase(":memory:")
 	if err != nil {

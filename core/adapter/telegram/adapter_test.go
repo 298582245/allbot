@@ -5,10 +5,89 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/allbot/allbot/core/adapter/_contract"
 	"github.com/allbot/allbot/core/types"
 )
+
+func TestTelegramVerifyTokenCachesBotIdentity(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"id":123456789}}`))
+	}))
+	defer server.Close()
+
+	adapter := NewTelegramAdapter("token", "")
+	var _ contract.BotIdentityProvider = adapter
+	adapter.apiURL = server.URL
+	adapter.httpClient = server.Client()
+	if err := adapter.verifyToken(); err != nil {
+		t.Fatalf("verifyToken returned error: %v", err)
+	}
+	identity := adapter.GetBotIdentity(nil)
+	if identity.Label != "Telegram Bot ID" || identity.Value != "123456789" {
+		t.Fatalf("identity = %#v", identity)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls after identity read = %d", calls.Load())
+	}
+}
+
+func TestTelegramVerifyTokenRejectsInvalidResponses(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+	}{
+		{name: "http error", statusCode: http.StatusUnauthorized, body: `{}`},
+		{name: "ok false", statusCode: http.StatusOK, body: `{"ok":false,"description":"invalid"}`},
+		{name: "invalid json", statusCode: http.StatusOK, body: `{`},
+		{name: "missing id", statusCode: http.StatusOK, body: `{"ok":true,"result":{}}`},
+		{name: "decimal id", statusCode: http.StatusOK, body: `{"ok":true,"result":{"id":1.5}}`},
+		{name: "zero id", statusCode: http.StatusOK, body: `{"ok":true,"result":{"id":0}}`},
+		{name: "negative id", statusCode: http.StatusOK, body: `{"ok":true,"result":{"id":-1}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+			adapter := NewTelegramAdapter("token", "")
+			adapter.apiURL = server.URL
+			adapter.httpClient = server.Client()
+			if err := adapter.verifyToken(); err == nil {
+				t.Fatal("expected verifyToken error")
+			}
+			if identity := adapter.GetBotIdentity(nil); identity.Value != "" {
+				t.Fatalf("identity = %#v", identity)
+			}
+		})
+	}
+}
+
+func TestTelegramVerifyTokenClearsCachedIdentityOnFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	adapter := NewTelegramAdapter("token", "")
+	adapter.apiURL = server.URL
+	adapter.httpClient = server.Client()
+	adapter.botID = "123456789"
+
+	if err := adapter.verifyToken(); err == nil {
+		t.Fatal("expected verifyToken error")
+	}
+	if identity := adapter.GetBotIdentity(nil); identity.Value != "" {
+		t.Fatalf("identity = %#v", identity)
+	}
+}
 
 func TestTelegramSendMarkdownUsesMarkdownParseMode(t *testing.T) {
 	var body map[string]interface{}

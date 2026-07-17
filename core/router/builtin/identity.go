@@ -23,10 +23,65 @@ func replyBind(ctx *Context) error {
 }
 
 func replyGroupID(ctx *Context) error {
-	if ctx.Message.GroupID == "" {
+	groupID := groupTargetID(ctx)
+	if groupID == "" {
 		return nil
 	}
-	return ctx.SendText(ctx.Message.GroupID)
+	return ctx.SendText(groupID)
+}
+
+func replyBotID(ctx *Context) error {
+	label := strings.TrimSpace(ctx.BotIdentityLabel)
+	value := strings.TrimSpace(ctx.BotIdentityValue)
+	if label == "" {
+		label = "平台机器人身份"
+	}
+	if value == "" {
+		value = "未知"
+	}
+	adapterID := strings.TrimSpace(ctx.adapterID())
+	if adapterID == "" {
+		adapterID = "未知"
+	}
+	return ctx.SendText(fmt.Sprintf("%s：%s\nAllBot 适配器实例 ID：%s", label, value, adapterID))
+}
+
+func groupTargetID(ctx *Context) string {
+	if ctx == nil || ctx.Message == nil {
+		return ""
+	}
+	msg := ctx.Message
+	if msg.Platform != "qq_office" {
+		return msg.GroupID
+	}
+	if msg.Metadata != nil {
+		if groupOpenID := strings.TrimSpace(msg.Metadata["qq_office_group_openid"]); groupOpenID != "" {
+			return qqOfficeGroupTarget(groupOpenID)
+		}
+		if guildID := strings.TrimSpace(msg.Metadata["qq_office_guild_id"]); guildID != "" {
+			return qqOfficeDMSTarget(guildID)
+		}
+	}
+	if groupID := strings.TrimSpace(msg.GroupID); groupID != "" {
+		return qqOfficeGroupTarget(groupID)
+	}
+	return ""
+}
+
+func qqOfficeGroupTarget(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "group_") || strings.HasPrefix(value, "dms_") {
+		return value
+	}
+	return "group_" + value
+}
+
+func qqOfficeDMSTarget(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "group_") || strings.HasPrefix(value, "dms_") {
+		return value
+	}
+	return "dms_" + value
 }
 
 func replyMyPlatforms(ctx *Context) error {

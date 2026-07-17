@@ -10,11 +10,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/allbot/allbot/core/adapter/_contract"
 	"github.com/allbot/allbot/core/types"
 	"github.com/gorilla/websocket"
 )
 
 var testUpgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+func TestQQAdapterBotIdentityReadsCachedSelfID(t *testing.T) {
+	adapter := NewQQAdapter(QQAdapterConfig{})
+	var _ contract.BotIdentityProvider = adapter
+	if identity := adapter.GetBotIdentity(nil); identity.Label != "机器人 QQ" || identity.Value != "" {
+		t.Fatalf("identity before cache = %#v", identity)
+	}
+	adapter.mu.Lock()
+	adapter.selfID = "10001"
+	adapter.mu.Unlock()
+	if identity := adapter.GetBotIdentity(&types.Message{}); identity.Label != "机器人 QQ" || identity.Value != "10001" {
+		t.Fatalf("identity after cache = %#v", identity)
+	}
+}
 
 type oneBotRequest struct {
 	Action string                 `json:"action"`

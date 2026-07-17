@@ -122,6 +122,15 @@ func (a *WeChatOfficialAdapter) GetPlatform() string {
 	return platformName
 }
 
+func (a *WeChatOfficialAdapter) GetBotIdentity(msg *types.Message) contract.BotIdentity {
+	if msg != nil && msg.Metadata != nil {
+		if originalID := strings.TrimSpace(msg.Metadata["wechat_to_user_name"]); originalID != "" {
+			return contract.BotIdentity{Label: "公众号原始 ID", Value: originalID}
+		}
+	}
+	return contract.BotIdentity{Label: "公众号 App ID", Value: strings.TrimSpace(a.appID)}
+}
+
 func (a *WeChatOfficialAdapter) SetMessageHandler(handler func(*types.Message)) {
 	a.messageHandler = handler
 }

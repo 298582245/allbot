@@ -679,6 +679,7 @@ func ensureBuiltinKeywordReplies(db *sql.DB) error {
 		{keyword: "绑定", content: "绑定", matchType: "exact", description: "私聊使用绑定码绑定其他平台身份", adminOnly: false},
 		{keyword: "我的平台", content: "我的平台", matchType: "exact", description: "私聊查看当前 union_id 已绑定的平台和用户 ID", adminOnly: false},
 		{keyword: "groupId", content: "groupId", matchType: "exact", description: "返回当前群组 ID，私聊不响应", adminOnly: false},
+		{keyword: "botid", content: "botid", matchType: "exact", description: "返回当前机器人平台身份和 AllBot 适配器实例 ID", adminOnly: true},
 		{keyword: "插件列表", content: "插件列表", matchType: "exact", description: "平台管理员交互式管理插件启停和访问控制", adminOnly: true},
 		{keyword: "system", content: "system", matchType: "exact", description: "返回系统运行信息", adminOnly: true},
 		{keyword: `(?i)^v(ersion)?$`, lookupKeyword: "version", content: "version", matchType: "regex", description: "返回框架版本信息", adminOnly: false},

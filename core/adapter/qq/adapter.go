@@ -108,6 +108,12 @@ func (a *QQAdapter) GetPlatform() string {
 	return "qq"
 }
 
+func (a *QQAdapter) GetBotIdentity(msg *types.Message) contract.BotIdentity {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return contract.BotIdentity{Label: "机器人 QQ", Value: strings.TrimSpace(a.selfID)}
+}
+
 func (a *QQAdapter) SetMessageHandler(handler func(*types.Message)) {
 	a.messageHandler = handler
 }

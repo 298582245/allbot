@@ -23,6 +23,7 @@ var commands = map[string]Command{
 	"绑定":      {Name: "绑定", Handler: replyBind},
 	"我的平台":    {Name: "我的平台", Handler: replyMyPlatforms},
 	"groupid": {Name: "groupid", Handler: replyGroupID},
+	"botid":   {Name: "botid", Handler: replyBotID},
 	"插件列表":    {Name: "插件列表", Handler: replyPluginList},
 	"system":  {Name: "system", Handler: replySystem},
 	"version": {Name: "version", Handler: replyVersion},
@@ -40,6 +41,8 @@ func Match(item *config.KeywordReply, content string) bool {
 			return strings.EqualFold(content, "myid")
 		case "groupid":
 			return strings.EqualFold(content, "groupid")
+		case "botid":
+			return strings.EqualFold(content, "botid")
 		case "version":
 			return strings.EqualFold(content, "version")
 		}
@@ -78,6 +81,8 @@ func normalizeCommandName(keyword string) string {
 		return "myid"
 	case "groupid":
 		return "groupid"
+	case "botid":
+		return "botid"
 	case "version":
 		return "version"
 	case "system":

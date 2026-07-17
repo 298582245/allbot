@@ -29,6 +29,19 @@ type keywordReplyFakeAdapter struct {
 	sendResolver   adapter.SendTargetResolver
 }
 
+type keywordReplyIdentityFakeAdapter struct {
+	*keywordReplyFakeAdapter
+	identity adapter.BotIdentity
+	calls    int
+	received *types.Message
+}
+
+func (a *keywordReplyIdentityFakeAdapter) GetBotIdentity(msg *types.Message) adapter.BotIdentity {
+	a.calls++
+	a.received = msg
+	return a.identity
+}
+
 type sentKeywordReplyMessage struct {
 	target string
 	text   string
@@ -304,6 +317,130 @@ func TestKeywordReplyBuiltinKeywordsAreCaseInsensitive(t *testing.T) {
 	}
 	if messages[2].text != "2001" || messages[3].text != "2001" {
 		t.Fatalf("groupid messages unexpected: %#v", messages[2:])
+	}
+}
+
+func TestKeywordReplyGroupIDFormatsQQOfficeTargets(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  *types.Message
+		wantText string
+		wantSent bool
+	}{
+		{name: "ordinary qq", message: &types.Message{Platform: "qq", UserID: "user", GroupID: "group", Content: "groupId"}, wantText: "group", wantSent: true},
+		{name: "telegram", message: &types.Message{Platform: "telegram", UserID: "user", GroupID: "-1001", Content: "groupId"}, wantText: "-1001", wantSent: true},
+		{name: "qq office group metadata", message: &types.Message{Platform: "qq_office", UserID: "user", GroupID: "fallback", Content: "groupId", Metadata: map[string]string{"qq_office_group_openid": "group-openid"}}, wantText: "group_group-openid", wantSent: true},
+		{name: "qq office dms metadata", message: &types.Message{Platform: "qq_office", UserID: "user", Content: "groupId", Metadata: map[string]string{"qq_office_guild_id": "guild-id"}}, wantText: "dms_guild-id", wantSent: true},
+		{name: "qq office prefixed group", message: &types.Message{Platform: "qq_office", UserID: "user", GroupID: "group_existing", Content: "groupId"}, wantText: "group_existing", wantSent: true},
+		{name: "qq office prefixed dms", message: &types.Message{Platform: "qq_office", UserID: "user", Content: "groupId", Metadata: map[string]string{"qq_office_guild_id": "dms_existing"}}, wantText: "dms_existing", wantSent: true},
+		{name: "qq office group fallback", message: &types.Message{Platform: "qq_office", UserID: "user", GroupID: "fallback", Content: "groupId"}, wantText: "group_fallback", wantSent: true},
+		{name: "qq office private", message: &types.Message{Platform: "qq_office", UserID: "user", Content: "groupId"}, wantSent: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &keywordReplyFakeAdapter{}
+			db, manager := newKeywordReplyTestManager(t, fake, true)
+			defer db.Close()
+			if !manager.Handle(tt.message) {
+				t.Fatal("Handle returned false")
+			}
+			messages := fake.sentMessages()
+			if !tt.wantSent {
+				if len(messages) != 0 {
+					t.Fatalf("messages = %#v", messages)
+				}
+				return
+			}
+			if len(messages) != 1 || messages[0].text != tt.wantText {
+				t.Fatalf("messages = %#v, want text %q", messages, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestKeywordReplyBotIDUsesCurrentAdapterIdentity(t *testing.T) {
+	first := &keywordReplyIdentityFakeAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{}, identity: adapter.BotIdentity{Label: "机器人 App ID", Value: "app-first"}}
+	second := &keywordReplyIdentityFakeAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{}, identity: adapter.BotIdentity{Label: "机器人 App ID", Value: "app-second"}}
+	db, err := config.NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	manager := NewKeywordReplyManager(db, func(msg *types.Message) adapter.Adapter {
+		if msg.AdapterID == "2" {
+			return second
+		}
+		return first
+	}, func(platform, userID string) bool { return true }, time.Now())
+
+	msg := &types.Message{Platform: "qq_office", AdapterID: "2", UserID: "admin", Content: "BotId"}
+	if !manager.Handle(msg) {
+		t.Fatal("Handle returned false")
+	}
+	if first.calls != 0 || second.calls != 1 || second.received != msg {
+		t.Fatalf("provider calls first=%d second=%d received=%p want=%p", first.calls, second.calls, second.received, msg)
+	}
+	messages := second.sentMessages()
+	want := "机器人 App ID：app-second\nAllBot 适配器实例 ID：2"
+	if len(messages) != 1 || messages[0].text != want {
+		t.Fatalf("messages = %#v, want %q", messages, want)
+	}
+}
+
+func TestKeywordReplyBotIDCaseInsensitiveAndExact(t *testing.T) {
+	fake := &keywordReplyIdentityFakeAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{}, identity: adapter.BotIdentity{Label: "机器人 QQ", Value: "123"}}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+	for _, content := range []string{"botid", "BOTID", "BotId"} {
+		if !manager.Handle(&types.Message{Platform: "qq", AdapterID: "3", UserID: "admin", Content: content}) {
+			t.Fatalf("Handle returned false for %q", content)
+		}
+	}
+	if manager.Handle(&types.Message{Platform: "qq", AdapterID: "3", UserID: "admin", Content: "botid extra"}) {
+		t.Fatal("botid with trailing parameter should not match")
+	}
+	if messages := fake.sentMessages(); len(messages) != 3 {
+		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestKeywordReplyBotIDUsesMetadataAdapterIDAndUnknownValues(t *testing.T) {
+	fake := &keywordReplyIdentityFakeAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{}}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+	msg := &types.Message{Platform: "web", UserID: "admin", Content: "botid", Metadata: map[string]string{"adapter_id": "9"}}
+	if !manager.Handle(msg) {
+		t.Fatal("Handle returned false")
+	}
+	messages := fake.sentMessages()
+	want := "平台机器人身份：未知\nAllBot 适配器实例 ID：9"
+	if len(messages) != 1 || messages[0].text != want {
+		t.Fatalf("messages = %#v, want %q", messages, want)
+	}
+
+	fake.messages = nil
+	msg.Metadata = nil
+	if !manager.Handle(msg) {
+		t.Fatal("second Handle returned false")
+	}
+	messages = fake.sentMessages()
+	if len(messages) != 1 || !strings.HasSuffix(messages[0].text, "AllBot 适配器实例 ID：未知") {
+		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestKeywordReplyBotIDNonAdminIsConsumedWithoutProviderCall(t *testing.T) {
+	fake := &keywordReplyIdentityFakeAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{}, identity: adapter.BotIdentity{Label: "机器人 QQ", Value: "123"}}
+	db, manager := newKeywordReplyTestManager(t, fake, false)
+	defer db.Close()
+	if !manager.Handle(&types.Message{Platform: "qq", AdapterID: "3", UserID: "user", Content: "botid"}) {
+		t.Fatal("Handle returned false")
+	}
+	if fake.calls != 0 {
+		t.Fatalf("provider calls = %d", fake.calls)
+	}
+	if messages := fake.sentMessages(); len(messages) != 0 {
+		t.Fatalf("messages = %#v", messages)
 	}
 }
 

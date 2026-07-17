@@ -26,6 +26,22 @@ func TestWeChatOfficialAdapterImplementsContracts(t *testing.T) {
 	var _ contract.ReplyTextFormatter = adapter
 	var _ contract.SendTargetResolver = adapter
 	var _ contract.HTTPCallbackHandler = adapter
+	var _ contract.BotIdentityProvider = adapter
+}
+
+func TestWeChatOfficialBotIdentityPrefersOriginalID(t *testing.T) {
+	adapter := NewWeChatOfficialAdapter("app-id", "app-secret", "token", "", "", "")
+	identity := adapter.GetBotIdentity(&types.Message{Metadata: map[string]string{"wechat_to_user_name": "gh_original"}})
+	if identity.Label != "公众号原始 ID" || identity.Value != "gh_original" {
+		t.Fatalf("metadata identity = %#v", identity)
+	}
+	identity = adapter.GetBotIdentity(&types.Message{})
+	if identity.Label != "公众号 App ID" || identity.Value != "app-id" {
+		t.Fatalf("fallback identity = %#v", identity)
+	}
+	if strings.Contains(identity.Value, "app-secret") {
+		t.Fatalf("identity leaked app secret: %#v", identity)
+	}
 }
 
 func TestParseConfigForRegistry(t *testing.T) {

@@ -145,6 +145,10 @@ func (m *KeywordReplyManager) replyBuiltin(keyword string, msg *types.Message) e
 	if adp == nil {
 		return fmt.Errorf("适配器不存在: %s", msg.Platform)
 	}
+	var botIdentity adapter.BotIdentity
+	if provider, ok := adp.(adapter.BotIdentityProvider); ok {
+		botIdentity = provider.GetBotIdentity(msg)
+	}
 	ctx := &builtin.Context{
 		Database:       m.database,
 		Message:        msg,
@@ -169,9 +173,11 @@ func (m *KeywordReplyManager) replyBuiltin(keyword string, msg *types.Message) e
 		SendRich: func(message types.RichMessage) error {
 			return sendReplyRichWithFallback(adp, msg, target, message)
 		},
-		ReserveRestart: m.reserveRestart,
-		ReleaseRestart: m.releaseRestart,
-		MessageKey:     RestartMessageKey,
+		ReserveRestart:   m.reserveRestart,
+		ReleaseRestart:   m.releaseRestart,
+		MessageKey:       RestartMessageKey,
+		BotIdentityLabel: strings.TrimSpace(botIdentity.Label),
+		BotIdentityValue: strings.TrimSpace(botIdentity.Value),
 	}
 	return builtin.Dispatch(ctx, keyword)
 }

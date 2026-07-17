@@ -19,6 +19,19 @@ func TestDingTalkAdapterImplementsContracts(t *testing.T) {
 	var _ contract.ReplyTargetResolver = adapter
 	var _ contract.ReplyTextFormatter = adapter
 	var _ contract.SendTargetResolver = adapter
+	var _ contract.BotIdentityProvider = adapter
+}
+
+func TestDingTalkBotIdentityPrefersMessageMetadata(t *testing.T) {
+	adapter := NewDingTalkAdapter("client", "secret", "robot-code", "", "")
+	identity := adapter.GetBotIdentity(&types.Message{Metadata: map[string]string{"dingtalk_chatbot_user_id": "chatbot-user"}})
+	if identity.Label != "ChatbotUserId" || identity.Value != "chatbot-user" {
+		t.Fatalf("metadata identity = %#v", identity)
+	}
+	identity = adapter.GetBotIdentity(&types.Message{})
+	if identity.Label != "RobotCode" || identity.Value != "robot-code" {
+		t.Fatalf("fallback identity = %#v", identity)
+	}
 }
 
 func TestParseConfigForRegistry(t *testing.T) {

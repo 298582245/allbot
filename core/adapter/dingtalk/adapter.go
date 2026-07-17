@@ -74,6 +74,15 @@ func (a *DingTalkAdapter) GetPlatform() string {
 	return platformName
 }
 
+func (a *DingTalkAdapter) GetBotIdentity(msg *types.Message) contract.BotIdentity {
+	if msg != nil && msg.Metadata != nil {
+		if chatbotUserID := strings.TrimSpace(msg.Metadata["dingtalk_chatbot_user_id"]); chatbotUserID != "" {
+			return contract.BotIdentity{Label: "ChatbotUserId", Value: chatbotUserID}
+		}
+	}
+	return contract.BotIdentity{Label: "RobotCode", Value: strings.TrimSpace(a.robotCode)}
+}
+
 func (a *DingTalkAdapter) SetMessageHandler(handler func(*types.Message)) {
 	a.messageHandler = handler
 }

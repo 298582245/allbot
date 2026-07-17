@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/allbot/allbot/core/adapter/_contract"
@@ -29,6 +30,8 @@ type TelegramAdapter struct {
 	stopChan       chan struct{}
 	lastUpdateID   int64
 	httpClient     *http.Client
+	botID          string
+	identityMu     sync.RWMutex
 }
 
 type telegramInlineKeyboardButton struct {
@@ -77,6 +80,12 @@ func NewTelegramAdapter(botToken string, proxyURL string) *TelegramAdapter {
 // GetPlatform 获取平台名称
 func (a *TelegramAdapter) GetPlatform() string {
 	return "telegram"
+}
+
+func (a *TelegramAdapter) GetBotIdentity(msg *types.Message) contract.BotIdentity {
+	a.identityMu.RLock()
+	defer a.identityMu.RUnlock()
+	return contract.BotIdentity{Label: "Telegram Bot ID", Value: a.botID}
 }
 
 // SetMessageHandler 设置消息处理器
@@ -142,8 +151,12 @@ func (a *TelegramAdapter) Stop() error {
 	return nil
 }
 
-// verifyToken 验证 Bot Token
+// verifyToken 验证 Bot Token，并缓存 getMe 返回的机器人 ID。
 func (a *TelegramAdapter) verifyToken() error {
+	a.identityMu.Lock()
+	a.botID = ""
+	a.identityMu.Unlock()
+
 	resp, err := a.httpClient.Get(a.apiURL + "/getMe")
 	if err != nil {
 		return err
@@ -153,7 +166,28 @@ func (a *TelegramAdapter) verifyToken() error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("无效的 Bot Token")
 	}
-
+	var result struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			ID json.Number `json:"id"`
+		} `json:"result"`
+		Description string `json:"description"`
+	}
+	decoder := json.NewDecoder(resp.Body)
+	decoder.UseNumber()
+	if err := decoder.Decode(&result); err != nil {
+		return fmt.Errorf("解析 getMe 响应失败: %w", err)
+	}
+	if !result.OK {
+		return fmt.Errorf("验证 Bot Token 失败: %s", strings.TrimSpace(result.Description))
+	}
+	botID, err := result.Result.ID.Int64()
+	if err != nil || botID <= 0 {
+		return fmt.Errorf("getMe 响应缺少有效的机器人 ID")
+	}
+	a.identityMu.Lock()
+	a.botID = strconv.FormatInt(botID, 10)
+	a.identityMu.Unlock()
 	return nil
 }
 

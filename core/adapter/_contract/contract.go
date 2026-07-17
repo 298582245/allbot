@@ -39,6 +39,19 @@ type Adapter interface {
 	SetMessageHandler(handler func(*types.Message))
 }
 
+// BotIdentity 表示平台可可靠取得的机器人公开身份。
+type BotIdentity struct {
+	Label string
+	Value string
+}
+
+// BotIdentityProvider 由适配器提供当前消息对应的机器人公开身份。
+// msg 可为 nil；实现只能读取已缓存或非敏感的公开标识，不得临时发起网络请求。
+// 返回空 Value 表示当前无法可靠取得身份。
+type BotIdentityProvider interface {
+	GetBotIdentity(msg *types.Message) BotIdentity
+}
+
 // MarkdownSender 由适配器按自身能力发送 Markdown 消息。
 type MarkdownSender interface {
 	SendMarkdown(target string, markdown string) error

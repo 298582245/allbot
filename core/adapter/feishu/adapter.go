@@ -161,6 +161,10 @@ func (a *FeishuAdapter) GetPlatform() string {
 	return platformName
 }
 
+func (a *FeishuAdapter) GetBotIdentity(msg *types.Message) contract.BotIdentity {
+	return contract.BotIdentity{Label: "机器人 App ID", Value: strings.TrimSpace(a.appID)}
+}
+
 func (a *FeishuAdapter) SetMessageHandler(handler func(*types.Message)) {
 	a.messageHandler = handler
 }

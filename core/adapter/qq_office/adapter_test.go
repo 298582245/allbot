@@ -8,8 +8,21 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/allbot/allbot/core/adapter/_contract"
 	"github.com/allbot/allbot/core/types"
 )
+
+func TestQQOfficeBotIdentityReturnsOnlyAppID(t *testing.T) {
+	adapter := NewQQOfficeAdapter("app123", "secret456", "", "")
+	var _ contract.BotIdentityProvider = adapter
+	identity := adapter.GetBotIdentity(nil)
+	if identity.Label != "机器人 App ID" || identity.Value != "app123" {
+		t.Fatalf("identity = %#v", identity)
+	}
+	if strings.Contains(identity.Value, "secret456") {
+		t.Fatalf("identity leaked client secret: %#v", identity)
+	}
+}
 
 func TestQQOfficeGetAccessTokenCachesToken(t *testing.T) {
 	var calls int32

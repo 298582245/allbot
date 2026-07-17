@@ -112,6 +112,10 @@ func (a *QQOfficeAdapter) GetPlatform() string {
 	return qqOfficePlatform
 }
 
+func (a *QQOfficeAdapter) GetBotIdentity(msg *types.Message) contract.BotIdentity {
+	return contract.BotIdentity{Label: "机器人 App ID", Value: strings.TrimSpace(a.appID)}
+}
+
 func (a *QQOfficeAdapter) SetMessageHandler(handler func(*types.Message)) {
 	a.messageHandler = handler
 }

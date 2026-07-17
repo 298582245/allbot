@@ -5,6 +5,12 @@ import "github.com/allbot/allbot/core/adapter/_contract"
 // Adapter 平台适配器接口。
 type Adapter = contract.Adapter
 
+// BotIdentity 平台机器人公开身份。
+type BotIdentity = contract.BotIdentity
+
+// BotIdentityProvider 由适配器提供当前消息对应的机器人公开身份。
+type BotIdentityProvider = contract.BotIdentityProvider
+
 // MarkdownSender 由适配器按自身能力发送 Markdown 消息。
 type MarkdownSender = contract.MarkdownSender
 

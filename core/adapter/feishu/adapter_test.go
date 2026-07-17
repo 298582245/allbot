@@ -26,6 +26,18 @@ func TestFeishuAdapterImplementsContracts(t *testing.T) {
 	var _ contract.SendTargetResolver = adapter
 	var _ contract.ReplyTextFormatter = adapter
 	var _ contract.MarkdownSender = adapter
+	var _ contract.BotIdentityProvider = adapter
+}
+
+func TestFeishuBotIdentityReturnsOnlyAppID(t *testing.T) {
+	adapter := NewFeishuAdapter("app-id", "app-secret", "token", "", "", "", "")
+	identity := adapter.GetBotIdentity(nil)
+	if identity.Label != "机器人 App ID" || identity.Value != "app-id" {
+		t.Fatalf("identity = %#v", identity)
+	}
+	if strings.Contains(identity.Value, "app-secret") {
+		t.Fatalf("identity leaked app secret: %#v", identity)
+	}
 }
 
 func TestParseConfigForRegistry(t *testing.T) {
