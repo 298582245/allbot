@@ -552,6 +552,19 @@ export const getLogs = (params = {}) => {
   })
 }
 
+// 下载日志原文件或全部日志压缩包
+export const downloadLogs = (params = {}) => {
+  return request({
+    url: '/logs/download',
+    method: 'get',
+    params,
+    responseType: 'blob',
+    transformResponse: [(data) => data],
+    silent: true,
+    timeout: 10 * 60 * 1000
+  })
+}
+
 // 清空日志
 export const clearLogs = (params = {}) => {
   return request({

@@ -1,6 +1,8 @@
 package web
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -247,6 +249,161 @@ func TestHandleLogsQueryPaginationAndFilter(t *testing.T) {
 		}
 		if result.Total != 2 || len(result.Items) != 1 || result.Items[0].Message != "keyword second" {
 			t.Fatalf("unexpected response: %#v", result)
+		}
+	})
+}
+
+func TestHandleLogDownloadDate(t *testing.T) {
+	withTempWorkdirForLogTests(t, func() {
+		server := &Server{logManager: newTestLogManager(t, 10)}
+		const date = "2026-06-25"
+		const content = "10:00:00 INFO original\n10:00:01 ERROR raw content\n"
+		writeTestLogFile(t, date, content)
+
+		recorder := httptest.NewRecorder()
+		server.handleLogDownload(recorder, httptest.NewRequest(http.MethodGet, "/api/logs/download?date="+date, nil))
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+		}
+		if got := recorder.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+			t.Fatalf("unexpected content type: %q", got)
+		}
+		if got := recorder.Header().Get("Content-Disposition"); got != `attachment; filename="2026-06-25.log"` {
+			t.Fatalf("unexpected content disposition: %q", got)
+		}
+		if recorder.Body.String() != content {
+			t.Fatalf("unexpected body: %q", recorder.Body.String())
+		}
+	})
+}
+
+func TestHandleLogDownloadFlushesCurrentRepeatSummary(t *testing.T) {
+	withTempWorkdirForLogTests(t, func() {
+		lm := newTestLogManager(t, 10)
+		server := &Server{logManager: lm}
+		date := time.Now().Format(logDateLayout)
+		lm.appendLog(LogEntry{Time: "10:00:00", Level: "error", Message: "重复异常"})
+		lm.appendLog(LogEntry{Time: "10:00:01", Level: "error", Message: "重复异常"})
+		lm.appendLog(LogEntry{Time: "10:00:02", Level: "error", Message: "重复异常"})
+
+		recorder := httptest.NewRecorder()
+		server.handleLogDownload(recorder, httptest.NewRequest(http.MethodGet, "/api/logs/download?date="+date, nil))
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+		}
+		content := recorder.Body.String()
+		if strings.Count(content, "10:00:00 ERROR 重复异常") != 1 || !strings.Contains(content, "上一条日志继续重复 2 次（累计 3 次，末次时间 10:00:02）") {
+			t.Fatalf("download should contain flushed repeat summary, got:\n%s", content)
+		}
+	})
+}
+
+func TestHandleLogDownloadRejectsInvalidRequests(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		target string
+		status int
+	}{
+		{name: "missing parameter", method: http.MethodGet, target: "/api/logs/download", status: http.StatusBadRequest},
+		{name: "conflicting parameters", method: http.MethodGet, target: "/api/logs/download?date=2026-06-25&all=true", status: http.StatusBadRequest},
+		{name: "false all", method: http.MethodGet, target: "/api/logs/download?all=false", status: http.StatusBadRequest},
+		{name: "invalid date", method: http.MethodGet, target: "/api/logs/download?date=2026-02-30", status: http.StatusBadRequest},
+		{name: "path date", method: http.MethodGet, target: "/api/logs/download?date=..%2Fsecret", status: http.StatusBadRequest},
+		{name: "unknown parameter", method: http.MethodGet, target: "/api/logs/download?date=2026-06-25&extra=1", status: http.StatusBadRequest},
+		{name: "missing date file", method: http.MethodGet, target: "/api/logs/download?date=2026-06-25", status: http.StatusNotFound},
+		{name: "non get", method: http.MethodPost, target: "/api/logs/download?all=true", status: http.StatusMethodNotAllowed},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			withTempWorkdirForLogTests(t, func() {
+				server := &Server{logManager: newTestLogManager(t, 10)}
+				recorder := httptest.NewRecorder()
+				server.handleLogDownload(recorder, httptest.NewRequest(test.method, test.target, nil))
+				if recorder.Code != test.status {
+					t.Fatalf("expected status %d, got %d: %s", test.status, recorder.Code, recorder.Body.String())
+				}
+				if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+					t.Fatalf("expected JSON error response, got %q", got)
+				}
+			})
+		})
+	}
+}
+
+func TestHandleLogDownloadAllOnlyIncludesWhitelist(t *testing.T) {
+	withTempWorkdirForLogTests(t, func() {
+		server := &Server{logManager: newTestLogManager(t, 10)}
+		logs := map[string]string{
+			"2026-06-24": "10:00:00 INFO old\n",
+			"2026-06-25": "10:00:00 INFO new\n",
+		}
+		for date, content := range logs {
+			writeTestLogFile(t, date, content)
+		}
+		if err := os.WriteFile(filepath.Join("logs", "latest.log"), []byte("skip"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join("logs", "2026-06-25.log.bak"), []byte("skip"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join("logs", "2026-06-23.log"), 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		recorder := httptest.NewRecorder()
+		server.handleLogDownload(recorder, httptest.NewRequest(http.MethodGet, "/api/logs/download?all=true", nil))
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+		}
+		if got := recorder.Header().Get("Content-Type"); got != "application/zip" {
+			t.Fatalf("unexpected content type: %q", got)
+		}
+		if got := recorder.Header().Get("Content-Disposition"); got != `attachment; filename="allbot-logs.zip"` {
+			t.Fatalf("unexpected content disposition: %q", got)
+		}
+		archive, err := zip.NewReader(bytes.NewReader(recorder.Body.Bytes()), int64(recorder.Body.Len()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(archive.File) != len(logs) {
+			t.Fatalf("expected %d files, got %d", len(logs), len(archive.File))
+		}
+		for _, file := range archive.File {
+			date := strings.TrimSuffix(file.Name, ".log")
+			expected, ok := logs[date]
+			if !ok {
+				t.Fatalf("unexpected archive entry %q", file.Name)
+			}
+			reader, err := file.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data := new(bytes.Buffer)
+			if _, err := data.ReadFrom(reader); err != nil {
+				reader.Close()
+				t.Fatal(err)
+			}
+			if err := reader.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if data.String() != expected {
+				t.Fatalf("unexpected content for %s: %q", file.Name, data.String())
+			}
+		}
+	})
+}
+
+func TestHandleLogDownloadAllReturnsNotFoundForEmptyDirectory(t *testing.T) {
+	withTempWorkdirForLogTests(t, func() {
+		server := &Server{logManager: newTestLogManager(t, 10)}
+		recorder := httptest.NewRecorder()
+		server.handleLogDownload(recorder, httptest.NewRequest(http.MethodGet, "/api/logs/download?all=true", nil))
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("expected status 404, got %d: %s", recorder.Code, recorder.Body.String())
 		}
 	})
 }

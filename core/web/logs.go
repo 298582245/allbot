@@ -1,6 +1,7 @@
 package web
 
 import (
+	"archive/zip"
 	"bufio"
 	"database/sql"
 	"encoding/json"
@@ -60,6 +61,7 @@ type LogManager struct {
 	fileRepeat           int
 	fileRepeatSummarized int
 	fileLastEntry        LogEntry
+	fileOpsMu            sync.RWMutex
 }
 
 const (
@@ -323,6 +325,12 @@ func (lm *LogManager) ListLogFiles() ([]LogFileInfo, error) {
 
 // DeleteLogDate 删除指定日期日志文件，删除当天文件前会关闭当前句柄。
 func (lm *LogManager) DeleteLogDate(date string) error {
+	lm.fileOpsMu.Lock()
+	defer lm.fileOpsMu.Unlock()
+	return lm.deleteLogDate(date)
+}
+
+func (lm *LogManager) deleteLogDate(date string) error {
 	if _, err := parseLogDate(date); err != nil {
 		return err
 	}
@@ -337,6 +345,8 @@ func (lm *LogManager) DeleteLogDate(date string) error {
 
 // DeleteAllLogFiles 删除全部白名单日志文件，并清空内存日志。
 func (lm *LogManager) DeleteAllLogFiles() (int, error) {
+	lm.fileOpsMu.Lock()
+	defer lm.fileOpsMu.Unlock()
 	if err := lm.closeLogFileForDelete(""); err != nil {
 		return 0, err
 	}
@@ -363,6 +373,8 @@ func (lm *LogManager) CleanupExpiredLogs(retentionDays int) (int, error) {
 	if retentionDays <= 0 {
 		return 0, nil
 	}
+	lm.fileOpsMu.Lock()
+	defer lm.fileOpsMu.Unlock()
 	today := time.Now().Truncate(24 * time.Hour)
 	cutoff := today.AddDate(0, 0, -retentionDays+1)
 	dates, err := lm.ListLogFiles()
@@ -375,7 +387,7 @@ func (lm *LogManager) CleanupExpiredLogs(retentionDays int) (int, error) {
 		if err != nil || !fileDate.Before(cutoff) {
 			continue
 		}
-		if err := lm.DeleteLogDate(item.Date); err != nil {
+		if err := lm.deleteLogDate(item.Date); err != nil {
 			return deleted, err
 		}
 		deleted++
@@ -483,6 +495,187 @@ func (cl *CustomLogger) Write(p []byte) (n int, err error) {
 	cl.logManager.AddLog(level, content)
 
 	return cl.logger.Writer().Write(p)
+}
+
+func (s *Server) handleLogDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.jsonError(w, "仅支持 GET 请求", http.StatusMethodNotAllowed)
+		return
+	}
+
+	query := r.URL.Query()
+	if len(query) != 1 {
+		s.jsonError(w, "必须且只能指定 date 或 all=true", http.StatusBadRequest)
+		return
+	}
+	dateValues, hasDate := query["date"]
+	allValues, hasAll := query["all"]
+	if hasDate == hasAll || (hasDate && len(dateValues) != 1) || (hasAll && len(allValues) != 1) {
+		s.jsonError(w, "必须且只能指定 date 或 all=true", http.StatusBadRequest)
+		return
+	}
+	if hasAll {
+		if allValues[0] != "true" {
+			s.jsonError(w, "all 参数必须为 true", http.StatusBadRequest)
+			return
+		}
+		s.serveAllLogDownload(w, r)
+		return
+	}
+
+	date := dateValues[0]
+	if _, err := parseLogDate(date); err != nil {
+		s.jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.serveLogDateDownload(w, r, date)
+}
+
+func (s *Server) serveLogDateDownload(w http.ResponseWriter, r *http.Request, date string) {
+	file, info, err := s.logManager.openLogFileForDownload(date)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.jsonError(w, "日志文件不存在", http.StatusNotFound)
+		} else {
+			s.jsonError(w, "读取日志文件失败: "+err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	defer file.Close()
+
+	filename := date + ".log"
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	http.ServeContent(w, r, filename, info.ModTime(), file)
+}
+
+func (lm *LogManager) openLogFileForDownload(date string) (*os.File, os.FileInfo, error) {
+	lm.fileOpsMu.RLock()
+	defer lm.fileOpsMu.RUnlock()
+
+	if err := lm.flushLogFileForRead(date); err != nil {
+		return nil, nil, err
+	}
+	files, err := lm.ListLogFiles()
+	if err != nil {
+		return nil, nil, err
+	}
+	found := false
+	for _, item := range files {
+		if item.Date == date {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, nil, os.ErrNotExist
+	}
+
+	file, err := os.Open(logFilePath(date))
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		file.Close()
+		return nil, nil, os.ErrNotExist
+	}
+	return file, info, nil
+}
+
+func (s *Server) serveAllLogDownload(w http.ResponseWriter, r *http.Request) {
+	archive, info, err := s.logManager.createAllLogsArchive()
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.jsonError(w, "暂无可下载的日志文件", http.StatusNotFound)
+		} else {
+			s.jsonError(w, "打包日志失败: "+err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	archivePath := archive.Name()
+	defer func() {
+		archive.Close()
+		os.Remove(archivePath)
+	}()
+
+	const filename = "allbot-logs.zip"
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	http.ServeContent(w, r, filename, info.ModTime(), archive)
+}
+
+func (lm *LogManager) createAllLogsArchive() (*os.File, os.FileInfo, error) {
+	lm.fileOpsMu.RLock()
+	defer lm.fileOpsMu.RUnlock()
+
+	lm.mu.RLock()
+	currentDate := lm.logDate
+	lm.mu.RUnlock()
+	if currentDate != "" {
+		if err := lm.flushLogFileForRead(currentDate); err != nil {
+			return nil, nil, err
+		}
+	}
+	files, err := lm.ListLogFiles()
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(files) == 0 {
+		return nil, nil, os.ErrNotExist
+	}
+
+	archive, err := os.CreateTemp("", "allbot-logs-*.zip")
+	if err != nil {
+		return nil, nil, err
+	}
+	archivePath := archive.Name()
+	cleanup := func() {
+		archive.Close()
+		os.Remove(archivePath)
+	}
+	zipWriter := zip.NewWriter(archive)
+	for _, item := range files {
+		source, err := os.Open(logFilePath(item.Date))
+		if err != nil {
+			zipWriter.Close()
+			cleanup()
+			return nil, nil, err
+		}
+		destination, err := zipWriter.Create(item.Name)
+		if err == nil {
+			_, err = io.Copy(destination, source)
+		}
+		closeErr := source.Close()
+		if err != nil {
+			zipWriter.Close()
+			cleanup()
+			return nil, nil, err
+		}
+		if closeErr != nil {
+			zipWriter.Close()
+			cleanup()
+			return nil, nil, closeErr
+		}
+	}
+	if err := zipWriter.Close(); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	if _, err := archive.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	info, err := archive.Stat()
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	return archive, info, nil
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {

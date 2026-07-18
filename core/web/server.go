@@ -187,6 +187,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/adapters/", s.handleAdapterDetail)
 	mux.HandleFunc("/api/logs/settings", s.handleLogSettings)
 	mux.HandleFunc("/api/logs/cleanup", s.handleLogCleanup)
+	mux.HandleFunc("/api/logs/download", s.handleLogDownload)
 	mux.HandleFunc("/api/logs", s.handleLogs)
 	mux.HandleFunc("/api/scheduled-tasks", s.handleScheduledTasks)
 	mux.HandleFunc("/api/scheduled-tasks/", s.handleScheduledTaskDetail)

@@ -17,11 +17,27 @@
               <el-icon><Refresh /></el-icon>
               刷新
             </el-button>
-            <el-button size="small" type="warning" :disabled="!selectedDate" @click="handleDeleteDate">
+            <el-dropdown
+              class="download-dropdown"
+              :disabled="downloading || logDates.length === 0"
+              @command="handleDownload"
+            >
+              <el-button size="small" type="primary" :loading="downloading">
+                <el-icon v-if="!downloading"><Download /></el-icon>
+                下载日志
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="date" :disabled="!canDownloadSelectedDate">下载当前日期</el-dropdown-item>
+                  <el-dropdown-item command="all" :disabled="logDates.length === 0">下载全部日志</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <el-button size="small" type="warning" :disabled="downloading || !selectedDate" @click="handleDeleteDate">
               <el-icon><Delete /></el-icon>
               删除当前日期
             </el-button>
-            <el-button size="small" type="danger" @click="handleClearAll">
+            <el-button size="small" type="danger" :disabled="downloading" @click="handleClearAll">
               <el-icon><Delete /></el-icon>
               清空全部
             </el-button>
@@ -70,7 +86,7 @@
           <el-input-number v-model="retentionDays" :min="0" :max="3650" size="small" controls-position="right" />
           <span class="settings-tip">0 表示禁用自动清理</span>
           <el-button size="small" type="primary" @click="handleSaveSettings">保存设置</el-button>
-          <el-button size="small" @click="handleCleanupNow">立即清理</el-button>
+          <el-button size="small" :disabled="downloading" @click="handleCleanupNow">立即清理</el-button>
         </div>
       </div>
 
@@ -107,8 +123,8 @@
 defineOptions({ name: 'Logs' })
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, InfoFilled, Refresh } from '@element-plus/icons-vue'
-import { cleanupLogs, clearLogs, getLogSettings, getLogs, saveLogSettings } from '@/api'
+import { Delete, Download, InfoFilled, Refresh } from '@element-plus/icons-vue'
+import { cleanupLogs, clearLogs, downloadLogs, getLogSettings, getLogs, saveLogSettings } from '@/api'
 import StdPagination from '@/components/StdPagination.vue'
 
 const logs = ref([])
@@ -118,13 +134,14 @@ const keyword = ref('')
 const level = ref('')
 const retentionDays = ref(0)
 const loading = ref(false)
+const downloading = ref(false)
 const logContainerRef = ref(null)
 const pauseScroll = ref(false)
 const mergeRepeatLogs = ref(true)
 const pagination = ref({ page: 1, pageSize: 100, total: 0 })
 let logInterval = null
 
-const pageDescription = '按日期查看和删除系统运行日志，支持清空全部历史日志。'
+const pageDescription = '按日期查看、下载和删除系统运行日志，支持下载或清空全部历史日志。'
 const showPageDescription = () => {
   ElMessageBox.alert(pageDescription, '系统日志说明', { confirmButtonText: '知道了', type: 'info' })
 }
@@ -147,6 +164,9 @@ const todayText = () => {
 }
 
 const isTodaySelected = computed(() => selectedDate.value === todayText())
+const canDownloadSelectedDate = computed(() => {
+  return Boolean(selectedDate.value) && logDates.value.some((item) => item.date === selectedDate.value)
+})
 
 const normalizeRepeat = (repeat) => {
   const value = Number(repeat)
@@ -229,6 +249,68 @@ const reloadAfterDelete = async () => {
   pagination.value.page = 1
   selectedDate.value = ''
   await loadLogs()
+}
+
+const parseDownloadError = async (blob, fallback = '') => {
+  if (!(blob instanceof Blob)) return fallback
+  try {
+    const data = JSON.parse(await blob.text())
+    return String(data?.error || fallback)
+  } catch {
+    return fallback
+  }
+}
+
+const isZipBlob = async (blob) => {
+  if (!(blob instanceof Blob) || blob.size < 4) return false
+  const bytes = new Uint8Array(await blob.slice(0, 4).arrayBuffer())
+  return bytes[0] === 0x50 && bytes[1] === 0x4b && (
+    (bytes[2] === 0x03 && bytes[3] === 0x04) ||
+    (bytes[2] === 0x05 && bytes[3] === 0x06) ||
+    (bytes[2] === 0x07 && bytes[3] === 0x08)
+  )
+}
+
+const saveDownloadBlob = (blob, filename) => {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+const handleDownload = async (command) => {
+  if (downloading.value) return
+  if (command === 'date' && !canDownloadSelectedDate.value) {
+    ElMessage.error('当前日期日志已不存在，请刷新后重试')
+    return
+  }
+  if (command === 'all' && logDates.value.length === 0) return
+
+  const date = selectedDate.value
+  downloading.value = true
+  try {
+    const blob = await downloadLogs(command === 'all' ? { all: true } : { date })
+    if (!(blob instanceof Blob)) throw new Error('下载响应无效')
+    const contentType = String(blob.type).toLowerCase()
+    if (contentType.includes('application/json')) {
+      throw new Error(await parseDownloadError(blob, '下载日志失败'))
+    }
+    if (command === 'all' && !(await isZipBlob(blob))) {
+      throw new Error(contentType.includes('text/html') ? '服务端未返回压缩包，请重启 AllBot 后重试' : '服务端返回的压缩包无效')
+    }
+    saveDownloadBlob(blob, command === 'all' ? 'allbot-logs.zip' : `${date}.log`)
+    ElMessage.success(command === 'all' ? '全部日志下载完成' : `${date} 日志下载完成`)
+  } catch (error) {
+    const message = await parseDownloadError(error?.response?.data, error?.message || '下载日志失败')
+    console.error('下载日志失败:', error)
+    if (error?.response || !error?.config) ElMessage.error(message)
+  } finally {
+    downloading.value = false
+  }
 }
 
 const handleDeleteDate = async () => {
@@ -431,14 +513,19 @@ onUnmounted(() => {
   .header-actions {
     width: 100%;
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
   }
 
-  .header-actions .el-button {
+  .header-actions .el-button,
+  .header-actions .download-dropdown {
     width: 100%;
     margin-left: 0;
     font-size: 12px;
+  }
+
+  .header-actions .download-dropdown :deep(.el-tooltip__trigger) {
+    width: 100%;
   }
 
   .log-toolbar {
