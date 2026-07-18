@@ -301,10 +301,13 @@ onBeforeUnmount(destroyEditor)
 .open-api-editor-page {
   width: 100%;
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .editor-card {
-  height: calc(100vh - 40px);
+  height: 100%;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -442,8 +445,9 @@ onBeforeUnmount(destroyEditor)
 }
 
 @media (max-width: 768px) {
+  .open-api-editor-page,
   .editor-card {
-    height: calc(100dvh - 140px);
+    height: 100%;
   }
 
   .card-header {

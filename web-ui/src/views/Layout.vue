@@ -8,7 +8,79 @@
           <circle cx="14" cy="14.5" r="1.2" fill="var(--brand-600)"/>
           <circle cx="18" cy="14.5" r="1.2" fill="var(--brand-600)"/>
         </svg>
-        <h2 v-show="!collapsed">AllBot</h2>
+        <div v-show="!collapsed" class="logo-brand">
+          <h2>AllBot</h2>
+          <el-popover
+            v-model:visible="versionPopoverVisible"
+            placement="bottom-start"
+            trigger="click"
+            :width="292"
+            popper-class="allbot-version-popper"
+          >
+            <template #reference>
+              <button
+                type="button"
+                class="version-trigger"
+                :class="versionTriggerType"
+                :aria-label="`查看当前版本 ${currentVersionText}`"
+                aria-haspopup="dialog"
+                :aria-expanded="versionPopoverVisible"
+              >
+                {{ brandVersionText }}
+              </button>
+            </template>
+            <div class="version-card">
+              <div class="version-card-header">
+                <span>当前版本</span>
+                <button
+                  type="button"
+                  class="version-refresh"
+                  :class="{ 'is-loading': checkingUpdate }"
+                  :disabled="checkingUpdate || upgradeBusy"
+                  aria-label="重新检查更新"
+                  @click="loadUpdateInfo"
+                >
+                  <el-icon><Refresh /></el-icon>
+                </button>
+              </div>
+
+              <div class="version-current">{{ currentVersionText }}</div>
+              <div class="version-latest">
+                <span>最新版本</span>
+                <strong>{{ latestVersionText }}</strong>
+              </div>
+
+              <div v-if="showUpdateNotice" class="version-notice">
+                <el-icon><WarningFilled /></el-icon>
+                <span>当前有新版本可用！</span>
+              </div>
+              <div v-if="versionStatusMessage" class="version-state" :class="versionStatusType">
+                <el-icon v-if="upgradeBusy || checkingUpdate"><Loading /></el-icon>
+                <el-icon v-else-if="versionStatusType === 'is-error'"><WarningFilled /></el-icon>
+                <span>{{ versionStatusMessage }}</span>
+              </div>
+
+              <el-button
+                class="version-upgrade-button"
+                type="primary"
+                :disabled="!canUpgrade"
+                :loading="upgradeBusy"
+                @click="handleUpgrade"
+              >
+                {{ upgradeButtonText }}
+              </el-button>
+              <button
+                type="button"
+                class="version-release-link"
+                :disabled="!releaseLogUrl"
+                @click="openReleaseLog"
+              >
+                <span>查看更新日志</span>
+                <el-icon><TopRight /></el-icon>
+              </button>
+            </div>
+          </el-popover>
+        </div>
       </div>
 
       <el-menu
@@ -249,7 +321,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch, onMounted } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessageBox } from "element-plus";
 import {
@@ -274,7 +346,12 @@ import {
   Picture,
   Fold,
   Expand,
+  Loading,
+  Refresh,
+  TopRight,
+  WarningFilled,
 } from "@element-plus/icons-vue";
+import { getUpdateInfo, getUpdateStatus, startSystemUpgrade } from "@/api";
 import { useAuthStore } from "@/stores/auth";
 import { useTabsStore } from "@/stores/tabs";
 import { usePluginWebPanelsStore } from "@/stores/pluginWebPanels";
@@ -288,6 +365,15 @@ const pluginWebPanelsStore = usePluginWebPanelsStore();
 const moreDrawerVisible = ref(false);
 const menuRef = ref(null);
 const collapsed = ref(false);
+const versionPopoverVisible = ref(false);
+const checkingUpdate = ref(false);
+const startingUpgrade = ref(false);
+const upgradeStatusLoaded = ref(false);
+const upgradePollTimer = ref(null);
+let upgradePollGeneration = 0;
+let componentUnmounted = false;
+const updateInfo = reactive(createEmptyUpdateInfo());
+const upgradeState = reactive(createEmptyUpgradeState());
 
 tabsStore.initAffixTabs();
 pluginWebPanelsStore.loadPanels();
@@ -332,6 +418,112 @@ const currentTitle = computed(() => {
     return pluginPanelNavItems.value.find((item) => item.plugin_id === route.params.pluginId)?.title || "插件面板";
   }
   return route.meta.title || "AllBot";
+});
+const systemVersionInfo = computed(() => {
+  const current = objectValue(updateInfo.current);
+  const latest = objectValue(updateInfo.latest);
+  const release = objectValue(updateInfo.release);
+  return {
+    currentVersion: firstText(
+      updateInfo.displayVersion,
+      updateInfo.display_version,
+      updateInfo.version,
+      updateInfo.currentVersion,
+      updateInfo.current_version,
+      current.displayVersion,
+      current.display_version,
+      current.version
+    ),
+    latestVersion: firstText(
+      updateInfo.latestVersion,
+      updateInfo.latest_version,
+      latest.version,
+      latest.tagName,
+      latest.tag_name,
+      release.version
+    ),
+    hasUpdate: Boolean(firstDefined(updateInfo.hasUpdate, updateInfo.has_update)),
+    upgradeSupported: Boolean(firstDefined(updateInfo.upgradeSupported, updateInfo.upgrade_supported)),
+    upgradeMessage: firstText(updateInfo.upgradeMessage, updateInfo.upgrade_message, updateInfo.message),
+    releaseUrl: firstText(
+      updateInfo.releaseUrl,
+      updateInfo.release_url,
+      updateInfo.url,
+      updateInfo.htmlUrl,
+      updateInfo.html_url,
+      latest.url,
+      latest.htmlUrl,
+      latest.html_url,
+      release.url,
+      release.htmlUrl,
+      release.html_url
+    ),
+  };
+});
+const upgradeInProgress = computed(
+  () => upgradeState.status === "downloading" || upgradeState.status === "restarting"
+);
+const upgradeBusy = computed(() => startingUpgrade.value || upgradeInProgress.value);
+const currentVersionText = computed(() => {
+  if (systemVersionInfo.value.currentVersion) return systemVersionInfo.value.currentVersion;
+  return updateInfo.loaded ? "未知版本" : "获取中…";
+});
+const brandVersionText = computed(() => {
+  const version = systemVersionInfo.value.currentVersion;
+  if (!version) return updateInfo.loaded ? "v--" : "···";
+  return version.replace(/^allbot[\s_-]*/i, "");
+});
+const versionTriggerType = computed(() => {
+  if (!updateInfo.loaded || updateInfo.error) return "is-pending";
+  return systemVersionInfo.value.hasUpdate ? "has-update" : "is-latest";
+});
+const latestVersionText = computed(() => {
+  if (systemVersionInfo.value.latestVersion) return systemVersionInfo.value.latestVersion;
+  return updateInfo.loaded ? "暂未获取" : "检查中…";
+});
+const showUpdateNotice = computed(
+  () => updateInfo.loaded && !updateInfo.error && systemVersionInfo.value.hasUpdate
+);
+const canUpgrade = computed(
+  () =>
+    showUpdateNotice.value &&
+    systemVersionInfo.value.upgradeSupported &&
+    upgradeStatusLoaded.value &&
+    !checkingUpdate.value &&
+    !upgradeBusy.value
+);
+const versionStatusMessage = computed(() => {
+  if (startingUpgrade.value) return "正在启动升级任务…";
+  if (upgradeState.status === "downloading") return upgradeState.message || "正在下载升级包，请稍候";
+  if (upgradeState.status === "restarting") return upgradeState.message || "正在重启并应用更新，请稍后刷新页面";
+  if (upgradeState.status === "failed") return upgradeState.error || upgradeState.message || "升级失败";
+  if (checkingUpdate.value) return "正在检查更新…";
+  if (updateInfo.error) return updateInfo.error;
+  if (showUpdateNotice.value && !systemVersionInfo.value.upgradeSupported) {
+    return systemVersionInfo.value.upgradeMessage || "当前环境暂不支持在线升级";
+  }
+  return "";
+});
+const versionStatusType = computed(() => {
+  if (upgradeState.status === "failed" || updateInfo.error) return "is-error";
+  if (upgradeBusy.value || checkingUpdate.value) return "is-progress";
+  return "is-warning";
+});
+const upgradeButtonText = computed(() => {
+  if (startingUpgrade.value) return "正在启动…";
+  if (upgradeState.status === "downloading") return "正在下载…";
+  if (upgradeState.status === "restarting") return "正在重启…";
+  if (checkingUpdate.value || !updateInfo.loaded || !upgradeStatusLoaded.value) return "正在检查";
+  if (updateInfo.error) return "检查失败";
+  if (!systemVersionInfo.value.hasUpdate) return "已是最新";
+  if (!systemVersionInfo.value.upgradeSupported) return "不支持在线升级";
+  return "立即更新！";
+});
+const releaseLogUrl = computed(() => {
+  const releaseUrl = normalizeExternalUrl(systemVersionInfo.value.releaseUrl);
+  if (releaseUrl) return releaseUrl;
+  if (!systemVersionInfo.value.latestVersion) return "";
+  return `https://github.com/298582245/allbot/releases/${encodeURIComponent(systemVersionInfo.value.latestVersion)}`;
 });
 const primaryMobileNavItems = [
   { path: "/dashboard", title: "仪表盘", icon: DataAnalysis },
@@ -383,6 +575,111 @@ const handleMenuSelect = (index) => {
   }
 };
 
+const loadUpdateInfo = async () => {
+  if (checkingUpdate.value) return;
+  checkingUpdate.value = true;
+  try {
+    const data = await getUpdateInfo();
+    if (componentUnmounted) return;
+    Object.assign(updateInfo, createEmptyUpdateInfo(), normalizeObject(data), { loaded: true });
+  } catch (error) {
+    if (componentUnmounted) return;
+    Object.assign(updateInfo, createEmptyUpdateInfo(), {
+      loaded: true,
+      error: error?.response?.data?.error || error?.message || "检查更新失败",
+    });
+  } finally {
+    if (!componentUnmounted) checkingUpdate.value = false;
+  }
+};
+
+const loadUpgradeStatus = async () => {
+  try {
+    const data = await getUpdateStatus();
+    if (componentUnmounted) return "";
+    Object.assign(upgradeState, createEmptyUpgradeState(), normalizeObject(data));
+  } catch (error) {
+    if (componentUnmounted) return "";
+    Object.assign(upgradeState, createEmptyUpgradeState(), {
+      status: "failed",
+      message: "获取升级状态失败",
+      error: error?.response?.data?.error || error?.message || "获取升级状态失败",
+    });
+  }
+  upgradeStatusLoaded.value = true;
+  return upgradeState.status;
+};
+
+const stopUpgradePolling = () => {
+  upgradePollGeneration += 1;
+  if (!upgradePollTimer.value) return;
+  window.clearTimeout(upgradePollTimer.value);
+  upgradePollTimer.value = null;
+};
+
+const startUpgradePolling = () => {
+  stopUpgradePolling();
+  const generation = upgradePollGeneration;
+  const poll = async () => {
+    if (componentUnmounted || generation !== upgradePollGeneration) return;
+    try {
+      const status = await loadUpgradeStatus();
+      if (generation !== upgradePollGeneration) return;
+      if (status !== "downloading" && status !== "restarting") {
+        stopUpgradePolling();
+        return;
+      }
+      upgradePollTimer.value = window.setTimeout(poll, 1500);
+    } catch (error) {
+      if (componentUnmounted || generation !== upgradePollGeneration) return;
+      Object.assign(upgradeState, createEmptyUpgradeState(), {
+        status: "failed",
+        message: "获取升级状态失败",
+        error: error?.response?.data?.error || error?.message || "获取升级状态失败",
+      });
+      upgradeStatusLoaded.value = true;
+      stopUpgradePolling();
+    }
+  };
+  upgradePollTimer.value = window.setTimeout(poll, 1500);
+};
+
+const handleUpgrade = async () => {
+  if (!canUpgrade.value) return;
+  try {
+    await ElMessageBox.confirm("升级会下载新版程序并自动重启 AllBot，确定继续吗？", "确认升级", {
+      confirmButtonText: "开始升级",
+      cancelButtonText: "取消",
+      type: "warning",
+    });
+  } catch (action) {
+    if (action === "cancel" || action === "close") return;
+    throw action;
+  }
+
+  startingUpgrade.value = true;
+  try {
+    const data = await startSystemUpgrade();
+    if (componentUnmounted) return;
+    Object.assign(upgradeState, createEmptyUpgradeState(), normalizeObject(data));
+    startUpgradePolling();
+  } catch (error) {
+    if (componentUnmounted) return;
+    Object.assign(upgradeState, createEmptyUpgradeState(), {
+      status: "failed",
+      message: "启动升级失败",
+      error: error?.response?.data?.error || error?.message || "启动升级失败",
+    });
+  } finally {
+    if (!componentUnmounted) startingUpgrade.value = false;
+  }
+};
+
+const openReleaseLog = () => {
+  if (!releaseLogUrl.value) return;
+  window.open(releaseLogUrl.value, "_blank", "noopener,noreferrer");
+};
+
 const handleCommand = async (command) => {
   if (command === "logout") {
     await ElMessageBox.confirm("确定要退出登录吗？", "提示", {
@@ -393,6 +690,86 @@ const handleCommand = async (command) => {
     await authStore.logout();
   }
 };
+
+watch(collapsed, (value) => {
+  if (value) versionPopoverVisible.value = false;
+});
+
+onMounted(async () => {
+  const [, statusResult] = await Promise.allSettled([loadUpdateInfo(), loadUpgradeStatus()]);
+  if (statusResult.status === "fulfilled" && upgradeInProgress.value) {
+    startUpgradePolling();
+  }
+});
+onBeforeUnmount(() => {
+  componentUnmounted = true;
+  stopUpgradePolling();
+});
+
+function createEmptyUpdateInfo() {
+  return {
+    loaded: false,
+    error: "",
+    version: "",
+    displayVersion: "",
+    display_version: "",
+    currentVersion: "",
+    current_version: "",
+    latestVersion: "",
+    latest_version: "",
+    hasUpdate: false,
+    has_update: false,
+    upgradeSupported: false,
+    upgrade_supported: false,
+    upgradeMessage: "",
+    upgrade_message: "",
+    releaseUrl: "",
+    release_url: "",
+    url: "",
+    htmlUrl: "",
+    html_url: "",
+    current: null,
+    latest: null,
+    release: null,
+  };
+}
+
+function createEmptyUpgradeState() {
+  return {
+    status: "idle",
+    message: "",
+    error: "",
+    version: "",
+    assetName: "",
+    downloadedAt: "",
+  };
+}
+
+function normalizeObject(value) {
+  return value && typeof value === "object" ? value : {};
+}
+
+function objectValue(value) {
+  return normalizeObject(value);
+}
+
+function firstDefined(...items) {
+  return items.find((item) => item !== undefined && item !== null);
+}
+
+function firstText(...items) {
+  const value = firstDefined(...items);
+  return value === undefined ? "" : String(value).trim();
+}
+
+function normalizeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
 </script>
 
 <style scoped>
@@ -422,13 +799,51 @@ const handleCommand = async (command) => {
   flex-shrink: 0;
   filter: drop-shadow(0 2px 8px rgba(99, 102, 241, 0.3));
 }
+.logo-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  height: 36px;
+}
 .logo h2 {
+  flex-shrink: 0;
+  margin: 0;
+  color: var(--text-on-dark);
+  font-family: var(--font-heading);
   font-size: 18px;
   font-weight: 700;
-  font-family: var(--font-heading);
-  color: var(--text-on-dark);
-  margin: 0;
   letter-spacing: -0.01em;
+}
+.version-trigger {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--bg-surface-hover);
+  font: 600 10px/16px var(--font-mono);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: filter var(--transition-fast), box-shadow var(--transition-fast);
+}
+.version-trigger.is-latest {
+  color: #15803d;
+  border-color: rgba(34, 197, 94, 0.28);
+  background: var(--color-success-light);
+}
+.version-trigger.has-update {
+  color: #b45309;
+  border-color: rgba(245, 158, 11, 0.32);
+  background: var(--color-warning-light);
+}
+.version-trigger:hover {
+  filter: saturate(1.18) brightness(0.97);
+  box-shadow: var(--shadow-xs);
+}
+.version-trigger:focus-visible {
+  outline: 2px solid var(--brand-300);
+  outline-offset: 2px;
 }
 .sidebar-menu {
   border: none;
@@ -705,6 +1120,160 @@ const handleCommand = async (command) => {
 </style>
 
 <style>
+.allbot-version-popper.el-popper {
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+}
+.allbot-version-popper .el-popper__arrow::before {
+  border-color: var(--border-default);
+  background: var(--bg-surface);
+}
+.version-card {
+  padding: 16px;
+  color: var(--text-primary);
+  font-family: var(--font-body);
+}
+.version-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.version-refresh {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
+}
+.version-refresh:hover:not(:disabled),
+.version-refresh:focus-visible {
+  color: var(--brand-600);
+  border-color: var(--brand-300);
+  background: var(--brand-50);
+  outline: none;
+}
+.version-refresh:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+.version-refresh.is-loading .el-icon,
+.version-state.is-progress .el-icon {
+  animation: allbot-version-spin 0.9s linear infinite;
+}
+.version-current {
+  margin-top: 4px;
+  color: var(--text-primary);
+  font: 700 26px/1.25 var(--font-heading);
+  letter-spacing: -0.035em;
+}
+.version-latest {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  font-size: 12px;
+}
+.version-latest strong {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.version-notice,
+.version-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.version-notice {
+  color: #b45309;
+  background: var(--color-warning-light);
+  font-weight: 600;
+}
+.version-notice .el-icon,
+.version-state .el-icon {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.version-state.is-warning {
+  color: #b45309;
+  background: var(--color-warning-light);
+}
+.version-state.is-progress {
+  color: var(--brand-600);
+  background: var(--brand-50);
+}
+.version-state.is-error {
+  color: var(--color-danger);
+  background: var(--color-danger-light);
+}
+.version-upgrade-button.el-button {
+  width: 100%;
+  margin-top: 12px;
+  margin-left: 0;
+  font-weight: 600;
+}
+.version-release-link {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 7px;
+  padding: 5px;
+  color: var(--text-secondary);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font: 500 12px/18px var(--font-body);
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.version-release-link .el-icon {
+  font-size: 13px;
+}
+.version-release-link:hover:not(:disabled),
+.version-release-link:focus-visible {
+  color: var(--brand-600);
+  background: var(--brand-50);
+  outline: none;
+}
+.version-release-link:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+@keyframes allbot-version-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Collapsed sidebar sub-menu popup — teleported outside component, needs global CSS */
 .el-popper.el-menu--popup {
   background: var(--bg-sidebar-gradient);
