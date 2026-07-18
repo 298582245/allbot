@@ -214,6 +214,23 @@ class Context:
     async def sendRichMessage(self, **options: Any) -> Dict[str, Any]:
         return await self.send_rich_message(**options)
 
+    async def send_image_message(self, **options: Any) -> Dict[str, Any]:
+        """主动向指定用户、群或 UnionID 发送图片。"""
+        target_platform = str(options.get("platform") or self.platform)
+        return self._request({
+            "action": "send_image_message",
+            "platform": target_platform,
+            "adapter_id": self._adapter_id_for(options, target_platform),
+            "user_id": str(options.get("user_id") or options.get("userId") or self.user_id),
+            "group_id": str(options.get("group_id") or options.get("groupId") or ""),
+            "union_id": str(options.get("union_id") or options.get("unionId") or ""),
+            "url": str(options.get("image_url") or options.get("imageUrl") or options.get("url") or ""),
+        }, "send_image_message_response")
+
+    async def sendImageMessage(self, **options: Any) -> Dict[str, Any]:
+        """send_image_message 的 camelCase 别名。"""
+        return await self.send_image_message(**options)
+
     async def send_message(self, **options: Any) -> Dict[str, Any]:
         """主动发送私聊或群聊消息，用于定时通知。"""
         target_platform = str(options.get("platform") or self.platform)

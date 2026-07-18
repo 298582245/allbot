@@ -10,7 +10,22 @@ import (
 	"testing"
 
 	"github.com/allbot/allbot/core/deps"
+	plugincore "github.com/allbot/allbot/core/plugin"
 )
+
+func TestOpenAPIMessageExecutorsReportUnavailableRouter(t *testing.T) {
+	server := &Server{}
+
+	richResult := server.openAPISendRichMessageExecutor()("open-api", plugincore.RichMessageAction{})
+	if richResult.Success || richResult.Error != "富文本消息发送器不可用" {
+		t.Fatalf("unexpected rich message result: %#v", richResult)
+	}
+
+	imageResult := server.openAPISendImageMessageExecutor()("open-api", plugincore.ImageMessageAction{})
+	if imageResult.Success || imageResult.Error != "图片消息发送器不可用" {
+		t.Fatalf("unexpected image message result: %#v", imageResult)
+	}
+}
 
 func TestOpenAPIConfigSavesRuntimeProfile(t *testing.T) {
 	withTempWorkdir(t, func() {

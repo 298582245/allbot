@@ -269,6 +269,43 @@ rl.on('line', (line) => {
 	}
 }
 
+func TestExecutePluginSendImageMessageWritesResponseAndKeepsLegacySendImage(t *testing.T) {
+	manager, plugin, pluginPath := newManagerTestPlugin(t, `
+const readline = require('readline');
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+let step = 0;
+rl.on('line', (line) => {
+  if (step === 0) {
+    step = 1;
+    process.stdout.write(JSON.stringify({ action: 'send_image', url: 'https://example.com/legacy.png' }) + '\n');
+    process.stdout.write(JSON.stringify({ action: 'send_image_message', request_id: 'image-1', platform: 'qq_office', adapter_id: '7', group_id: 'group-1', union_id: 'union-1', url: 'https://example.com/image.png' }) + '\n');
+    return;
+  }
+  const response = JSON.parse(line);
+  const ok = response.action === 'send_image_message_response' && response.request_id === 'image-1' && response.success === true && response.data.sent === true;
+  process.stdout.write(JSON.stringify({ action: 'done', success: ok, error: ok ? '' : JSON.stringify(response) }) + '\n');
+});
+`)
+	legacyURL := ""
+	var received ImageMessageAction
+	err := manager.ExecutePlugin(plugin, pluginPath, []byte(`{}`), nil, func(url string) error {
+		legacyURL = url
+		return nil
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func(pluginID string, action ImageMessageAction) PluginUserResult {
+		received = action
+		return PluginUserResult{Success: true, Data: map[string]interface{}{"sent": true}}
+	})
+	if err != nil {
+		t.Fatalf("ExecutePlugin returned error: %v", err)
+	}
+	if legacyURL != "https://example.com/legacy.png" {
+		t.Fatalf("legacy send_image should remain unchanged, got %q", legacyURL)
+	}
+	if received.Platform != "qq_office" || received.AdapterID != "7" || received.GroupID != "group-1" || received.UnionID != "union-1" || received.URL != "https://example.com/image.png" {
+		t.Fatalf("unexpected image action: %#v", received)
+	}
+}
+
 func TestExecutePluginSendMessageUsesContentFallback(t *testing.T) {
 	manager, plugin, pluginPath := newManagerTestPlugin(t, `
 const readline = require('readline');
@@ -370,6 +407,90 @@ rl.on('line', () => {
 	}
 	if strings.Count(output, "[SYSTEM][PLUGIN][plugin-test][STDOUT]") != 1 {
 		t.Fatalf("expected one stdout log entry, got %q", output)
+	}
+}
+
+func TestExecutePluginWebSendRichAndImageMessagesWriteResponses(t *testing.T) {
+	manager, plugin, pluginPath := newManagerTestPlugin(t, `
+const readline = require('readline');
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+let step = 0;
+rl.on('line', (line) => {
+  if (step === 0) {
+    step = 1;
+    process.stdout.write(JSON.stringify({ action: 'send_rich_message', request_id: 'rich-web', platform: 'telegram', user_id: 'u1', parts: [{ type: 'markdown', markdown: '**Web**' }], fallback_text: 'Web' }) + '\n');
+    return;
+  }
+  const response = JSON.parse(line);
+  if (step === 1) {
+    if (response.action !== 'send_rich_message_response' || !response.success) process.exit(2);
+    step = 2;
+    process.stdout.write(JSON.stringify({ action: 'send_image_message', request_id: 'image-web', platform: 'telegram', user_id: 'u1', url: 'https://example.com/web.png' }) + '\n');
+    return;
+  }
+  const ok = response.action === 'send_image_message_response' && response.success;
+  process.stdout.write(JSON.stringify({ action: 'web_response', status: 200, json: { ok } }) + '\n');
+});
+`)
+	var rich RichMessageAction
+	var image ImageMessageAction
+	response, err := manager.ExecutePluginWeb(plugin, pluginPath, []byte(`{"event_type":"web_api"}`), nil, nil, OpenAPIExecutors{
+		SendRichMessage: func(pluginID string, action RichMessageAction) PluginUserResult {
+			rich = action
+			return PluginUserResult{Success: true, Data: true}
+		},
+		SendImage: func(pluginID string, action ImageMessageAction) PluginUserResult {
+			image = action
+			return PluginUserResult{Success: true, Data: true}
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecutePluginWeb returned error: %v", err)
+	}
+	if rich.UserID != "u1" || len(rich.Parts) != 1 || rich.FallbackText != "Web" {
+		t.Fatalf("unexpected rich action: %#v", rich)
+	}
+	if image.UserID != "u1" || image.URL != "https://example.com/web.png" {
+		t.Fatalf("unexpected image action: %#v", image)
+	}
+	responseJSON, ok := response.JSON.(map[string]interface{})
+	if !ok || responseJSON["ok"] != true {
+		t.Fatalf("unexpected web response: %#v", response)
+	}
+}
+
+func TestExecuteOpenAPISendRichAndImageMessagesWriteResponses(t *testing.T) {
+	manager, endpoint, workDir := newManagerTestOpenAPI(t, `
+exports.action = async (ctx, req, res) => {
+  const rich = await ctx.sendRichMessage({ platform: 'telegram', adapterId: '5', userId: 'user-1', unionId: 'union-1', parts: [{ type: 'markdown', markdown: '**通知**' }], fallbackText: '通知', prefer: 'markdown' });
+  const image = await ctx.sendImageMessage({ platform: 'qq_office', adapterId: '7', groupId: 'group-1', unionId: 'union-2', url: 'https://example.com/image.png' });
+  res.json({ rich, image });
+};
+`)
+	var receivedRich RichMessageAction
+	var receivedImage ImageMessageAction
+	response, err := manager.ExecuteOpenAPI(endpoint, workDir, types.OpenAPIRequest{}, nil, nil, OpenAPIExecutors{
+		SendRichMessage: func(openAPIID string, action RichMessageAction) PluginUserResult {
+			receivedRich = action
+			return PluginUserResult{Success: true, Data: map[string]interface{}{"kind": "rich"}}
+		},
+		SendImage: func(openAPIID string, action ImageMessageAction) PluginUserResult {
+			receivedImage = action
+			return PluginUserResult{Success: true, Data: map[string]interface{}{"kind": "image"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteOpenAPI returned error: %v", err)
+	}
+	if receivedRich.Platform != "telegram" || receivedRich.AdapterID != "5" || receivedRich.UserID != "user-1" || receivedRich.UnionID != "union-1" || receivedRich.FallbackText != "通知" || receivedRich.Prefer != "markdown" || len(receivedRich.Parts) != 1 || receivedRich.Parts[0].Markdown != "**通知**" {
+		t.Fatalf("unexpected rich action: %#v", receivedRich)
+	}
+	if receivedImage.Platform != "qq_office" || receivedImage.AdapterID != "7" || receivedImage.GroupID != "group-1" || receivedImage.UnionID != "union-2" || receivedImage.URL != "https://example.com/image.png" {
+		t.Fatalf("unexpected image action: %#v", receivedImage)
+	}
+	responseJSON, ok := response.JSON.(map[string]interface{})
+	if !ok || responseJSON["rich"] == nil || responseJSON["image"] == nil {
+		t.Fatalf("unexpected OpenAPI response: %#v", response)
 	}
 }
 

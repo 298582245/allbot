@@ -35,6 +35,34 @@ func (a *transientFailingSendAdapter) SendMessage(target string, text string) er
 	return a.keywordReplyFakeAdapter.SendMessage(target, text)
 }
 
+type sentPluginImage struct {
+	target string
+	url    string
+}
+
+type recordingImageAdapter struct {
+	*keywordReplyFakeAdapter
+	images []sentPluginImage
+	err    error
+}
+
+func (a *recordingImageAdapter) SendImage(target string, imageURL string) error {
+	if a.err != nil {
+		return a.err
+	}
+	a.images = append(a.images, sentPluginImage{target: target, url: imageURL})
+	return nil
+}
+
+type prefixedSendTargetResolver struct{}
+
+func (prefixedSendTargetResolver) SendTarget(userID string, groupID string) string {
+	if groupID != "" {
+		return "group_" + groupID
+	}
+	return "user_" + userID
+}
+
 func newSendPluginMessageTestDB(t *testing.T) (*config.Database, int64, int64) {
 	t.Helper()
 	db, err := config.NewDatabase(":memory:")
@@ -301,5 +329,173 @@ func TestRouterSendPluginMessageExplicitRunningAdapterSends(t *testing.T) {
 	messages := fake.sentMessages()
 	if len(messages) != 1 || messages[0].target != "u1" || messages[0].text != "hello" {
 		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestSendPluginImageMessageValidatesLikeOtherProactiveMessages(t *testing.T) {
+	r := NewRouter(nil)
+	tests := []struct {
+		name   string
+		action plugincore.ImageMessageAction
+		want   string
+	}{
+		{name: "empty image", action: plugincore.ImageMessageAction{Platform: "qq", UserID: "u1"}, want: "图片地址不能为空"},
+		{name: "empty platform", action: plugincore.ImageMessageAction{UserID: "u1", URL: "https://example.com/a.png"}, want: "平台不能为空"},
+		{name: "empty target", action: plugincore.ImageMessageAction{Platform: "qq", URL: "https://example.com/a.png"}, want: "用户 ID 和群组 ID 不能同时为空"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := r.SendPluginImageMessage("plugin", test.action)
+			if result.Success || !strings.Contains(result.Error, test.want) {
+				t.Fatalf("result = %#v", result)
+			}
+		})
+	}
+}
+
+func TestSendPluginImageMessageUsesResolvedGroupTargetBeforeUnion(t *testing.T) {
+	fake := &recordingImageAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{sendResolver: prefixedSendTargetResolver{}}}
+	r := NewRouter(nil)
+	r.SetAdapters(map[string]adapter.Adapter{"qq": fake})
+
+	result := r.SendPluginImageMessage("plugin", plugincore.ImageMessageAction{
+		Platform: "qq",
+		UserID:   "u1",
+		GroupID:  "g1",
+		UnionID:  "missing-union",
+		URL:      " https://example.com/group.png ",
+	})
+	if !result.Success {
+		t.Fatalf("SendPluginImageMessage failed: %#v", result)
+	}
+	if len(fake.images) != 1 || fake.images[0].target != "group_g1" || fake.images[0].url != "https://example.com/group.png" {
+		t.Fatalf("images = %#v", fake.images)
+	}
+}
+
+func TestSendPluginImageMessageUsesAdapterIDWithoutPlatform(t *testing.T) {
+	db, _, adapterID := newSendPluginMessageTestDB(t)
+	defer db.Close()
+	fake := &recordingImageAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{sendResolver: prefixedSendTargetResolver{}}}
+	r := NewRouter(nil)
+	r.SetDatabase(db)
+	r.SetMessageAdapterGetter(func(msg *types.Message) adapter.Adapter {
+		if msg != nil && msg.AdapterID == strconv.FormatInt(adapterID, 10) {
+			return fake
+		}
+		return nil
+	})
+
+	result := r.SendPluginImageMessage("plugin", plugincore.ImageMessageAction{
+		AdapterID: strconv.FormatInt(adapterID, 10),
+		UserID:    "u1",
+		URL:       "https://example.com/image.png",
+	})
+	if !result.Success {
+		t.Fatalf("SendPluginImageMessage failed: %#v", result)
+	}
+	if len(fake.images) != 1 || fake.images[0].target != "user_u1" {
+		t.Fatalf("images = %#v", fake.images)
+	}
+}
+
+func TestSendPluginImageMessageUnionRejectsDisabledExplicitAdapter(t *testing.T) {
+	db, err := config.NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	disabled := &config.AdapterConfig{Platform: "qq", Enabled: false, Config: `{}`}
+	if err := db.SaveAdapter(disabled); err != nil {
+		t.Fatal(err)
+	}
+	fallbackConfig := &config.AdapterConfig{Platform: "telegram", Enabled: true, Config: `{}`}
+	if err := db.SaveAdapter(fallbackConfig); err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.EnsureUserAccount("qq", "qq-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.BindUserByCode("telegram", "telegram-user", mustBindCode(t, db, "qq", "qq-user")); err != nil {
+		t.Fatal(err)
+	}
+	fallback := &recordingImageAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{}}
+	r := NewRouter(nil)
+	r.SetDatabase(db)
+	r.SetMessageAdapterGetter(func(msg *types.Message) adapter.Adapter {
+		if msg != nil && msg.AdapterID == strconv.FormatInt(fallbackConfig.ID, 10) {
+			return fallback
+		}
+		return nil
+	})
+
+	result := r.SendPluginImageMessage("plugin", plugincore.ImageMessageAction{
+		AdapterID: strconv.FormatInt(disabled.ID, 10),
+		UnionID:   account.UnionID,
+		URL:       "https://example.com/private.png",
+	})
+	if result.Success || !strings.Contains(result.Error, "不存在或未启用") {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if len(fallback.images) != 0 {
+		t.Fatalf("explicit disabled adapter must not fall back: %#v", fallback.images)
+	}
+}
+
+func TestSendPluginImageMessageUnionFallsBackFromPreferredBinding(t *testing.T) {
+	db, err := config.NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	preferredConfig := &config.AdapterConfig{Platform: "qq_office", Enabled: true, Config: `{}`}
+	if err := db.SaveAdapter(preferredConfig); err != nil {
+		t.Fatal(err)
+	}
+	fallbackConfig := &config.AdapterConfig{Platform: "telegram", Enabled: true, Config: `{}`}
+	if err := db.SaveAdapter(fallbackConfig); err != nil {
+		t.Fatal(err)
+	}
+	preferredAccount, err := db.EnsureUserAccount("qq_office", "office-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.BindUserByCode("telegram", "telegram-user", mustBindCode(t, db, "qq_office", "office-user")); err != nil {
+		t.Fatal(err)
+	}
+
+	preferred := &recordingImageAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{}, err: errors.New("preferred failed")}
+	fallback := &recordingImageAdapter{keywordReplyFakeAdapter: &keywordReplyFakeAdapter{}}
+	r := NewRouter(nil)
+	r.SetDatabase(db)
+	r.SetMessageAdapterGetter(func(msg *types.Message) adapter.Adapter {
+		if msg == nil {
+			return nil
+		}
+		switch msg.AdapterID {
+		case strconv.FormatInt(preferredConfig.ID, 10):
+			return preferred
+		case strconv.FormatInt(fallbackConfig.ID, 10):
+			return fallback
+		default:
+			return nil
+		}
+	})
+
+	result := r.SendPluginImageMessage("plugin", plugincore.ImageMessageAction{
+		Platform:  "qq_office",
+		AdapterID: strconv.FormatInt(preferredConfig.ID, 10),
+		UnionID:   preferredAccount.UnionID,
+		URL:       "https://example.com/private.png",
+	})
+	if !result.Success {
+		t.Fatalf("SendPluginImageMessage failed: %#v", result)
+	}
+	if len(preferred.images) != 0 {
+		t.Fatalf("preferred adapter unexpectedly recorded images: %#v", preferred.images)
+	}
+	if len(fallback.images) != 1 || fallback.images[0].target != "telegram-user" || fallback.images[0].url != "https://example.com/private.png" {
+		t.Fatalf("fallback images = %#v", fallback.images)
 	}
 }

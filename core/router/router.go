@@ -718,6 +718,9 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		}
 		return plugincore.PluginUserResult{Success: true, Data: true}
 	}
+	sendImageMessageFunc := func(pluginID string, action plugincore.ImageMessageAction) plugincore.PluginUserResult {
+		return r.SendPluginImageMessage(pluginID, action)
+	}
 	sendRichMessageFunc := func(pluginID string, action plugincore.RichMessageAction) plugincore.PluginUserResult {
 		return r.sendPluginRichMessage(pluginID, action)
 	}
@@ -900,7 +903,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		return plugincore.PluginUserResult{Success: true, Error: "", Data: result}
 	}
 
-	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc, paymentFunc, buttonsFunc, replyMarkdownFunc, replyRichFunc, sendRichMessageFunc); err != nil {
+	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc, paymentFunc, buttonsFunc, replyMarkdownFunc, replyRichFunc, sendRichMessageFunc, sendImageMessageFunc); err != nil {
 		log.Printf("Failed to execute plugin %s: %v", plugin.Name, err)
 	}
 }
@@ -1237,6 +1240,13 @@ func (r *Router) SendPluginMessage(pluginID string, action plugincore.SendMessag
 	return plugincore.PluginUserResult{Success: true, Data: true}
 }
 
+func (r *Router) SendPluginImageMessage(pluginID string, action plugincore.ImageMessageAction) plugincore.PluginUserResult {
+	if err := r.sendPluginImageMessage(pluginID, action); err != nil {
+		return plugincore.PluginUserResult{Success: false, Error: err.Error()}
+	}
+	return plugincore.PluginUserResult{Success: true, Data: true}
+}
+
 func (r *Router) SendPluginRichMessage(pluginID string, action plugincore.RichMessageAction) plugincore.PluginUserResult {
 	return r.sendPluginRichMessage(pluginID, action)
 }
@@ -1265,6 +1275,13 @@ func (r *Router) sendPluginMessage(pluginID string, action plugincore.SendMessag
 		return fmt.Errorf("用户 ID 和群组 ID 不能同时为空")
 	}
 	if unionID != "" && groupID == "" {
+		if adapterID != "" {
+			resolvedPlatform, _, _, _, _, err := r.resolveSendAdapterInfo(platform, adapterID)
+			if err != nil {
+				return err
+			}
+			platform = resolvedPlatform
+		}
 		sent, err := r.sendPluginMessageToUnion(pluginID, unionID, platform, adapterID, text)
 		if sent {
 			return nil
@@ -1293,6 +1310,58 @@ func (r *Router) sendPluginMessage(pluginID string, action plugincore.SendMessag
 	return adp.SendMessage(target, text)
 }
 
+func (r *Router) sendPluginImageMessage(pluginID string, action plugincore.ImageMessageAction) error {
+	platform := strings.TrimSpace(action.Platform)
+	adapterID := strings.TrimSpace(action.AdapterID)
+	userID := strings.TrimSpace(action.UserID)
+	groupID := strings.TrimSpace(action.GroupID)
+	unionID := strings.TrimSpace(action.UnionID)
+	imageURL := strings.TrimSpace(action.URL)
+	if imageURL == "" {
+		return fmt.Errorf("图片地址不能为空")
+	}
+	if platform == "" && adapterID == "" && unionID == "" {
+		return fmt.Errorf("平台不能为空")
+	}
+	if userID == "" && groupID == "" && unionID == "" {
+		return fmt.Errorf("用户 ID 和群组 ID 不能同时为空")
+	}
+	if unionID != "" && groupID == "" {
+		if adapterID != "" {
+			resolvedPlatform, _, _, _, _, err := r.resolveSendAdapterInfo(platform, adapterID)
+			if err != nil {
+				return err
+			}
+			platform = resolvedPlatform
+		}
+		sent, err := r.sendPluginImageMessageToUnion(pluginID, unionID, platform, adapterID, imageURL)
+		if sent {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if (platform == "" && adapterID == "") || userID == "" {
+			return fmt.Errorf("UnionID %s 没有可用平台账号", unionID)
+		}
+	}
+	resolvedPlatform, resolvedAdapterID, _, _, adp, err := r.resolveSendAdapterInfo(platform, adapterID)
+	if err != nil {
+		return err
+	}
+	platform = resolvedPlatform
+	adapterID = resolvedAdapterID
+	if platform == "" {
+		return fmt.Errorf("平台不能为空")
+	}
+	if adp == nil {
+		return fmt.Errorf("适配器不存在: %s", platform)
+	}
+	target := resolveSendTarget(adp, userID, groupID)
+	log.Printf("[SYSTEM] Plugin %s send image message: platform=%s adapter_id=%s user=%s group=%s", pluginID, platform, adapterID, userID, groupID)
+	return adp.SendImage(target, imageURL)
+}
+
 func (r *Router) sendPluginRichMessage(pluginID string, action plugincore.RichMessageAction) plugincore.PluginUserResult {
 	platform := strings.TrimSpace(action.Platform)
 	adapterID := strings.TrimSpace(action.AdapterID)
@@ -1311,6 +1380,13 @@ func (r *Router) sendPluginRichMessage(pluginID string, action plugincore.RichMe
 		return plugincore.PluginUserResult{Success: false, Error: "用户 ID 和群组 ID 不能同时为空"}
 	}
 	if unionID != "" && groupID == "" {
+		if adapterID != "" {
+			resolvedPlatform, _, _, _, _, err := r.resolveSendAdapterInfo(platform, adapterID)
+			if err != nil {
+				return plugincore.PluginUserResult{Success: false, Error: err.Error()}
+			}
+			platform = resolvedPlatform
+		}
 		sent, err := r.sendPluginRichMessageToUnion(pluginID, unionID, platform, adapterID, message)
 		if sent {
 			return plugincore.PluginUserResult{Success: true, Data: true}
@@ -1342,50 +1418,29 @@ func (r *Router) sendPluginRichMessage(pluginID string, action plugincore.RichMe
 	return plugincore.PluginUserResult{Success: true, Data: true}
 }
 
+func (r *Router) sendPluginImageMessageToUnion(pluginID, unionID, platform, adapterID, imageURL string) (bool, error) {
+	return r.sendPluginActionToUnion(pluginID, unionID, platform, adapterID, "image", func(account *config.UserAccount, currentAdapterID string) error {
+		return r.sendPluginImageMessage(pluginID, plugincore.ImageMessageAction{Platform: account.Platform, AdapterID: currentAdapterID, UserID: account.UserID, URL: imageURL})
+	})
+}
+
 func (r *Router) sendPluginRichMessageToUnion(pluginID, unionID, platform, adapterID string, message types.RichMessage) (bool, error) {
-	platform = strings.TrimSpace(platform)
-	adapterID = strings.TrimSpace(adapterID)
-	r.mu.RLock()
-	database := r.database
-	r.mu.RUnlock()
-	if database == nil {
-		return false, nil
-	}
-	accounts, err := database.ListUserAccountsByUnionID(unionID)
-	if err != nil {
-		log.Printf("[SYSTEM] Plugin %s load union accounts failed: union=%s err=%v", pluginID, unionID, err)
-		return false, err
-	}
-	platforms := unionNotifyPlatforms(accounts, platform)
-	if len(platforms) == 0 {
-		return false, nil
-	}
-	var lastErr error
-	for _, scope := range platforms {
-		for _, account := range accounts {
-			if account == nil || account.Platform == "" || account.UserID == "" || account.Platform != scope {
-				continue
-			}
-			currentAdapterID := ""
-			if scope == platform {
-				currentAdapterID = adapterID
-			}
-			result := r.sendPluginRichMessage(pluginID, plugincore.RichMessageAction{Platform: account.Platform, AdapterID: currentAdapterID, UserID: account.UserID, Parts: message.Parts, FallbackText: message.FallbackText, Prefer: message.Prefer})
-			if !result.Success {
-				lastErr = fmt.Errorf("%s", result.Error)
-				log.Printf("[SYSTEM] Plugin %s union rich notify failed: union=%s platform=%s user=%s err=%v", pluginID, unionID, account.Platform, account.UserID, lastErr)
-				continue
-			}
-			return true, nil
+	return r.sendPluginActionToUnion(pluginID, unionID, platform, adapterID, "rich", func(account *config.UserAccount, currentAdapterID string) error {
+		result := r.sendPluginRichMessage(pluginID, plugincore.RichMessageAction{Platform: account.Platform, AdapterID: currentAdapterID, UserID: account.UserID, Parts: message.Parts, FallbackText: message.FallbackText, Prefer: message.Prefer})
+		if !result.Success {
+			return fmt.Errorf("%s", result.Error)
 		}
-	}
-	if lastErr != nil {
-		return false, lastErr
-	}
-	return false, fmt.Errorf("UnionID %s 没有可用平台账号", unionID)
+		return nil
+	})
 }
 
 func (r *Router) sendPluginMessageToUnion(pluginID, unionID, platform, adapterID, text string) (bool, error) {
+	return r.sendPluginActionToUnion(pluginID, unionID, platform, adapterID, "text", func(account *config.UserAccount, currentAdapterID string) error {
+		return r.sendPluginMessage(pluginID, plugincore.SendMessageAction{Platform: account.Platform, AdapterID: currentAdapterID, UserID: account.UserID, Text: text})
+	})
+}
+
+func (r *Router) sendPluginActionToUnion(pluginID, unionID, platform, adapterID, kind string, send func(*config.UserAccount, string) error) (bool, error) {
 	platform = strings.TrimSpace(platform)
 	adapterID = strings.TrimSpace(adapterID)
 	r.mu.RLock()
@@ -1413,8 +1468,8 @@ func (r *Router) sendPluginMessageToUnion(pluginID, unionID, platform, adapterID
 			if scope == platform {
 				currentAdapterID = adapterID
 			}
-			if err := r.sendPluginMessage(pluginID, plugincore.SendMessageAction{Platform: account.Platform, AdapterID: currentAdapterID, UserID: account.UserID, Text: text}); err != nil {
-				log.Printf("[SYSTEM] Plugin %s union notify failed: union=%s platform=%s user=%s err=%v", pluginID, unionID, account.Platform, account.UserID, err)
+			if err := send(account, currentAdapterID); err != nil {
+				log.Printf("[SYSTEM] Plugin %s union %s notify failed: union=%s platform=%s user=%s err=%v", pluginID, kind, unionID, account.Platform, account.UserID, err)
 				lastErr = err
 				continue
 			}

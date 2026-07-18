@@ -104,6 +104,57 @@ test('sendRichMessage sends request with target fields', async () => {
     });
 });
 
+test('sendImageMessage accepts camelCase fields and inherits same-platform adapterId', async () => {
+    const { ctx, calls } = makeContext({ platform: 'qq_office', adapter_id: '7', user_id: 'current' });
+    await ctx.sendImageMessage({ platform: 'qq_office', userId: 'u1', groupId: 'g1', unionId: 'U1', imageUrl: 'https://example.com/a.png' });
+    assert.equal(calls[0].expectedAction, 'send_image_message_response');
+    assert.deepEqual(calls[0].action, {
+        action: 'send_image_message',
+        platform: 'qq_office',
+        adapter_id: '7',
+        user_id: 'u1',
+        group_id: 'g1',
+        union_id: 'U1',
+        url: 'https://example.com/a.png'
+    });
+});
+
+test('send_image_message accepts snake_case fields and explicit adapter_id', async () => {
+    const { ctx, calls } = makeContext({ platform: 'qq_office', adapter_id: '7', user_id: 'current' });
+    await ctx.send_image_message({ platform: 'telegram', adapter_id: '8', user_id: 'u2', group_id: 'g2', union_id: 'U2', image_url: 'C:/images/a.png' });
+    assert.equal(calls[0].expectedAction, 'send_image_message_response');
+    assert.deepEqual(calls[0].action, {
+        action: 'send_image_message',
+        platform: 'telegram',
+        adapter_id: '8',
+        user_id: 'u2',
+        group_id: 'g2',
+        union_id: 'U2',
+        url: 'C:/images/a.png'
+    });
+});
+
+test('sendImageMessage does not inherit adapterId across platforms and accepts url', async () => {
+    const { ctx, calls } = makeContext({ platform: 'qq_office', adapter_id: '7', user_id: 'current' });
+    await ctx.sendImageMessage({ platform: 'telegram', unionId: 'U3', url: 'https://example.com/b.png' });
+    assert.equal(calls[0].action.adapter_id, '');
+    assert.equal(calls[0].action.user_id, 'current');
+    assert.equal(calls[0].action.union_id, 'U3');
+    assert.equal(calls[0].action.url, 'https://example.com/b.png');
+});
+
+test('legacy sendImage and send_image keep current-message protocol', async () => {
+    const { ctx } = makeContext();
+    const actions = [];
+    ctx._send = (action) => actions.push(action) || true;
+    await ctx.sendImage('https://example.com/legacy-a.png');
+    await ctx.send_image('https://example.com/legacy-b.png');
+    assert.deepEqual(actions, [
+        { action: 'send_image', url: 'https://example.com/legacy-a.png' },
+        { action: 'send_image', url: 'https://example.com/legacy-b.png' }
+    ]);
+});
+
 test('sendButtons writes send_buttons protocol action', async () => {
     const { ctx } = makeContext();
     const actions = [];

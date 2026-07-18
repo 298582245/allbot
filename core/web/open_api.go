@@ -137,7 +137,17 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[INFO] OpenAPI 调用开始 endpoint=%s method=%s path=%s client=%s body=%dB", endpoint.ID, requestData.Method, requestData.RawPath, requestData.ClientIP, len(body))
-	response, err := s.pluginManager.ExecuteOpenAPI(*endpoint, openAPIEndpointDir(endpoint.ID), requestData, s.openAPIDBExecutor(), s.openAPISendMessageExecutor())
+	response, err := s.pluginManager.ExecuteOpenAPI(
+		*endpoint,
+		openAPIEndpointDir(endpoint.ID),
+		requestData,
+		s.openAPIDBExecutor(),
+		s.openAPISendMessageExecutor(),
+		plugincore.OpenAPIExecutors{
+			SendRichMessage: s.openAPISendRichMessageExecutor(),
+			SendImage:       s.openAPISendImageMessageExecutor(),
+		},
+	)
 	if err != nil {
 		logOpenAPICall("ERROR", endpoint.ID, requestData.Method, requestData.RawPath, requestData.ClientIP, http.StatusInternalServerError, startedAt, "执行失败: "+err.Error())
 		s.jsonError(statusWriter, "Open API 执行失败: "+err.Error(), http.StatusInternalServerError)
@@ -749,6 +759,24 @@ func (s *Server) openAPISendMessageExecutor() func(string, plugincore.SendMessag
 			return plugincore.PluginUserResult{Success: false, Error: "消息发送器不可用"}
 		}
 		return s.router.SendPluginMessage(openAPIID, action)
+	}
+}
+
+func (s *Server) openAPISendRichMessageExecutor() func(string, plugincore.RichMessageAction) plugincore.PluginUserResult {
+	return func(openAPIID string, action plugincore.RichMessageAction) plugincore.PluginUserResult {
+		if s.router == nil {
+			return plugincore.PluginUserResult{Success: false, Error: "富文本消息发送器不可用"}
+		}
+		return s.router.SendPluginRichMessage(openAPIID, action)
+	}
+}
+
+func (s *Server) openAPISendImageMessageExecutor() func(string, plugincore.ImageMessageAction) plugincore.PluginUserResult {
+	return func(openAPIID string, action plugincore.ImageMessageAction) plugincore.PluginUserResult {
+		if s.router == nil {
+			return plugincore.PluginUserResult{Success: false, Error: "图片消息发送器不可用"}
+		}
+		return s.router.SendPluginImageMessage(openAPIID, action)
 	}
 }
 

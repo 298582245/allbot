@@ -106,6 +106,49 @@ class PaySdkTest(unittest.TestCase):
             "prefer": "split",
         })
 
+    def test_send_image_message_accepts_snake_case_and_inherits_same_platform_adapter(self):
+        ctx, calls = self.make_context({"platform": "qq_office", "adapter_id": "7", "user_id": "current"})
+        asyncio.run(ctx.send_image_message(platform="qq_office", user_id="u1", group_id="g1", union_id="U1", image_url="https://example.com/a.png"))
+        self.assertEqual(calls[0]["expected_action"], "send_image_message_response")
+        self.assertEqual(calls[0]["action"], {
+            "action": "send_image_message",
+            "platform": "qq_office",
+            "adapter_id": "7",
+            "user_id": "u1",
+            "group_id": "g1",
+            "union_id": "U1",
+            "url": "https://example.com/a.png",
+        })
+
+    def test_send_image_message_camel_alias_accepts_camel_fields_and_explicit_adapter(self):
+        ctx, calls = self.make_context({"platform": "qq_office", "adapter_id": "7", "user_id": "current"})
+        asyncio.run(ctx.sendImageMessage(platform="telegram", adapterId="8", userId="u2", groupId="g2", unionId="U2", imageUrl="C:/images/a.png"))
+        self.assertEqual(calls[0]["expected_action"], "send_image_message_response")
+        self.assertEqual(calls[0]["action"], {
+            "action": "send_image_message",
+            "platform": "telegram",
+            "adapter_id": "8",
+            "user_id": "u2",
+            "group_id": "g2",
+            "union_id": "U2",
+            "url": "C:/images/a.png",
+        })
+
+    def test_send_image_message_cross_platform_does_not_inherit_adapter_and_accepts_url(self):
+        ctx, calls = self.make_context({"platform": "qq_office", "adapter_id": "7", "user_id": "current"})
+        asyncio.run(ctx.send_image_message(platform="telegram", unionId="U3", url="https://example.com/b.png"))
+        self.assertEqual(calls[0]["action"]["adapter_id"], "")
+        self.assertEqual(calls[0]["action"]["user_id"], "current")
+        self.assertEqual(calls[0]["action"]["union_id"], "U3")
+        self.assertEqual(calls[0]["action"]["url"], "https://example.com/b.png")
+
+    def test_legacy_send_image_keeps_current_message_protocol(self):
+        ctx, _ = self.make_context()
+        actions = []
+        ctx._send = lambda action: actions.append(action) or True
+        asyncio.run(ctx.send_image("https://example.com/legacy.png"))
+        self.assertEqual(actions, [{"action": "send_image", "url": "https://example.com/legacy.png"}])
+
     def test_send_buttons_outputs_protocol_action(self):
         ctx, _ = self.make_context()
         actions = []

@@ -93,12 +93,36 @@ type RichMessageAction struct {
 	Prefer       string
 }
 
+type ImageMessageAction struct {
+	Platform  string
+	AdapterID string
+	UserID    string
+	GroupID   string
+	UnionID   string
+	URL       string
+}
+
+type OpenAPIExecutors struct {
+	DB              func(string, PluginDBAction) PluginDBResult
+	SendMessage     func(string, SendMessageAction) PluginUserResult
+	SendRichMessage func(string, RichMessageAction) PluginUserResult
+	SendImage       func(string, ImageMessageAction) PluginUserResult
+}
+
 type PluginWebResponse struct {
 	Status  int
 	Headers map[string]string
 	Body    string
 	JSON    interface{}
 	Data    map[string]interface{}
+}
+
+func writePluginUserResult(writer io.Writer, action, requestID string, result PluginUserResult) {
+	response, _ := json.Marshal(map[string]interface{}{
+		"action": action, "request_id": requestID, "success": result.Success, "error": result.Error, "data": result.Data,
+	})
+	response = append(response, '\n')
+	_, _ = writer.Write(response)
 }
 
 type PluginConfigAction struct {
@@ -466,7 +490,7 @@ func (b *pluginProcessLogBatch) Flush() {
 
 func isPluginProtocolAction(action string) bool {
 	switch action {
-	case "reply", "send_markdown", "send_rich", "send_buttons", "send_image", "send_file", "listen", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "send_rich_message", "get_union_id", "list_platform_admins", "set_access_control", "set_scheduled_task", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "web_response", "done":
+	case "reply", "send_markdown", "send_rich", "send_buttons", "send_image", "send_file", "listen", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "send_rich_message", "send_image_message", "get_union_id", "list_platform_admins", "set_access_control", "set_scheduled_task", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "web_response", "done":
 		return true
 	default:
 		return false
@@ -475,7 +499,7 @@ func isPluginProtocolAction(action string) bool {
 
 func isOpenAPIProtocolAction(action string) bool {
 	switch action {
-	case "http_response", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "send_message", "done":
+	case "http_response", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "send_message", "send_rich_message", "send_image_message", "done":
 		return true
 	default:
 		return false
@@ -568,6 +592,7 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 	var replyMarkdownFunc func(string) error
 	var replyRichFunc func(types.RichMessage) error
 	var sendRichMessageFunc func(string, RichMessageAction) PluginUserResult
+	var sendImageMessageFunc func(string, ImageMessageAction) PluginUserResult
 	var sendButtonsFunc func(string, [][]types.ButtonOption) error
 	for _, callback := range callbacks {
 		switch fn := callback.(type) {
@@ -582,6 +607,10 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 		case func(string, RichMessageAction) PluginUserResult:
 			if sendRichMessageFunc == nil {
 				sendRichMessageFunc = fn
+			}
+		case func(string, ImageMessageAction) PluginUserResult:
+			if sendImageMessageFunc == nil {
+				sendImageMessageFunc = fn
 			}
 		case func(string, [][]types.ButtonOption) error:
 			if sendButtonsFunc == nil {
@@ -803,17 +832,19 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 				}
 				result = sendMessageFunc(plugin.ID, SendMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, Text: text})
 			}
-			response, _ := json.Marshal(map[string]interface{}{"action": "send_message_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
-			response = append(response, '\n')
-			_, _ = stdin.Write(response)
+			writePluginUserResult(stdin, "send_message_response", action.RequestID, result)
 		case "send_rich_message":
 			result := PluginUserResult{Success: false, Error: "富文本消息发送器不可用"}
 			if sendRichMessageFunc != nil {
 				result = sendRichMessageFunc(plugin.ID, RichMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, Parts: action.Parts, FallbackText: action.FallbackText, Prefer: action.Prefer})
 			}
-			response, _ := json.Marshal(map[string]interface{}{"action": "send_rich_message_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
-			response = append(response, '\n')
-			_, _ = stdin.Write(response)
+			writePluginUserResult(stdin, "send_rich_message_response", action.RequestID, result)
+		case "send_image_message":
+			result := PluginUserResult{Success: false, Error: "图片消息发送器不可用"}
+			if sendImageMessageFunc != nil {
+				result = sendImageMessageFunc(plugin.ID, ImageMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, URL: action.URL})
+			}
+			writePluginUserResult(stdin, "send_image_message_response", action.RequestID, result)
 		case "get_union_id":
 			result := PluginUserResult{Success: false, Error: "用户身份执行器不可用"}
 			if userFunc != nil {
@@ -933,21 +964,23 @@ func paymentAmountRaw(actionAmount, amountRMB json.RawMessage) json.RawMessage {
 	return amountRMB
 }
 
-func (m *Manager) ExecutePluginOpenAPI(plugin *types.Plugin, pluginPath string, request types.OpenAPIRequest) (types.OpenAPIResponse, error) {
+func (m *Manager) ExecutePluginOpenAPI(plugin *types.Plugin, pluginPath string, request types.OpenAPIRequest, options ...OpenAPIExecutors) (types.OpenAPIResponse, error) {
 	runtimeProfile := strings.TrimSpace(plugin.OpenAPI.RuntimeProfile)
 	if runtimeProfile == "" {
 		runtimeProfile = plugin.RuntimeProfile
 	}
+	executors := firstOpenAPIExecutors(options)
 	endpoint := types.OpenAPIEndpoint{ID: plugin.ID, Name: plugin.Name, Path: plugin.OpenAPI.Path, Method: plugin.OpenAPI.Method, Enabled: plugin.OpenAPI.Enabled, Token: plugin.OpenAPI.Token, Runtime: plugin.Runtime, RuntimeProfile: runtimeProfile, Entry: plugin.Entry}
-	return m.ExecuteOpenAPI(endpoint, pluginPath, request, nil, nil)
+	return m.ExecuteOpenAPI(endpoint, pluginPath, request, executors.DB, executors.SendMessage, executors)
 }
 
-func (m *Manager) ExecutePluginWeb(plugin *types.Plugin, pluginPath string, payload []byte, dbFunc func(string, PluginDBAction) PluginDBResult, sendMessageFunc func(string, SendMessageAction) PluginUserResult) (PluginWebResponse, error) {
-	response, err := m.executePluginWebViaDirect(plugin, pluginPath, payload, dbFunc, sendMessageFunc)
+func (m *Manager) ExecutePluginWeb(plugin *types.Plugin, pluginPath string, payload []byte, dbFunc func(string, PluginDBAction) PluginDBResult, sendMessageFunc func(string, SendMessageAction) PluginUserResult, options ...OpenAPIExecutors) (PluginWebResponse, error) {
+	executors := firstOpenAPIExecutors(options)
+	response, err := m.executePluginWebViaDirect(plugin, pluginPath, payload, dbFunc, sendMessageFunc, executors.SendRichMessage, executors.SendImage)
 	return response, err
 }
 
-func (m *Manager) executePluginWebViaDirect(plugin *types.Plugin, pluginPath string, payload []byte, dbFunc func(string, PluginDBAction) PluginDBResult, sendMessageFunc func(string, SendMessageAction) PluginUserResult) (PluginWebResponse, error) {
+func (m *Manager) executePluginWebViaDirect(plugin *types.Plugin, pluginPath string, payload []byte, dbFunc func(string, PluginDBAction) PluginDBResult, sendMessageFunc func(string, SendMessageAction) PluginUserResult, sendRichMessageFunc func(string, RichMessageAction) PluginUserResult, sendImageMessageFunc func(string, ImageMessageAction) PluginUserResult) (PluginWebResponse, error) {
 	cmd, err := m.newDirectCommand(plugin, pluginPath)
 	if err != nil {
 		return PluginWebResponse{}, err
@@ -986,27 +1019,31 @@ func (m *Manager) executePluginWebViaDirect(plugin *types.Plugin, pluginPath str
 			continue
 		}
 		var action struct {
-			Action    string                     `json:"action"`
-			RequestID string                     `json:"request_id"`
-			Status    int                        `json:"status"`
-			Headers   map[string]string          `json:"headers"`
-			Body      string                     `json:"body"`
-			JSON      interface{}                `json:"json"`
-			Data      map[string]interface{}     `json:"data"`
-			Success   bool                       `json:"success"`
-			Error     string                     `json:"error"`
-			Platform  string                     `json:"platform"`
-			AdapterID string                     `json:"adapter_id"`
-			UserID    string                     `json:"user_id"`
-			GroupID   string                     `json:"group_id"`
-			UnionID   string                     `json:"union_id"`
-			Text      string                     `json:"text"`
-			Content   string                     `json:"content"`
-			DBTable   string                     `json:"table"`
-			DBColumns []config.PluginTableColumn `json:"db_columns"`
-			Values    map[string]interface{}     `json:"values"`
-			RowID     int64                      `json:"row_id"`
-			Query     config.PluginDBQuery       `json:"query"`
+			Action       string                     `json:"action"`
+			RequestID    string                     `json:"request_id"`
+			Status       int                        `json:"status"`
+			Headers      map[string]string          `json:"headers"`
+			Body         string                     `json:"body"`
+			JSON         interface{}                `json:"json"`
+			Data         map[string]interface{}     `json:"data"`
+			Success      bool                       `json:"success"`
+			Error        string                     `json:"error"`
+			Platform     string                     `json:"platform"`
+			AdapterID    string                     `json:"adapter_id"`
+			UserID       string                     `json:"user_id"`
+			GroupID      string                     `json:"group_id"`
+			UnionID      string                     `json:"union_id"`
+			Text         string                     `json:"text"`
+			Content      string                     `json:"content"`
+			Parts        []types.RichMessagePart    `json:"parts"`
+			FallbackText string                     `json:"fallback_text"`
+			Prefer       string                     `json:"prefer"`
+			URL          string                     `json:"url"`
+			DBTable      string                     `json:"table"`
+			DBColumns    []config.PluginTableColumn `json:"db_columns"`
+			Values       map[string]interface{}     `json:"values"`
+			RowID        int64                      `json:"row_id"`
+			Query        config.PluginDBQuery       `json:"query"`
 		}
 		if err := json.Unmarshal([]byte(line), &action); err != nil {
 			stdoutBatch.Add(line)
@@ -1048,9 +1085,19 @@ func (m *Manager) executePluginWebViaDirect(plugin *types.Plugin, pluginPath str
 				}
 				result = sendMessageFunc(plugin.ID, SendMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, Text: text})
 			}
-			reply, _ := json.Marshal(map[string]interface{}{"action": "send_message_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
-			reply = append(reply, '\n')
-			_, _ = stdin.Write(reply)
+			writePluginUserResult(stdin, "send_message_response", action.RequestID, result)
+		case "send_rich_message":
+			result := PluginUserResult{Success: false, Error: "富文本消息发送器不可用"}
+			if sendRichMessageFunc != nil {
+				result = sendRichMessageFunc(plugin.ID, RichMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, Parts: action.Parts, FallbackText: action.FallbackText, Prefer: action.Prefer})
+			}
+			writePluginUserResult(stdin, "send_rich_message_response", action.RequestID, result)
+		case "send_image_message":
+			result := PluginUserResult{Success: false, Error: "图片消息发送器不可用"}
+			if sendImageMessageFunc != nil {
+				result = sendImageMessageFunc(plugin.ID, ImageMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, URL: action.URL})
+			}
+			writePluginUserResult(stdin, "send_image_message_response", action.RequestID, result)
 		case "done":
 			if !action.Success && action.Error != "" {
 				_ = waitPluginProcess(cmd, stderrDone)
@@ -1069,7 +1116,23 @@ func (m *Manager) executePluginWebViaDirect(plugin *types.Plugin, pluginPath str
 	return PluginWebResponse{}, fmt.Errorf("插件 Web API 未返回 web_response")
 }
 
-func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string, request types.OpenAPIRequest, dbFunc func(string, PluginDBAction) PluginDBResult, sendMessageFunc func(string, SendMessageAction) PluginUserResult) (types.OpenAPIResponse, error) {
+func firstOpenAPIExecutors(options []OpenAPIExecutors) OpenAPIExecutors {
+	if len(options) == 0 {
+		return OpenAPIExecutors{}
+	}
+	return options[0]
+}
+
+func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string, request types.OpenAPIRequest, dbFunc func(string, PluginDBAction) PluginDBResult, sendMessageFunc func(string, SendMessageAction) PluginUserResult, options ...OpenAPIExecutors) (types.OpenAPIResponse, error) {
+	executors := firstOpenAPIExecutors(options)
+	if executors.DB != nil {
+		dbFunc = executors.DB
+	}
+	if executors.SendMessage != nil {
+		sendMessageFunc = executors.SendMessage
+	}
+	sendRichMessageFunc := executors.SendRichMessage
+	sendImageMessageFunc := executors.SendImage
 	maskedEndpoint := endpoint
 	if maskedEndpoint.Token != "" {
 		maskedEndpoint.Token = "***"
@@ -1122,28 +1185,32 @@ func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string,
 			continue
 		}
 		var action struct {
-			Action    string                     `json:"action"`
-			RequestID string                     `json:"request_id"`
-			Status    int                        `json:"status"`
-			Headers   map[string]string          `json:"headers"`
-			Body      string                     `json:"body"`
-			JSON      interface{}                `json:"json"`
-			Data      map[string]interface{}     `json:"data"`
-			Success   bool                       `json:"success"`
-			Error     string                     `json:"error"`
-			Platform  string                     `json:"platform"`
-			AdapterID string                     `json:"adapter_id"`
-			UserID    string                     `json:"user_id"`
-			GroupID   string                     `json:"group_id"`
-			UnionID   string                     `json:"union_id"`
-			Text      string                     `json:"text"`
-			TextMsg   string                     `json:"text_message"`
-			Content   string                     `json:"content"`
-			DBTable   string                     `json:"table"`
-			DBColumns []config.PluginTableColumn `json:"db_columns"`
-			Values    map[string]interface{}     `json:"values"`
-			RowID     int64                      `json:"row_id"`
-			Query     config.PluginDBQuery       `json:"query"`
+			Action       string                     `json:"action"`
+			RequestID    string                     `json:"request_id"`
+			Status       int                        `json:"status"`
+			Headers      map[string]string          `json:"headers"`
+			Body         string                     `json:"body"`
+			JSON         interface{}                `json:"json"`
+			Data         map[string]interface{}     `json:"data"`
+			Success      bool                       `json:"success"`
+			Error        string                     `json:"error"`
+			Platform     string                     `json:"platform"`
+			AdapterID    string                     `json:"adapter_id"`
+			UserID       string                     `json:"user_id"`
+			GroupID      string                     `json:"group_id"`
+			UnionID      string                     `json:"union_id"`
+			Text         string                     `json:"text"`
+			TextMsg      string                     `json:"text_message"`
+			Content      string                     `json:"content"`
+			Parts        []types.RichMessagePart    `json:"parts"`
+			FallbackText string                     `json:"fallback_text"`
+			Prefer       string                     `json:"prefer"`
+			URL          string                     `json:"url"`
+			DBTable      string                     `json:"table"`
+			DBColumns    []config.PluginTableColumn `json:"db_columns"`
+			Values       map[string]interface{}     `json:"values"`
+			RowID        int64                      `json:"row_id"`
+			Query        config.PluginDBQuery       `json:"query"`
 		}
 		if err := json.Unmarshal([]byte(line), &action); err != nil {
 			stdoutBatch.Add(line)
@@ -1188,9 +1255,19 @@ func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string,
 				}
 				result = sendMessageFunc(endpoint.ID, SendMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, Text: text})
 			}
-			reply, _ := json.Marshal(map[string]interface{}{"action": "send_message_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
-			reply = append(reply, '\n')
-			_, _ = stdin.Write(reply)
+			writePluginUserResult(stdin, "send_message_response", action.RequestID, result)
+		case "send_rich_message":
+			result := PluginUserResult{Success: false, Error: "富文本消息发送器不可用"}
+			if sendRichMessageFunc != nil {
+				result = sendRichMessageFunc(endpoint.ID, RichMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, Parts: action.Parts, FallbackText: action.FallbackText, Prefer: action.Prefer})
+			}
+			writePluginUserResult(stdin, "send_rich_message_response", action.RequestID, result)
+		case "send_image_message":
+			result := PluginUserResult{Success: false, Error: "图片消息发送器不可用"}
+			if sendImageMessageFunc != nil {
+				result = sendImageMessageFunc(endpoint.ID, ImageMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, URL: action.URL})
+			}
+			writePluginUserResult(stdin, "send_image_message_response", action.RequestID, result)
 		case "done":
 			if !action.Success && action.Error != "" {
 				_ = waitPluginProcess(cmd, stderrDone)

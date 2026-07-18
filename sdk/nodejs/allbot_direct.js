@@ -185,6 +185,23 @@ class Context {
         return this.sendRichMessage(options);
     }
 
+    async sendImageMessage(options = {}) {
+        const targetPlatform = String(options.platform || this.platform || '');
+        return this._request({
+            action: 'send_image_message',
+            platform: targetPlatform,
+            adapter_id: this._adapterIdFor(options, targetPlatform),
+            user_id: String(options.userId || options.user_id || this.userId || ''),
+            group_id: String(options.groupId || options.group_id || ''),
+            union_id: String(options.unionId || options.union_id || ''),
+            url: String(options.imageUrl || options.image_url || options.url || '')
+        }, 'send_image_message_response');
+    }
+
+    async send_image_message(options = {}) {
+        return this.sendImageMessage(options);
+    }
+
     async sendMessage(options = {}) {
         const targetPlatform = String(options.platform || this.platform || '');
         const payload = {

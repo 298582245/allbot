@@ -151,7 +151,17 @@ func (s *Server) handlePluginWebAPI(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, "构造插件 Web API 请求失败", http.StatusInternalServerError)
 		return
 	}
-	response, err := s.pluginManager.ExecutePluginWeb(pluginItem, pluginPath, payload, s.openAPIDBExecutor(), s.openAPISendMessageExecutor())
+	response, err := s.pluginManager.ExecutePluginWeb(
+		pluginItem,
+		pluginPath,
+		payload,
+		s.openAPIDBExecutor(),
+		s.openAPISendMessageExecutor(),
+		plugincore.OpenAPIExecutors{
+			SendRichMessage: s.openAPISendRichMessageExecutor(),
+			SendImage:       s.openAPISendImageMessageExecutor(),
+		},
+	)
 	if err != nil {
 		s.jsonError(w, "插件 Web API 执行失败: "+err.Error(), http.StatusInternalServerError)
 		return
