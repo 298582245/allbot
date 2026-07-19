@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -345,6 +347,149 @@ func TestSaveRestartContext(t *testing.T) {
 	}
 	if os.Getenv("ALLBOT_RESTART_STARTED_AT_NS") != "123456" {
 		t.Fatal("started time was not saved")
+	}
+}
+
+func TestDockerEntrypointRestartsWithSavedContext(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not available")
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is not available")
+	}
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	imageDir := filepath.Join(root, "image")
+	for _, dir := range []string{filepath.Join(imageDir, "sdk", "nodejs"), filepath.Join(imageDir, "sdk", "python"), filepath.Join(imageDir, "openapis")} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(imageDir, "sdk", "nodejs", "allbot_direct.js"), []byte("test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(imageDir, "sdk", "python", "allbot_direct.py"), []byte("test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fakeAllBot := `#!/bin/sh
+set -e
+count_file="$ALLBOT_DATA_DIR/run-count"
+count=0
+if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$count_file"
+if [ "$count" -eq 1 ]; then
+  mkdir -p "$(dirname "$ALLBOT_DOCKER_RESTART_REQUEST")"
+  cat > "$ALLBOT_DOCKER_RESTART_REQUEST" <<'JSON'
+{"ALLBOT_IGNORE_RESTART_MESSAGE_KEY":"message-key","ALLBOT_RESTART_NOTIFY_PLATFORM":"qq_office","ALLBOT_RESTART_NOTIFY_ADAPTER_ID":"7","ALLBOT_RESTART_NOTIFY_USER_ID":"member-openid","ALLBOT_RESTART_NOTIFY_GROUP_ID":"group-openid","ALLBOT_RESTART_NOTIFY_TARGET":"group_group-openid|msg_msg-group|at_member-openid","ALLBOT_RESTART_STARTED_AT_NS":"123456"}
+JSON
+  exit 0
+fi
+printf '%s\n' "$ALLBOT_RESTARTED" > "$ALLBOT_DATA_DIR/restarted"
+printf '%s\n' "$ALLBOT_RESTART_NOTIFY_TARGET" > "$ALLBOT_DATA_DIR/target"
+printf '%s\n' "$ALLBOT_RESTART_STARTED_AT_NS" > "$ALLBOT_DATA_DIR/started-at"
+exit 0
+`
+	imageBinary := filepath.Join(imageDir, "allbot")
+	if err := os.WriteFile(imageBinary, []byte(fakeAllBot), 0755); err != nil {
+		t.Fatal(err)
+	}
+	entrypoint := filepath.Join(".", "docker-entrypoint.sh")
+	requestPath := filepath.Join(dataDir, "runtime", "restart", "restart.json")
+	cmd := exec.Command("sh", entrypoint)
+	cmd.Env = append(os.Environ(),
+		"ALLBOT_DATA_DIR="+dataDir,
+		"ALLBOT_IMAGE_DIR="+imageDir,
+		"ALLBOT_DOCKER_RESTART_REQUEST="+requestPath,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker entrypoint returned error: %v\n%s", err, output)
+	}
+	readValue := func(name string) string {
+		data, readErr := os.ReadFile(filepath.Join(dataDir, name))
+		if readErr != nil {
+			t.Fatalf("read %s: %v\n%s", name, readErr, output)
+		}
+		return strings.TrimSpace(string(data))
+	}
+	if readValue("run-count") != "2" {
+		t.Fatalf("entrypoint should start AllBot twice, output:\n%s", output)
+	}
+	if readValue("restarted") != "1" {
+		t.Fatalf("ALLBOT_RESTARTED was not injected, output:\n%s", output)
+	}
+	expectedTarget := "group_group-openid|msg_msg-group|at_member-openid"
+	if readValue("target") != expectedTarget || readValue("started-at") != "123456" {
+		t.Fatalf("restart context was not preserved, output:\n%s", output)
+	}
+	if _, err := os.Stat(requestPath); !os.IsNotExist(err) {
+		t.Fatalf("restart request should be consumed, stat error: %v", err)
+	}
+}
+
+func TestSaveDockerRestartRequestPreservesContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime", "restart", "restart.json")
+	t.Setenv("ALLBOT_DOCKER_RESTART_REQUEST", path)
+	request := router.RestartRequest{
+		MessageKey: "message-key",
+		Platform:   "qq_office",
+		AdapterID:  "7",
+		UserID:     "member-openid",
+		GroupID:    "group-openid",
+		Target:     "group_group-openid|msg_msg-group|at_member-openid",
+		StartedAt:  time.Unix(0, 123456),
+	}
+	if err := saveDockerRestartRequest(request); err != nil {
+		t.Fatalf("saveDockerRestartRequest returned error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	var values map[string]string
+	if err := json.Unmarshal(data, &values); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	expected := map[string]string{
+		"ALLBOT_IGNORE_RESTART_MESSAGE_KEY": request.MessageKey,
+		"ALLBOT_RESTART_NOTIFY_PLATFORM":    request.Platform,
+		"ALLBOT_RESTART_NOTIFY_ADAPTER_ID":  request.AdapterID,
+		"ALLBOT_RESTART_NOTIFY_USER_ID":     request.UserID,
+		"ALLBOT_RESTART_NOTIFY_GROUP_ID":    request.GroupID,
+		"ALLBOT_RESTART_NOTIFY_TARGET":      request.Target,
+		"ALLBOT_RESTART_STARTED_AT_NS":      "123456",
+	}
+	for key, value := range expected {
+		if values[key] != value {
+			t.Fatalf("%s = %q, expected %q", key, values[key], value)
+		}
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temporary request should not remain, stat error: %v", err)
+	}
+}
+
+func TestSaveDockerRestartRequestRejectsEmptyMessageKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "restart.json")
+	t.Setenv("ALLBOT_DOCKER_RESTART_REQUEST", path)
+	if err := saveDockerRestartRequest(router.RestartRequest{}); err == nil {
+		t.Fatal("saveDockerRestartRequest expected empty message key error")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("request file should not be created, stat error: %v", err)
+	}
+}
+
+func TestDockerRestartRequestPath(t *testing.T) {
+	t.Setenv("ALLBOT_DOCKER_RESTART_REQUEST", "")
+	expected := filepath.Join("runtime", "restart", "restart.json")
+	if got := dockerRestartRequestPath(); got != expected {
+		t.Fatalf("dockerRestartRequestPath() = %q, expected %q", got, expected)
+	}
+	t.Setenv("ALLBOT_DOCKER_RESTART_REQUEST", " custom/restart.json ")
+	if got := dockerRestartRequestPath(); got != "custom/restart.json" {
+		t.Fatalf("custom dockerRestartRequestPath() = %q", got)
 	}
 }
 

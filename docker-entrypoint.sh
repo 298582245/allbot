@@ -1,16 +1,19 @@
 #!/bin/sh
 set -e
 
-DATA_DIR=/data
+DATA_DIR="${ALLBOT_DATA_DIR:-/data}"
+IMAGE_DIR="${ALLBOT_IMAGE_DIR:-/opt/allbot}"
 APP_BIN="${DATA_DIR}/allbot"
 APP_IMAGE_HASH="${DATA_DIR}/.allbot-image-sha256"
 DATA_SDK_DIR="${DATA_DIR}/sdk"
 APP_SDK_HASH="${DATA_DIR}/.allbot-sdk-image-sha256"
-IMAGE_BIN=/opt/allbot/allbot
-IMAGE_HASH=/opt/allbot/allbot.sha256
-IMAGE_SDK_DIR=/opt/allbot/sdk
-IMAGE_SDK_HASH=/opt/allbot/sdk.sha256
+IMAGE_BIN="${IMAGE_DIR}/allbot"
+IMAGE_HASH="${IMAGE_DIR}/allbot.sha256"
+IMAGE_SDK_DIR="${IMAGE_DIR}/sdk"
+IMAGE_SDK_HASH="${IMAGE_DIR}/sdk.sha256"
+IMAGE_OPENAPIS_DIR="${IMAGE_DIR}/openapis"
 UPGRADE_REQUEST="${DATA_DIR}/runtime/update/upgrade.json"
+RESTART_REQUEST="${ALLBOT_DOCKER_RESTART_REQUEST:-${DATA_DIR}/runtime/restart/restart.json}"
 
 mkdir -p "${DATA_DIR}/plugins" "${DATA_DIR}/runtime" "${DATA_DIR}/openapis" "${DATA_DIR}/logs" "${DATA_DIR}/backups"
 
@@ -94,8 +97,51 @@ init_app_bin
 init_sdk
 
 if [ -z "$(find "${DATA_DIR}/openapis" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then
-    cp -a /opt/allbot/openapis/. "${DATA_DIR}/openapis/"
+    cp -a "${IMAGE_OPENAPIS_DIR}/." "${DATA_DIR}/openapis/"
 fi
+
+apply_restart_if_requested() {
+    if [ ! -f "${RESTART_REQUEST}" ]; then
+        return 1
+    fi
+
+    restart_exports=$(python3 - "${RESTART_REQUEST}" <<'PY'
+import json
+import shlex
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as source:
+    values = json.load(source)
+
+required = (
+    "ALLBOT_IGNORE_RESTART_MESSAGE_KEY",
+    "ALLBOT_RESTART_NOTIFY_PLATFORM",
+    "ALLBOT_RESTART_NOTIFY_TARGET",
+    "ALLBOT_RESTART_STARTED_AT_NS",
+)
+for key in required:
+    if not str(values.get(key, "")).strip():
+        raise ValueError(f"Docker 重启请求缺少 {key}")
+
+for key, value in values.items():
+    if not key.startswith("ALLBOT_RESTART_") and key != "ALLBOT_IGNORE_RESTART_MESSAGE_KEY":
+        continue
+    print(f"export {key}={shlex.quote(str(value))}")
+PY
+    ) || {
+        echo "Docker 重启请求无效：${RESTART_REQUEST}" >&2
+        rm -f "${RESTART_REQUEST}"
+        return 1
+    }
+
+    eval "${restart_exports}"
+    export ALLBOT_RESTARTED=1
+    export ALLBOT_RESTART_DELAY_MS=2000
+    rm -f "${RESTART_REQUEST}"
+    echo "AllBot Docker 重启请求已接管"
+    return 0
+}
 
 apply_update_if_requested() {
     if [ ! -f "${UPGRADE_REQUEST}" ]; then
@@ -136,6 +182,15 @@ apply_update_if_requested() {
     return 0
 }
 
+clear_transient_startup_env() {
+    unset ALLBOT_UPDATED ALLBOT_UPDATED_FROM ALLBOT_UPDATED_TO
+    unset ALLBOT_RESTARTED ALLBOT_RESTART_DELAY_MS ALLBOT_PARENT_PID
+    unset ALLBOT_IGNORE_RESTART_MESSAGE_KEY
+    unset ALLBOT_RESTART_NOTIFY_PLATFORM ALLBOT_RESTART_NOTIFY_ADAPTER_ID
+    unset ALLBOT_RESTART_NOTIFY_USER_ID ALLBOT_RESTART_NOTIFY_GROUP_ID
+    unset ALLBOT_RESTART_NOTIFY_TARGET ALLBOT_RESTART_STARTED_AT_NS
+}
+
 terminate_child() {
     if [ -n "${child_pid:-}" ]; then
         kill "${child_pid}" 2>/dev/null || true
@@ -151,6 +206,7 @@ cd "${DATA_DIR}"
 while true; do
     "${APP_BIN}" --plugins="${DATA_DIR}/plugins" "$@" &
     child_pid=$!
+    clear_transient_startup_env
     set +e
     wait "${child_pid}"
     status=$?
@@ -158,6 +214,9 @@ while true; do
     child_pid=""
 
     if apply_update_if_requested; then
+        continue
+    fi
+    if apply_restart_if_requested; then
         continue
     fi
 

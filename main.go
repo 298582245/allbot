@@ -159,7 +159,6 @@ func main() {
 	messageRouter.SetKeywordReplyManager(keywordReplyManager)
 	scheduledTaskRunner := router.NewScheduledTaskRunner(configDB, messageRouter)
 	scheduledTaskRunner.Start()
-	notifyRestartCompleted(adapterManager)
 
 	webFiles, err := fs.Sub(embeddedWeb, "web")
 	if err != nil {
@@ -194,6 +193,7 @@ func main() {
 		log.Printf("- 默认密码: %s", adminPasswordInit.GeneratedPassword)
 	}
 	log.SetOutput(web.NewCustomLogger(webServer.GetLogManager()))
+	notifyRestartCompleted(adapterManager)
 
 	go func() {
 		if err := webServer.Start(); err != nil {
@@ -252,7 +252,14 @@ func main() {
 				keywordReplyManager.SetRestartHandler(requestRestart)
 				continue
 			}
-			if err := spawnRestartProcess(); err != nil {
+			if updater.DockerUpdateModeEnabled() {
+				if err := saveDockerRestartRequest(request); err != nil {
+					log.Printf("保存 Docker 重启请求失败: %v", err)
+					restartRequested.Store(false)
+					keywordReplyManager.SetRestartHandler(requestRestart)
+					continue
+				}
+			} else if err := spawnRestartProcess(); err != nil {
 				log.Printf("启动重启进程失败: %v", err)
 				restartRequested.Store(false)
 				keywordReplyManager.SetRestartHandler(requestRestart)
@@ -354,17 +361,9 @@ func formatAccessCodeStatus(enabled bool, code string) string {
 }
 
 func saveRestartContext(request router.RestartRequest) error {
-	if strings.TrimSpace(request.MessageKey) == "" {
-		return errors.New("重启消息唯一标识为空")
-	}
-	values := map[string]string{
-		"ALLBOT_IGNORE_RESTART_MESSAGE_KEY": request.MessageKey,
-		"ALLBOT_RESTART_NOTIFY_PLATFORM":    request.Platform,
-		"ALLBOT_RESTART_NOTIFY_ADAPTER_ID":  request.AdapterID,
-		"ALLBOT_RESTART_NOTIFY_USER_ID":     request.UserID,
-		"ALLBOT_RESTART_NOTIFY_GROUP_ID":    request.GroupID,
-		"ALLBOT_RESTART_NOTIFY_TARGET":      request.Target,
-		"ALLBOT_RESTART_STARTED_AT_NS":      strconv.FormatInt(request.StartedAt.UnixNano(), 10),
+	values, err := restartContextValues(request)
+	if err != nil {
+		return err
 	}
 	for key, value := range values {
 		if err := os.Setenv(key, value); err != nil {
@@ -372,6 +371,52 @@ func saveRestartContext(request router.RestartRequest) error {
 		}
 	}
 	return nil
+}
+
+func restartContextValues(request router.RestartRequest) (map[string]string, error) {
+	if strings.TrimSpace(request.MessageKey) == "" {
+		return nil, errors.New("重启消息唯一标识为空")
+	}
+	return map[string]string{
+		"ALLBOT_IGNORE_RESTART_MESSAGE_KEY": request.MessageKey,
+		"ALLBOT_RESTART_NOTIFY_PLATFORM":    request.Platform,
+		"ALLBOT_RESTART_NOTIFY_ADAPTER_ID":  request.AdapterID,
+		"ALLBOT_RESTART_NOTIFY_USER_ID":     request.UserID,
+		"ALLBOT_RESTART_NOTIFY_GROUP_ID":    request.GroupID,
+		"ALLBOT_RESTART_NOTIFY_TARGET":      request.Target,
+		"ALLBOT_RESTART_STARTED_AT_NS":      strconv.FormatInt(request.StartedAt.UnixNano(), 10),
+	}, nil
+}
+
+func saveDockerRestartRequest(request router.RestartRequest) error {
+	values, err := restartContextValues(request)
+	if err != nil {
+		return err
+	}
+	path := dockerRestartRequestPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(values, "", "  ")
+	if err != nil {
+		return err
+	}
+	temporaryPath := path + ".tmp"
+	if err := os.WriteFile(temporaryPath, data, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		_ = os.Remove(temporaryPath)
+		return err
+	}
+	return nil
+}
+
+func dockerRestartRequestPath() string {
+	if path := strings.TrimSpace(os.Getenv("ALLBOT_DOCKER_RESTART_REQUEST")); path != "" {
+		return path
+	}
+	return filepath.Join("runtime", "restart", "restart.json")
 }
 
 const restartCompletedMessageSequence = 2
