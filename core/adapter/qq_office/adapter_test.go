@@ -15,6 +15,7 @@ import (
 func TestQQOfficeBotIdentityReturnsOnlyAppID(t *testing.T) {
 	adapter := NewQQOfficeAdapter("app123", "secret456", "", "")
 	var _ contract.BotIdentityProvider = adapter
+	var _ contract.MessageSequenceSender = adapter
 	identity := adapter.GetBotIdentity(nil)
 	if identity.Label != "机器人 App ID" || identity.Value != "app123" {
 		t.Fatalf("identity = %#v", identity)
@@ -171,7 +172,70 @@ func TestQQOfficeSendTargetPrivateUserUsesC2CPath(t *testing.T) {
 	}
 }
 
+func TestQQOfficeSendMessageWithSequenceC2CAndGroup(t *testing.T) {
+	bodies := make(chan map[string]interface{}, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+			return
+		}
+		if r.URL.Path != "/v2/users/user-openid/messages" && r.URL.Path != "/v2/groups/group-openid/messages" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body failed: %v", err)
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	if err := adp.SendMessageWithSequence("user_user-openid|msg_msg-c2c", "私聊", 2); err != nil {
+		t.Fatalf("C2C SendMessageWithSequence returned error: %v", err)
+	}
+	if err := adp.SendMessageWithSequence("group_group-openid|msg_msg-group|at_member-openid", "群聊", 2); err != nil {
+		t.Fatalf("group SendMessageWithSequence returned error: %v", err)
+	}
+	for _, expectedID := range []string{"msg-c2c", "msg-group"} {
+		body := <-bodies
+		if body["msg_id"] != expectedID || body["msg_seq"] != float64(2) {
+			t.Fatalf("body = %#v, expected msg_id=%q msg_seq=2", body, expectedID)
+		}
+	}
+}
+
 func TestQQOfficeSendMessageIncrementsReplySeq(t *testing.T) {
+	bodies := make(chan map[string]interface{}, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+			return
+		}
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body failed: %v", err)
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	if err := adp.SendMessage("user_user-openid|msg_msg-c2c", "第一条"); err != nil {
+		t.Fatal(err)
+	}
+	if err := adp.SendMessage("user_user-openid|msg_msg-c2c", "第二条"); err != nil {
+		t.Fatal(err)
+	}
+	first, second := <-bodies, <-bodies
+	if first["msg_seq"] != float64(1) || second["msg_seq"] != float64(2) {
+		t.Fatalf("msg_seq = %v/%v, expected 1/2", first["msg_seq"], second["msg_seq"])
+	}
+}
+
+func TestQQOfficeSendMessageWithSequenceAdvancesReplySeq(t *testing.T) {
 	bodies := make(chan map[string]interface{}, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -192,15 +256,54 @@ func TestQQOfficeSendMessageIncrementsReplySeq(t *testing.T) {
 	defer server.Close()
 
 	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
-	for _, text := range []string{"第一条", "第二条"} {
-		if err := adp.SendMessage("user_user-openid|msg_msg-c2c", text); err != nil {
-			t.Fatalf("SendMessage returned error: %v", err)
-		}
+	if err := adp.SendMessageWithSequence("user_user-openid|msg_msg-c2c", "第二条", 2); err != nil {
+		t.Fatalf("SendMessageWithSequence returned error: %v", err)
 	}
-	first := <-bodies
+	if err := adp.SendMessage("user_user-openid|msg_msg-c2c", "第三条"); err != nil {
+		t.Fatalf("SendMessage returned error: %v", err)
+	}
 	second := <-bodies
-	if first["msg_seq"] != float64(1) || second["msg_seq"] != float64(2) {
-		t.Fatalf("msg_seq = %v/%v, expected 1/2", first["msg_seq"], second["msg_seq"])
+	third := <-bodies
+	if second["msg_seq"] != float64(2) || third["msg_seq"] != float64(3) {
+		t.Fatalf("msg_seq = %v/%v, expected 2/3", second["msg_seq"], third["msg_seq"])
+	}
+}
+
+func TestQQOfficeSendMessageWithSequenceDMSOmitsReplySeq(t *testing.T) {
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+			return
+		}
+		if r.URL.Path != "/dms/guild123/messages" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body failed: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	if err := adp.SendMessageWithSequence("dms_guild123|msg_msg456", "你好", 2); err != nil {
+		t.Fatalf("SendMessageWithSequence returned error: %v", err)
+	}
+	if body["msg_id"] != "msg456" {
+		t.Fatalf("body should retain msg_id: %#v", body)
+	}
+	if _, ok := body["msg_seq"]; ok {
+		t.Fatalf("DMS body should omit msg_seq: %#v", body)
+	}
+}
+
+func TestQQOfficeSendMessageWithSequenceRejectsNonPositiveSequence(t *testing.T) {
+	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
+	for _, sequence := range []int{0, -1} {
+		if err := adp.SendMessageWithSequence("user_user-openid|msg_msg-c2c", "你好", sequence); err == nil {
+			t.Fatalf("sequence %d expected error", sequence)
+		}
 	}
 }
 
@@ -232,13 +335,13 @@ func TestQQOfficeSendMessageRetriesAsActiveWhenPassiveReplyLimitExceeded(t *test
 	defer server.Close()
 
 	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
-	if err := adp.SendMessage("group_group-openid|msg_msg-group|at_member-openid", "你好"); err != nil {
-		t.Fatalf("SendMessage returned error: %v", err)
+	if err := adp.SendMessageWithSequence("group_group-openid|msg_msg-group|at_member-openid", "你好", 2); err != nil {
+		t.Fatalf("SendMessageWithSequence returned error: %v", err)
 	}
 	first := <-bodies
 	second := <-bodies
-	if first["msg_id"] != "msg-group" {
-		t.Fatalf("first body should use passive msg_id: %#v", first)
+	if first["msg_id"] != "msg-group" || first["msg_seq"] != float64(2) {
+		t.Fatalf("first body should use passive msg_id and msg_seq=2: %#v", first)
 	}
 	if _, ok := second["msg_id"]; ok {
 		t.Fatalf("second body should omit msg_id: %#v", second)

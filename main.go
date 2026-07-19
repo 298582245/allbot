@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/allbot/allbot/core/adapter"
 	_ "github.com/allbot/allbot/core/adapter/_loader"
 	"github.com/allbot/allbot/core/backup"
 	"github.com/allbot/allbot/core/config"
@@ -373,6 +374,8 @@ func saveRestartContext(request router.RestartRequest) error {
 	return nil
 }
 
+const restartCompletedMessageSequence = 2
+
 func notifyRestartCompleted(adapterManager *config.AdapterManager) {
 	if strings.TrimSpace(os.Getenv("ALLBOT_UPDATED")) == "1" {
 		fromVersion := strings.TrimSpace(os.Getenv("ALLBOT_UPDATED_FROM"))
@@ -403,28 +406,39 @@ func notifyRestartCompleted(adapterManager *config.AdapterManager) {
 		log.Printf("重启完成通知发送失败：适配器不存在 platform=%s adapter_id=%s", platform, adapterID)
 		return
 	}
-	text := "AllBot 重启完成"
-	if startedAt, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("ALLBOT_RESTART_STARTED_AT_NS")), 10, 64); err == nil && startedAt > 0 {
-		text = fmt.Sprintf("AllBot 重启完成，耗时：%s", formatRestartDuration(time.Since(time.Unix(0, startedAt))))
+	text, durationErr := buildRestartCompletedMessage(os.Getenv("ALLBOT_RESTART_STARTED_AT_NS"), time.Now())
+	if durationErr != nil {
+		log.Printf("重启耗时计算失败: %v", durationErr)
 	}
-	if err := adp.SendMessage(restartNotifyTarget(target), text); err != nil {
+	if err := sendRestartCompletedMessage(adp, target, text); err != nil {
 		log.Printf("重启完成通知发送失败: %v", err)
 	}
 }
 
-func restartNotifyTarget(target string) string {
-	parts := strings.Split(strings.TrimSpace(target), "|")
-	if len(parts) <= 1 {
-		return strings.TrimSpace(target)
+func sendRestartCompletedMessage(adp adapter.Adapter, target string, text string) error {
+	if sequenceSender, ok := adp.(adapter.MessageSequenceSender); ok {
+		return sequenceSender.SendMessageWithSequence(strings.TrimSpace(target), text, restartCompletedMessageSequence)
 	}
-	kept := []string{strings.TrimSpace(parts[0])}
-	for _, part := range parts[1:] {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "at_") {
-			kept = append(kept, part)
-		}
+	return adp.SendMessage(strings.TrimSpace(target), text)
+}
+
+func buildRestartCompletedMessage(startedAtValue string, now time.Time) (string, error) {
+	startedAtValue = strings.TrimSpace(startedAtValue)
+	if startedAtValue == "" {
+		return "AllBot 重启完成，耗时：未知", errors.New("重启开始时间为空")
 	}
-	return strings.Join(kept, "|")
+	startedAtNS, err := strconv.ParseInt(startedAtValue, 10, 64)
+	if err != nil {
+		return "AllBot 重启完成，耗时：未知", fmt.Errorf("重启开始时间无效: %w", err)
+	}
+	if startedAtNS <= 0 {
+		return "AllBot 重启完成，耗时：未知", errors.New("重启开始时间必须为正数")
+	}
+	startedAt := time.Unix(0, startedAtNS)
+	if startedAt.After(now) {
+		return "AllBot 重启完成，耗时：未知", errors.New("重启开始时间晚于当前时间")
+	}
+	return fmt.Sprintf("AllBot 重启完成，耗时：%s", formatRestartDuration(now.Sub(startedAt))), nil
 }
 
 func formatRestartDuration(duration time.Duration) string {

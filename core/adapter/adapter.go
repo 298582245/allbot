@@ -20,6 +20,9 @@ type RichMessageSender = contract.RichMessageSender
 // ButtonSender 由适配器按自身能力发送按钮消息。
 type ButtonSender = contract.ButtonSender
 
+// MessageSequenceSender 由适配器按协议指定回复消息序号。
+type MessageSequenceSender = contract.MessageSequenceSender
+
 // ReplyTargetResolver 由适配器按自身目标格式解析回复目标。
 type ReplyTargetResolver = contract.ReplyTargetResolver
 

@@ -207,6 +207,18 @@ func (a *QQOfficeAdapter) Stop() error {
 }
 
 func (a *QQOfficeAdapter) SendMessage(target string, text string) error {
+	return a.sendMessage(target, text, 0)
+}
+
+// SendMessageWithSequence 使用协议指定的回复序号发送文本消息。
+func (a *QQOfficeAdapter) SendMessageWithSequence(target string, text string, sequence int) error {
+	if sequence <= 0 {
+		return fmt.Errorf("QQ 官方回复序号必须大于 0")
+	}
+	return a.sendMessage(target, text, sequence)
+}
+
+func (a *QQOfficeAdapter) sendMessage(target string, text string, sequence int) error {
 	targetInfo, err := parseQQOfficeMessageTarget(target)
 	if err != nil {
 		return err
@@ -222,13 +234,13 @@ func (a *QQOfficeAdapter) SendMessage(target string, text string) error {
 	case "user":
 		body["msg_type"] = 0
 		if targetInfo.msgID != "" {
-			body["msg_seq"] = a.nextReplySeq(targetInfo)
+			body["msg_seq"] = a.reserveReplySeq(targetInfo, sequence)
 		}
 		path = "/v2/users/" + url.PathEscape(targetInfo.id) + "/messages"
 	case "group":
 		body["msg_type"] = 0
 		if targetInfo.msgID != "" {
-			body["msg_seq"] = a.nextReplySeq(targetInfo)
+			body["msg_seq"] = a.reserveReplySeq(targetInfo, sequence)
 		}
 		path = "/v2/groups/" + url.PathEscape(targetInfo.id) + "/messages"
 	default:
@@ -368,6 +380,10 @@ func (a *QQOfficeAdapter) SendMarkdown(target string, markdown string) error {
 }
 
 func (a *QQOfficeAdapter) nextReplySeq(target qqOfficeMessageTarget) int {
+	return a.reserveReplySeq(target, 0)
+}
+
+func (a *QQOfficeAdapter) reserveReplySeq(target qqOfficeMessageTarget, sequence int) int {
 	key := strings.Join([]string{target.kind, target.id, target.msgID}, "\x1f")
 	now := time.Now()
 	a.replySeqMu.Lock()
@@ -381,9 +397,15 @@ func (a *QQOfficeAdapter) nextReplySeq(target qqOfficeMessageTarget) int {
 		}
 	}
 	item := a.replySeqs[key]
-	seq := item.seq + 1
-	a.replySeqs[key] = qqOfficeReplySeq{seq: seq, updatedAt: now}
-	return seq
+	if sequence <= 0 {
+		sequence = item.seq + 1
+	}
+	if item.seq < sequence {
+		item.seq = sequence
+	}
+	item.updatedAt = now
+	a.replySeqs[key] = item
+	return sequence
 }
 
 func (a *QQOfficeAdapter) SendImage(target string, imageURL string) error {

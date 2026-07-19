@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/allbot/allbot/core/adapter"
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/router"
+	"github.com/allbot/allbot/core/types"
 	"github.com/allbot/allbot/core/web"
 )
 
@@ -346,21 +348,56 @@ func TestSaveRestartContext(t *testing.T) {
 	}
 }
 
-func TestRestartNotifyTargetDropsReplyMessageID(t *testing.T) {
+func TestSendRestartCompletedMessageUsesSequenceCapability(t *testing.T) {
+	base := &restartRecordingAdapter{}
+	adp := &restartSequenceRecordingAdapter{restartRecordingAdapter: base}
+	target := " group_group-openid|msg_msg-group|at_member-openid "
+	if err := sendRestartCompletedMessage(adp, target, "完成"); err != nil {
+		t.Fatalf("sendRestartCompletedMessage returned error: %v", err)
+	}
+	if base.sendCalls != 0 || adp.sequenceCalls != 1 {
+		t.Fatalf("sendCalls=%d sequenceCalls=%d", base.sendCalls, adp.sequenceCalls)
+	}
+	if adp.target != strings.TrimSpace(target) || adp.text != "完成" || adp.sequence != 2 {
+		t.Fatalf("target=%q text=%q sequence=%d", adp.target, adp.text, adp.sequence)
+	}
+}
+
+func TestSendRestartCompletedMessageFallsBackToSendMessage(t *testing.T) {
+	adp := &restartRecordingAdapter{}
+	target := " group_group-openid|msg_msg-group|at_member-openid "
+	if err := sendRestartCompletedMessage(adp, target, "完成"); err != nil {
+		t.Fatalf("sendRestartCompletedMessage returned error: %v", err)
+	}
+	if adp.sendCalls != 1 || adp.target != strings.TrimSpace(target) || adp.text != "完成" {
+		t.Fatalf("sendCalls=%d target=%q text=%q", adp.sendCalls, adp.target, adp.text)
+	}
+}
+
+func TestBuildRestartCompletedMessage(t *testing.T) {
+	now := time.Unix(20, 0)
 	cases := []struct {
-		name     string
-		target   string
-		expected string
+		name      string
+		value     string
+		expected  string
+		wantError bool
 	}{
-		{name: "plain", target: "group_group-openid", expected: "group_group-openid"},
-		{name: "drop msg", target: "group_group-openid|msg_msg-group", expected: "group_group-openid"},
-		{name: "keep at", target: "group_group-openid|msg_msg-group|at_member-openid", expected: "group_group-openid|at_member-openid"},
-		{name: "trim", target: " group_group-openid | msg_msg-group | at_member-openid ", expected: "group_group-openid|at_member-openid"},
+		{name: "seconds", value: strconv.FormatInt(now.Add(-5800*time.Millisecond).UnixNano(), 10), expected: "AllBot 重启完成，耗时：5.8s"},
+		{name: "milliseconds", value: strconv.FormatInt(now.Add(-250*time.Millisecond).UnixNano(), 10), expected: "AllBot 重启完成，耗时：250ms"},
+		{name: "missing", value: "", expected: "AllBot 重启完成，耗时：未知", wantError: true},
+		{name: "invalid", value: "invalid", expected: "AllBot 重启完成，耗时：未知", wantError: true},
+		{name: "zero", value: "0", expected: "AllBot 重启完成，耗时：未知", wantError: true},
+		{name: "negative", value: "-1", expected: "AllBot 重启完成，耗时：未知", wantError: true},
+		{name: "future", value: strconv.FormatInt(now.Add(time.Second).UnixNano(), 10), expected: "AllBot 重启完成，耗时：未知", wantError: true},
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
-			if got := restartNotifyTarget(item.target); got != item.expected {
-				t.Fatalf("restartNotifyTarget() = %q, expected %q", got, item.expected)
+			message, err := buildRestartCompletedMessage(item.value, now)
+			if message != item.expected {
+				t.Fatalf("message = %q, expected %q", message, item.expected)
+			}
+			if (err != nil) != item.wantError {
+				t.Fatalf("error = %v, wantError=%v", err, item.wantError)
 			}
 		})
 	}
@@ -373,6 +410,47 @@ func TestFormatRestartDuration(t *testing.T) {
 	if got := formatRestartDuration(1500 * time.Millisecond); got != "1.5s" {
 		t.Fatalf("formatRestartDuration returned %q", got)
 	}
+}
+
+type restartRecordingAdapter struct {
+	sendCalls int
+	target    string
+	text      string
+}
+
+func (a *restartRecordingAdapter) GetPlatform() string { return "test" }
+func (a *restartRecordingAdapter) SendMessage(target string, text string) error {
+	a.sendCalls++
+	a.target = target
+	a.text = text
+	return nil
+}
+func (a *restartRecordingAdapter) SendImage(string, string) error { return nil }
+func (a *restartRecordingAdapter) SendFile(string, string) error  { return nil }
+func (a *restartRecordingAdapter) GetUserInfo(string) (*adapter.UserInfo, error) {
+	return nil, nil
+}
+func (a *restartRecordingAdapter) GetGroupInfo(string) (*adapter.GroupInfo, error) {
+	return nil, nil
+}
+func (a *restartRecordingAdapter) AtUser(string, string) error { return nil }
+func (a *restartRecordingAdapter) Start() error                { return nil }
+func (a *restartRecordingAdapter) Stop() error                 { return nil }
+func (a *restartRecordingAdapter) SetMessageHandler(func(*types.Message)) {
+}
+
+type restartSequenceRecordingAdapter struct {
+	*restartRecordingAdapter
+	sequenceCalls int
+	sequence      int
+}
+
+func (a *restartSequenceRecordingAdapter) SendMessageWithSequence(target string, text string, sequence int) error {
+	a.sequenceCalls++
+	a.target = target
+	a.text = text
+	a.sequence = sequence
+	return nil
 }
 
 func passwordFromResetOutput(output string) string {

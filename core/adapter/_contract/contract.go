@@ -67,6 +67,11 @@ type ButtonSender interface {
 	SendButtons(target string, text string, buttons [][]types.ButtonOption) error
 }
 
+// MessageSequenceSender 由适配器按协议指定回复消息序号。
+type MessageSequenceSender interface {
+	SendMessageWithSequence(target string, text string, sequence int) error
+}
+
 // ReplyTargetResolver 由适配器按自身目标格式解析回复目标。
 type ReplyTargetResolver interface {
 	ReplyTarget(msg *types.Message) string
