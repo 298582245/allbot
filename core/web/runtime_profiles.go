@@ -39,13 +39,13 @@ func (s *Server) handleRuntimeProfiles(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jsonResponse(w, profiles)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
 func (s *Server) handleRuntimeProfileDownloadCandidates(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	manager := s.runtimeDepsManager()
@@ -112,13 +112,13 @@ func (s *Server) handleRuntimeProfileDownloadSettings(w http.ResponseWriter, r *
 		}
 		s.jsonResponse(w, map[string]interface{}{"message": "保存成功", "settings": saved})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
 func (s *Server) handleRuntimeProfileTest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	manager := s.runtimeDepsManager()
@@ -141,7 +141,7 @@ func (s *Server) handleRuntimeProfileTest(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleRuntimeProfileInit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	manager := s.runtimeDepsManager()
@@ -199,7 +199,7 @@ func (s *Server) handleRuntimeProfileInit(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleRuntimeProfileInitJob(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	jobID := strings.TrimPrefix(r.URL.Path, "/api/runtime-profiles/init/")
@@ -231,7 +231,7 @@ func (s *Server) handleRuntimeProfileInitJob(w http.ResponseWriter, r *http.Requ
 
 func (s *Server) handleRuntimeProfileStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	manager := s.runtimeDepsManager()

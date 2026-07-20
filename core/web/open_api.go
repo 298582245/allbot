@@ -70,16 +70,16 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	startedAt := time.Now()
 	openPath := strings.Trim(strings.TrimPrefix(r.URL.Path, openAPIPrefix), "/")
 	if openPath == "" {
-		s.jsonError(w, "Open API 路径不能为空", http.StatusNotFound)
+		s.rawJSONError(w, "Open API 路径不能为空", http.StatusNotFound)
 		return
 	}
 	endpoint, err := s.matchOpenAPIEndpoint(openPath, r.Method)
 	if err != nil {
-		s.jsonError(w, "读取 Open API 配置失败: "+err.Error(), http.StatusInternalServerError)
+		s.rawJSONError(w, "读取 Open API 配置失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if endpoint == nil {
-		s.jsonError(w, "Open API 不存在或未启用", http.StatusNotFound)
+		s.rawJSONError(w, "Open API 不存在或未启用", http.StatusNotFound)
 		return
 	}
 
@@ -111,12 +111,12 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	if !s.openAPIIPAllowed(endpoint, clientAddr) {
 		outcome = config.OpenAPICallOutcomeIPDenied
 		logOpenAPICall("WARN", endpoint.ID, r.Method, r.URL.Path, clientIP, http.StatusForbidden, startedAt, "IP 不在白名单")
-		s.jsonError(statusWriter, "客户端 IP 不在 Open API 白名单", http.StatusForbidden)
+		s.rawJSONError(statusWriter, "客户端 IP 不在 Open API 白名单", http.StatusForbidden)
 		return
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		s.jsonError(statusWriter, "读取请求体失败", http.StatusBadRequest)
+		s.rawJSONError(statusWriter, "读取请求体失败", http.StatusBadRequest)
 		return
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
@@ -124,7 +124,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	if !openAPITokenMatched(endpoint.Token, tokenSources) {
 		outcome = config.OpenAPICallOutcomeTokenDenied
 		logOpenAPICall("WARN", endpoint.ID, r.Method, requestData.RawPath, clientIP, http.StatusUnauthorized, startedAt, "token 无效")
-		s.jsonError(statusWriter, "Open API token 无效", http.StatusUnauthorized)
+		s.rawJSONError(statusWriter, "Open API token 无效", http.StatusUnauthorized)
 		return
 	}
 	requestData = sanitizeOpenAPIRequest(requestData, tokenSources)
@@ -133,7 +133,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.pluginManager == nil {
-		s.jsonError(statusWriter, "Open API 执行器不可用", http.StatusInternalServerError)
+		s.rawJSONError(statusWriter, "Open API 执行器不可用", http.StatusInternalServerError)
 		return
 	}
 	log.Printf("[INFO] OpenAPI 调用开始 endpoint=%s method=%s path=%s client=%s body=%dB", endpoint.ID, requestData.Method, requestData.RawPath, requestData.ClientIP, len(body))
@@ -150,7 +150,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		logOpenAPICall("ERROR", endpoint.ID, requestData.Method, requestData.RawPath, requestData.ClientIP, http.StatusInternalServerError, startedAt, "执行失败: "+err.Error())
-		s.jsonError(statusWriter, "Open API 执行失败: "+err.Error(), http.StatusInternalServerError)
+		s.rawJSONError(statusWriter, "Open API 执行失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeOpenAPIResponse(statusWriter, response)
@@ -194,7 +194,7 @@ func (s *Server) handleOpenAPIConfigs(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		s.saveOpenAPIFromRequest(w, r, "")
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -281,7 +281,7 @@ func (s *Server) handleOpenAPIConfigDetail(w http.ResponseWriter, r *http.Reques
 		}
 		s.jsonResponse(w, map[string]interface{}{"message": "Open API 已删除"})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -373,7 +373,7 @@ func (s *Server) handleOpenAPISettings(w http.ResponseWriter, r *http.Request) {
 		s.openAPIAccess.Store(compiled)
 		s.jsonResponse(w, openAPISettingsResponse(settings))
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -386,7 +386,7 @@ func openAPISettingsResponse(settings config.OpenAPISettings) map[string]interfa
 
 func (s *Server) handleOpenAPICalls(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if _, err := loadOpenAPIEndpoint(id); err != nil {
@@ -567,7 +567,7 @@ func (s *Server) handleOpenAPICode(w http.ResponseWriter, r *http.Request, id st
 		}
 		s.jsonResponse(w, map[string]interface{}{"id": saved.ID, "runtime": saved.Runtime, "runtime_profile": saved.RuntimeProfile, "entry": saved.Entry, "file": saved.Entry, "code": code, "content": code})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -740,7 +740,7 @@ func (s *Server) handleBuiltinOpenAPI(w http.ResponseWriter, r *http.Request, en
 		s.handleOpenAPIQRCode(w, r)
 	default:
 		logOpenAPICall("ERROR", endpoint.ID, requestData.Method, requestData.RawPath, requestData.ClientIP, http.StatusInternalServerError, startedAt, "内置接口不存在")
-		s.jsonError(w, "内置 Open API 不存在", http.StatusInternalServerError)
+		s.rawJSONError(w, "内置 Open API 不存在", http.StatusInternalServerError)
 	}
 }
 

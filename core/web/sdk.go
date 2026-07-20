@@ -58,13 +58,13 @@ func (s *Server) handleSDKFiles(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jsonResponse(w, map[string]interface{}{"message": "SDK 文件已保存"})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
 func (s *Server) handleSDKReference(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	s.jsonResponse(w, map[string]interface{}{"content": sdkReferenceText()})

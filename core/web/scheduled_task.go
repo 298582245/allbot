@@ -39,7 +39,7 @@ func (s *Server) handleScheduledTasks(w http.ResponseWriter, r *http.Request) {
 		s.jsonResponse(w, map[string]interface{}{"message": "定时任务已保存"})
 		return
 	}
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
 func (s *Server) handleScheduledTaskDetail(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +79,7 @@ func (s *Server) handleScheduledTaskDetail(w http.ResponseWriter, r *http.Reques
 		s.jsonResponse(w, map[string]interface{}{"message": "定时任务已删除"})
 		return
 	}
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
 func (s *Server) runScheduledTaskNow(w http.ResponseWriter, id int64) {

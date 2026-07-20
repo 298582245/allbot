@@ -297,7 +297,7 @@ const loadUpdateInfo = async () => {
   } catch (error) {
     Object.assign(updateInfo, createEmptyUpdateInfo(), {
       loaded: true,
-      error: error?.response?.data?.error || error?.message || '检查更新失败'
+      error: error?.response?.data?.msg || error?.response?.data?.error || error?.response?.data?.message || error?.message || '检查更新失败'
     })
   } finally {
     checkingUpdate.value = false
@@ -323,7 +323,7 @@ const startUpgradePolling = () => {
       Object.assign(upgradeState, createEmptyUpgradeState(), {
         status: 'failed',
         message: '获取升级状态失败',
-        error: error?.response?.data?.error || error?.message || '获取升级状态失败'
+        error: error?.response?.data?.msg || error?.response?.data?.error || error?.response?.data?.message || error?.message || '获取升级状态失败'
       })
       upgrading.value = false
       stopUpgradePolling()
@@ -354,7 +354,7 @@ const handleUpgrade = async () => {
     Object.assign(upgradeState, createEmptyUpgradeState(), {
       status: 'failed',
       message: '启动升级失败',
-      error: error?.response?.data?.error || error?.message || '启动升级失败'
+      error: error?.response?.data?.msg || error?.response?.data?.error || error?.response?.data?.message || error?.message || '启动升级失败'
     })
     upgrading.value = false
   }

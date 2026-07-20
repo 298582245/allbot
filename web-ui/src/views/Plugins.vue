@@ -1121,7 +1121,7 @@ const handleDeleteBackup = async (backup) => {
     await loadRecycleBin()
   } catch (error) {
     console.error('删除备份压缩包失败:', error)
-    ElMessage.error(error?.response?.data?.error || '删除备份压缩包失败')
+    ElMessage.error(error?.response?.data?.msg || error?.response?.data?.error || error?.response?.data?.message || '删除备份压缩包失败')
   }
 }
 
@@ -1217,7 +1217,7 @@ const saveCreatedPlugin = async () => {
     await loadPlugins()
   } catch (error) {
     console.error('创建插件失败:', error)
-    ElMessage.error(error?.response?.data?.error || '创建插件失败')
+    ElMessage.error(error?.response?.data?.msg || error?.response?.data?.error || error?.response?.data?.message || '创建插件失败')
   } finally {
     createSaving.value = false
   }

@@ -90,6 +90,40 @@ func TestBuildWebChatCodeEmailUsesDefaultSubjectWhenBlank(t *testing.T) {
 	}
 }
 
+func TestWebChatJSONResponsesUseUnifiedEnvelope(t *testing.T) {
+	server, _ := newWebChatTestServer(t, true)
+
+	recorder := httptest.NewRecorder()
+	server.handleWebChatAPI(recorder, httptest.NewRequest(http.MethodGet, "/api/open/web-chat/platforms", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("platforms status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	assertJSONContentType(t, recorder)
+	var platforms struct {
+		Code int               `json:"code"`
+		Msg  string            `json:"msg"`
+		Data []json.RawMessage `json:"data"`
+	}
+	decodeResponseJSON(t, recorder, &platforms)
+	if platforms.Code != http.StatusOK || platforms.Msg != "成功" || platforms.Data == nil {
+		t.Fatalf("unexpected platforms response: %#v", platforms)
+	}
+
+	recorder = httptest.NewRecorder()
+	server.handleWebChatAPI(recorder, httptest.NewRequest(http.MethodGet, "/api/open/web-chat/me", nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("me status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	assertUnifiedErrorBody(t, recorder, http.StatusUnauthorized)
+
+	recorder = httptest.NewRecorder()
+	server.handleWebChatAPI(recorder, httptest.NewRequest(http.MethodGet, "/api/open/web-chat/missing", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("missing status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	assertUnifiedErrorBody(t, recorder, http.StatusNotFound)
+}
+
 func TestWebChatRegisterLoginAndMessages(t *testing.T) {
 	server, mailer := newWebChatTestServer(t, true)
 	rr := httptest.NewRecorder()
@@ -107,9 +141,7 @@ func TestWebChatRegisterLoginAndMessages(t *testing.T) {
 	}
 	cookie := rr.Result().Cookies()[0]
 	var sessionResp config.WebChatSession
-	if err := json.Unmarshal(rr.Body.Bytes(), &sessionResp); err != nil {
-		t.Fatalf("decode session: %v", err)
-	}
+	decodeUnifiedResponseData(t, rr, &sessionResp)
 	if sessionResp.CSRFToken == "" || sessionResp.User == nil {
 		t.Fatalf("unexpected session: %#v", sessionResp)
 	}
@@ -129,9 +161,7 @@ func TestWebChatRegisterLoginAndMessages(t *testing.T) {
 		t.Fatalf("messages status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	var messages []config.WebChatMessage
-	if err := json.Unmarshal(rr.Body.Bytes(), &messages); err != nil {
-		t.Fatalf("decode messages: %v", err)
-	}
+	decodeUnifiedResponseData(t, rr, &messages)
 	if len(messages) != 1 || messages[0].Content != "hello" {
 		t.Fatalf("unexpected messages: %#v", messages)
 	}
@@ -546,9 +576,7 @@ func TestWebChatPrivateMessagesUseNormalRouter(t *testing.T) {
 		t.Fatalf("get private status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	var response []config.WebChatMessage
-	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode private messages: %v", err)
-	}
+	decodeUnifiedResponseData(t, rr, &response)
 	if len(response) != 1 || response[0].PluginID != "" || response[0].Content != "myid" {
 		t.Fatalf("unexpected private response: %#v", response)
 	}
@@ -581,9 +609,7 @@ func TestWebChatMessageCounts(t *testing.T) {
 		t.Fatalf("message-counts status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	var counts []config.WebChatMessageCount
-	if err := json.Unmarshal(rr.Body.Bytes(), &counts); err != nil {
-		t.Fatalf("decode counts: %v", err)
-	}
+	decodeUnifiedResponseData(t, rr, &counts)
 	countByPlugin := map[string]int64{}
 	for _, item := range counts {
 		countByPlugin[item.PluginID] = item.Count
@@ -605,9 +631,7 @@ func TestWebChatMessageCounts(t *testing.T) {
 		t.Fatalf("read-state status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	var readState config.WebChatMessageCount
-	if err := json.Unmarshal(rr.Body.Bytes(), &readState); err != nil {
-		t.Fatalf("decode read state: %v", err)
-	}
+	decodeUnifiedResponseData(t, rr, &readState)
 	if readState.PluginID != "p1" || readState.Count != 1 || readState.UnreadCount != 0 || readState.LastReadMessageID == 0 {
 		t.Fatalf("unexpected read state: %#v", readState)
 	}
@@ -622,9 +646,7 @@ func TestWebChatMessageCounts(t *testing.T) {
 		t.Fatalf("message-counts after read status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	counts = nil
-	if err := json.Unmarshal(rr.Body.Bytes(), &counts); err != nil {
-		t.Fatalf("decode counts after read: %v", err)
-	}
+	decodeUnifiedResponseData(t, rr, &counts)
 	unreadByPlugin := map[string]int64{}
 	for _, item := range counts {
 		unreadByPlugin[item.PluginID] = item.UnreadCount
@@ -656,9 +678,7 @@ func TestWebChatMessagesAreIsolatedByPlugin(t *testing.T) {
 		t.Fatalf("messages status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	var messages []config.WebChatMessage
-	if err := json.Unmarshal(rr.Body.Bytes(), &messages); err != nil {
-		t.Fatalf("decode messages: %v", err)
-	}
+	decodeUnifiedResponseData(t, rr, &messages)
 	if len(messages) != 1 || messages[0].PluginID != "p1" || messages[0].Content != "hello p1" {
 		t.Fatalf("unexpected isolated messages: %#v", messages)
 	}
@@ -962,7 +982,7 @@ func registerWebChatTestUser(t *testing.T, server *Server, mailer *fakeWebChatMa
 		t.Fatalf("register failed: %s", rr.Body.String())
 	}
 	var sessionResp config.WebChatSession
-	_ = json.Unmarshal(rr.Body.Bytes(), &sessionResp)
+	decodeUnifiedResponseData(t, rr, &sessionResp)
 	return rr.Result().Cookies()[0], sessionResp.CSRFToken
 }
 

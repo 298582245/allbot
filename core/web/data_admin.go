@@ -14,7 +14,7 @@ import (
 
 func (s *Server) handleDataTables(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	tables, err := s.adapterManager.GetDatabase().ListTables()
@@ -27,7 +27,7 @@ func (s *Server) handleDataTables(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDataViews(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var view config.DataViewConfig
@@ -94,7 +94,7 @@ func (s *Server) handleDataTableAction(w http.ResponseWriter, r *http.Request, t
 
 func (s *Server) handleDataTableRename(w http.ResponseWriter, r *http.Request, table string) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var req struct {
@@ -113,7 +113,7 @@ func (s *Server) handleDataTableRename(w http.ResponseWriter, r *http.Request, t
 
 func (s *Server) handleDataTableClear(w http.ResponseWriter, r *http.Request, table string) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if err := s.adapterManager.GetDatabase().ClearTable(table); err != nil {
@@ -149,7 +149,7 @@ func (s *Server) handleDataRows(w http.ResponseWriter, r *http.Request, table st
 		}
 		s.jsonResponse(w, map[string]interface{}{"message": "新增成功"})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -175,7 +175,7 @@ func (s *Server) handleDataRow(w http.ResponseWriter, r *http.Request, table str
 		}
 		s.jsonResponse(w, map[string]interface{}{"message": "删除成功"})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -197,7 +197,7 @@ func (s *Server) handleDataExport(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDataImport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	replace := r.URL.Query().Get("replace") == "true"

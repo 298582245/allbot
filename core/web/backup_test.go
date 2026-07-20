@@ -3,7 +3,6 @@ package web
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -30,9 +29,7 @@ func TestHandleBackupImportAndRestore(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", importRecorder.Code, importRecorder.Body.String())
 	}
 	var importResult backup.ImportResult
-	if err := json.Unmarshal(importRecorder.Body.Bytes(), &importResult); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, importRecorder, &importResult)
 	if importResult.File.Name == "" || !importResult.Summary.HasPlugins || !importResult.Summary.HasImages || !importResult.Summary.HasLogs {
 		t.Fatalf("导入响应不正确: %+v", importResult)
 	}
@@ -44,9 +41,7 @@ func TestHandleBackupImportAndRestore(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", restoreRecorder.Code, restoreRecorder.Body.String())
 	}
 	var restoreResult backup.RestoreResult
-	if err := json.Unmarshal(restoreRecorder.Body.Bytes(), &restoreResult); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, restoreRecorder, &restoreResult)
 	if !restoreResult.RestartRequired || restoreResult.Snapshot.Name == "" {
 		t.Fatalf("恢复响应不正确: %+v", restoreResult)
 	}

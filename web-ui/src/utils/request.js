@@ -39,20 +39,27 @@ request.interceptors.request.use(
 request.interceptors.response.use(
   response => {
     const data = response.data
-    if (data?.error === 'Unauthorized') {
+    const isEnvelope = data !== null && typeof data === 'object' && !Array.isArray(data) &&
+      Object.prototype.hasOwnProperty.call(data, 'code') &&
+      Object.prototype.hasOwnProperty.call(data, 'msg') &&
+      Object.prototype.hasOwnProperty.call(data, 'data')
+    if (data?.error === 'Unauthorized' || (isEnvelope && (Number(data.code) === 401 || data.msg === 'Unauthorized'))) {
       handleUnauthorized()
-      return Promise.reject(new Error('Unauthorized'))
+      return Promise.reject(new Error(data?.msg || data?.error || 'Unauthorized'))
     }
-    return data
+    const responseType = response.config?.responseType
+    const disposition = response.headers?.get?.('content-disposition') || response.headers?.['content-disposition'] || ''
+    if (responseType === 'blob' || responseType === 'arraybuffer' || data instanceof Blob || data instanceof ArrayBuffer || disposition.toLowerCase().includes('attachment')) return data
+    return isEnvelope ? data.data : data
   },
   error => {
     if (error.response) {
       const { status, data } = error.response
 
-      if (status === 401 || data?.error === 'Unauthorized') {
+      if (status === 401 || data?.error === 'Unauthorized' || Number(data?.code) === 401) {
         handleUnauthorized()
       } else if (!error.config?.silent) {
-        ElMessage.error(data.error || '请求失败')
+        ElMessage.error(data?.msg || data?.error || data?.message || '请求失败')
       }
     } else {
       ElMessage.error('网络错误，请检查连接')

@@ -2,7 +2,6 @@ package web
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -32,9 +31,7 @@ func TestHandleScriptTasksFiltersRuntimeProfile(t *testing.T) {
 		Items []config.ScriptRunLog `json:"items"`
 		Total int                   `json:"total"`
 	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response.Total != 1 || len(response.Items) != 1 || response.Items[0].RuntimeProfile != "node18" {
 		t.Fatalf("unexpected response: %#v", response)
 	}
@@ -60,9 +57,7 @@ func TestHandleScriptTasksFiltersQueuedStatus(t *testing.T) {
 		Items []config.ScriptRunLog `json:"items"`
 		Total int                   `json:"total"`
 	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response.Total != 1 || len(response.Items) != 1 || response.Items[0].Status != config.ScriptRunStatusQueued {
 		t.Fatalf("unexpected response: %#v", response)
 	}
@@ -85,9 +80,7 @@ func TestHandleScriptTasksReturnsSettings(t *testing.T) {
 		RetentionDays int                       `json:"retention_days"`
 		Settings      config.ScriptTaskSettings `json:"settings"`
 	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response.RetentionDays != settings.RetentionDays || response.Settings != settings {
 		t.Fatalf("unexpected settings response: %#v", response)
 	}
@@ -156,9 +149,7 @@ func TestHandleScriptTaskDetailIncludesRuntimeProfile(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var response config.ScriptRunLog
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response.RuntimeProfile != "node18" {
 		t.Fatalf("runtime_profile missing: %#v", response)
 	}
@@ -178,9 +169,7 @@ func TestHandleScriptTaskDetailIncludesQueuedStatus(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var response config.ScriptRunLog
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response.Status != config.ScriptRunStatusQueued {
 		t.Fatalf("queued status missing: %#v", response)
 	}
@@ -201,9 +190,7 @@ func TestPauseQueuedScriptTaskReturnsNotRunningInTestServer(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var response map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response["message"] != "脚本任务已不在运行中" || response["status"] != config.ScriptRunStatusQueued {
 		t.Fatalf("unexpected response: %#v", response)
 	}
@@ -231,9 +218,7 @@ func TestPauseOrphanRunningScriptTaskMarksPaused(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var response map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response["status"] != "paused" {
 		t.Fatalf("unexpected response: %#v", response)
 	}
@@ -261,9 +246,7 @@ func TestPausePausingScriptTaskIsIdempotent(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var response map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response["message"] != "脚本任务暂停请求已发送" || response["status"] != "pausing" {
 		t.Fatalf("unexpected response: %#v", response)
 	}
@@ -284,9 +267,7 @@ func TestDeleteQueuedScriptTaskRemovesLog(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var response map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response["message"] != "脚本任务已删除" {
 		t.Fatalf("unexpected response: %#v", response)
 	}

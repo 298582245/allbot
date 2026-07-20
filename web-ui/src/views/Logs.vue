@@ -255,7 +255,7 @@ const parseDownloadError = async (blob, fallback = '') => {
   if (!(blob instanceof Blob)) return fallback
   try {
     const data = JSON.parse(await blob.text())
-    return String(data?.error || fallback)
+    return String(data?.msg || data?.error || data?.message || fallback)
   } catch {
     return fallback
   }

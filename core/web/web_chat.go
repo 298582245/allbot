@@ -88,7 +88,7 @@ func (s *Server) handleWebChatAPI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWebChatEmailCode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !s.validWebChatOrigin(r) {
@@ -162,7 +162,7 @@ func (s *Server) handleWebChatEmailCode(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleWebChatRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !s.validWebChatOrigin(r) {
@@ -208,7 +208,7 @@ func (s *Server) handleWebChatRegister(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWebChatResetPassword(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !s.validWebChatOrigin(r) {
@@ -245,7 +245,7 @@ func (s *Server) handleWebChatResetPassword(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleWebChatLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !s.validWebChatOrigin(r) {
@@ -285,7 +285,7 @@ func (s *Server) handleWebChatLogin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWebChatEmailLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !s.validWebChatOrigin(r) {
@@ -328,7 +328,7 @@ func (s *Server) handleWebChatEmailLogin(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleWebChatPlatforms(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if _, ok := s.requireRunningWebChatAdapter(w); !ok {
@@ -370,7 +370,7 @@ func (s *Server) handleWebChatPlatforms(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleWebChatPlatformCode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !s.validWebChatOrigin(r) {
@@ -426,7 +426,7 @@ func (s *Server) handleWebChatPlatformCode(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleWebChatPlatformLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !s.validWebChatOrigin(r) {
@@ -476,7 +476,7 @@ func (s *Server) handleWebChatPlatformLogin(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleWebChatLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if database := s.runtimeDatabase(); database != nil {
@@ -488,7 +488,7 @@ func (s *Server) handleWebChatLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWebChatMe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if _, ok := s.requireRunningWebChatAdapter(w); !ok {
@@ -503,7 +503,7 @@ func (s *Server) handleWebChatMe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWebChatBindCode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if _, ok := s.requireRunningWebChatAdapter(w); !ok {
@@ -532,7 +532,7 @@ func (s *Server) handleWebChatBindCode(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWebChatPlugins(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	adapterID, ok := s.requireRunningWebChatAdapterID(w)
@@ -589,7 +589,7 @@ func (s *Server) handleWebChatMessages(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWebChatSendMessage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	adp, ok := s.requireRunningWebChatAdapter(w)
@@ -668,7 +668,7 @@ func (s *Server) handleWebChatSendMessage(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleWebChatMessageCounts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if _, ok := s.requireRunningWebChatAdapterID(w); !ok {
@@ -688,7 +688,7 @@ func (s *Server) handleWebChatMessageCounts(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleWebChatReadState(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	adapterID, ok := s.requireRunningWebChatAdapterID(w)
@@ -721,7 +721,7 @@ func (s *Server) handleWebChatReadState(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleWebChatEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	adp, ok := s.requireRunningWebChatAdapter(w)
@@ -762,7 +762,7 @@ func (s *Server) handleWebChatEvents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWebChatImages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if _, ok := s.requireRunningWebChatAdapter(w); !ok {
@@ -771,8 +771,9 @@ func (s *Server) handleWebChatImages(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireWebChatSession(w, r, true); !ok {
 		return
 	}
-	service, ok := s.requireImageHostService(w)
-	if !ok {
+	service := s.imageHostService
+	if service == nil {
+		s.jsonError(w, "图床服务未初始化", http.StatusInternalServerError)
 		return
 	}
 	settings, err := service.Settings()

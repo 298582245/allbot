@@ -350,7 +350,7 @@ const loadFiles = async (preferredPath = '') => {
     if (firstPath) await openFile(firstPath)
   } catch (error) {
     console.error('加载插件目录失败:', error)
-    ElMessage.error('加载插件目录失败: ' + (error.response?.data?.error || error.message))
+    ElMessage.error('加载插件目录失败: ' + errorMessage(error))
   } finally {
     loading.value = false
   }
@@ -502,7 +502,7 @@ const createEntry = async () => {
     await loadFiles(createForm.value.type === 'file' ? path : '')
   } catch (error) {
     console.error('创建失败:', error)
-    ElMessage.error('创建失败: ' + (error.response?.data?.error || error.message))
+    ElMessage.error('创建失败: ' + errorMessage(error))
   } finally {
     creating.value = false
   }
@@ -525,7 +525,7 @@ const openFile = async (path) => {
     }
   } catch (error) {
     console.error('加载文件失败:', error)
-    ElMessage.error('加载文件失败: ' + (error.response?.data?.error || error.message))
+    ElMessage.error('加载文件失败: ' + errorMessage(error))
   } finally {
     loading.value = false
   }
@@ -696,7 +696,7 @@ const saveCode = async () => {
     ElMessage.success('文件已保存并生效')
   } catch (error) {
     console.error('保存文件失败:', error)
-    ElMessage.error('保存文件失败: ' + (error.response?.data?.error || error.message))
+    ElMessage.error('保存文件失败: ' + errorMessage(error))
   } finally {
     saving.value = false
   }
@@ -752,8 +752,8 @@ async function saveTemplate() {
     const issueMessage = issueText(issue?.message || issue)
     const issueTab = issue?.tab
       ? normalizeIssueTab(issue.tab)
-      : inferIssueTab(issueMessage || response.error, issue?.field || response.field)
-    if (issue || response.error || response.field) {
+      : inferIssueTab(issueMessage || response.msg || response.error || response.message, issue?.field || response.field)
+    if (issue || response.msg || response.error || response.message || response.field) {
       activeTab.value = issueTab
       if (issueTab === 'code') await ensureTemplateEditors()
     }
@@ -842,7 +842,7 @@ async function saveHybridTemplate() {
       ElMessage.error('文件内容已被外部修改，请重新加载后再保存；分类编辑不会覆盖外部变化。')
       return
     }
-    ElMessage.error('保存分类编辑内容失败：' + (response.error || errorMessage(error)))
+    ElMessage.error('保存分类编辑内容失败：' + (response.msg || response.error || response.message || errorMessage(error)))
   } finally {
     saving.value = false
   }
@@ -988,7 +988,7 @@ function formatHybridDiffValue(value) {
 }
 
 function errorMessage(error) {
-  return issueText(error?.response?.data?.error) || error?.message || '未知错误'
+  return issueText(error?.response?.data?.msg) || issueText(error?.response?.data?.error) || issueText(error?.response?.data?.message) || error?.message || '未知错误'
 }
 
 const exportPluginDirectory = async () => {
@@ -1037,7 +1037,7 @@ const deleteSelected = async () => {
     await loadFiles()
   } catch (error) {
     console.error('删除失败:', error)
-    ElMessage.error('删除失败: ' + (error.response?.data?.error || error.message))
+    ElMessage.error('删除失败: ' + errorMessage(error))
   } finally {
     deleting.value = false
   }

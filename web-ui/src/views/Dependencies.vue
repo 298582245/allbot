@@ -345,7 +345,7 @@ const handleInstall = async () => {
     await loadDependencies()
   } catch (error) {
     console.error('安装依赖失败:', error)
-    ElMessage.error('安装依赖失败: ' + (error.response?.data?.error || error.message))
+    ElMessage.error('安装依赖失败: ' + (error.response?.data?.msg || error.response?.data?.error || error.response?.data?.message || error.message))
   } finally {
     installing.value = false
   }

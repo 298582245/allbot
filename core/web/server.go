@@ -31,6 +31,12 @@ import (
 	"github.com/allbot/allbot/core/utils"
 )
 
+type jsonEnvelope struct {
+	Code int         `json:"code"`
+	Msg  string      `json:"msg"`
+	Data interface{} `json:"data"`
+}
+
 type pluginBackupFile struct {
 	Name      string    `json:"name"`
 	Path      string    `json:"path"`
@@ -330,7 +336,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var req struct{ Username, Password string }
@@ -375,7 +381,7 @@ func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	entries, err := os.ReadDir("plugins")
@@ -470,7 +476,7 @@ func (s *Server) handlePluginDetail(w http.ResponseWriter, r *http.Request) {
 		s.jsonResponse(w, map[string]interface{}{"message": "插件删除成功", "backup": backupPath})
 		return
 	}
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
 func (s *Server) handlePluginRecycleBin(w http.ResponseWriter, r *http.Request) {
@@ -509,7 +515,7 @@ func (s *Server) handlePluginRecycleBin(w http.ResponseWriter, r *http.Request) 
 		}
 		s.jsonResponse(w, map[string]interface{}{"message": "备份文件已删除"})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -740,7 +746,7 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMessageStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if s.adapterManager == nil {
@@ -807,7 +813,7 @@ func (s *Server) handleAdapters(w http.ResponseWriter, r *http.Request) {
 		s.jsonResponse(w, map[string]interface{}{"message": "配置已保存并生效"})
 		return
 	}
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
 func (s *Server) handleAdapterDetail(w http.ResponseWriter, r *http.Request) {
@@ -868,7 +874,7 @@ func (s *Server) handleAdapterDetail(w http.ResponseWriter, r *http.Request) {
 		s.jsonResponse(w, map[string]interface{}{"id": item.ID, "platform": item.Platform, "remark": item.Remark, "description": item.Description, "enabled": item.Enabled, "pinned": item.Pinned, "config": utils.MaskSensitiveConfig(item.Config), "running": s.adapterManager.GetAdapterByID(item.ID) != nil, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt})
 		return
 	}
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
 func (s *Server) handleAdapterAction(w http.ResponseWriter, id int64, action string) {
@@ -892,7 +898,7 @@ func (s *Server) handleAdapterAction(w http.ResponseWriter, id int64, action str
 
 func (s *Server) handlePluginListen(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var req struct {
@@ -996,7 +1002,7 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 		s.jsonResponse(w, map[string]interface{}{"message": "配置已更新并生效"})
 		return
 	}
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
 func (s *Server) handleDependencies(w http.ResponseWriter, r *http.Request) {
@@ -1064,7 +1070,7 @@ func (s *Server) handleDependencies(w http.ResponseWriter, r *http.Request) {
 		s.jsonResponse(w, map[string]interface{}{"message": "依赖安装成功"})
 		return
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -1072,7 +1078,7 @@ func (s *Server) handleDependencyDetail(w http.ResponseWriter, r *http.Request) 
 	path := strings.TrimPrefix(r.URL.Path, "/api/dependencies/")
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) != 2 || r.Method != http.MethodDelete {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	runtimeName := normalizeDependencyRuntime(parts[0])
@@ -1173,12 +1179,12 @@ func (s *Server) handlePluginCode(w http.ResponseWriter, r *http.Request) {
 		s.jsonResponse(w, map[string]interface{}{"message": "代码已保存并生效"})
 		return
 	}
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
 func (s *Server) handlePluginExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	pluginID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/plugins/export/"), "/")
@@ -1392,7 +1398,7 @@ func (s *Server) handlePluginFiles(w http.ResponseWriter, r *http.Request) {
 		_ = s.pluginManager.ReloadPlugin(pluginID)
 		s.jsonResponse(w, map[string]interface{}{"message": "路径已删除", "path": filepath.ToSlash(filePath)})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -1724,11 +1730,23 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) jsonResponse(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(jsonEnvelope{Code: http.StatusOK, Msg: "成功", Data: data})
+}
+
+func (s *Server) jsonError(w http.ResponseWriter, message string, code int) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(jsonEnvelope{Code: code, Msg: message, Data: nil})
+}
+
+// rawJSONResponse 保留开放接口的既有 JSON 数据结构，避免统一后台响应影响外部协议。
+func (s *Server) rawJSONResponse(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(data)
 }
 
-func (s *Server) jsonError(w http.ResponseWriter, message string, code int) {
+func (s *Server) rawJSONError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})

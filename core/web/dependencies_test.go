@@ -1,7 +1,6 @@
 package web
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -47,9 +46,7 @@ func TestHandleDependenciesReadsProfileDependencies(t *testing.T) {
 			ProfileID    string            `json:"profile_id"`
 			Dependencies map[string]string `json:"dependencies"`
 		}
-		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, recorder, &response)
 		if response.Runtime != "nodejs" || response.ProfileID != "node18" || response.Dependencies["axios"] != "1.7.0" {
 			t.Fatalf("unexpected response: %#v", response)
 		}

@@ -45,7 +45,7 @@ func (s *Server) handleScriptTasks(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "不支持的脚本任务操作", http.StatusBadRequest)
 		}
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -116,7 +116,7 @@ func (s *Server) handleScriptTaskDetail(w http.ResponseWriter, r *http.Request) 
 	case http.MethodDelete:
 		s.deleteScriptTask(w, id)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 

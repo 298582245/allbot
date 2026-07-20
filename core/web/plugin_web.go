@@ -37,7 +37,7 @@ func (s *Server) handlePluginWebPanels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.pluginManager == nil {
-		s.jsonResponse(w, []pluginWebPanel{})
+		s.rawJSONResponse(w, []pluginWebPanel{})
 		return
 	}
 	panels := make([]pluginWebPanel, 0)
@@ -73,7 +73,7 @@ func (s *Server) handlePluginWebPanels(w http.ResponseWriter, r *http.Request) {
 		}
 		return panels[i].PluginID < panels[j].PluginID
 	})
-	s.jsonResponse(w, panels)
+	s.rawJSONResponse(w, panels)
 }
 
 func (s *Server) handlePluginWebStatic(w http.ResponseWriter, r *http.Request) {
@@ -119,17 +119,17 @@ func (s *Server) handlePluginWebStatic(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePluginWebAPI(w http.ResponseWriter, r *http.Request) {
 	pluginID, apiPath, ok := splitPluginWebPath(r.URL.Path, pluginWebAPIPrefix)
 	if !ok || strings.Trim(apiPath, "/") == "" {
-		s.jsonError(w, "插件 Web API 路径无效", http.StatusNotFound)
+		s.rawJSONError(w, "插件 Web API 路径无效", http.StatusNotFound)
 		return
 	}
 	pluginItem, pluginPath, err := s.pluginWebPlugin(pluginID)
 	if err != nil {
-		s.jsonError(w, err.Error(), http.StatusNotFound)
+		s.rawJSONError(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		s.jsonError(w, "读取请求体失败", http.StatusBadRequest)
+		s.rawJSONError(w, "读取请求体失败", http.StatusBadRequest)
 		return
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
@@ -148,7 +148,7 @@ func (s *Server) handlePluginWebAPI(w http.ResponseWriter, r *http.Request) {
 		"request":    requestData,
 	})
 	if err != nil {
-		s.jsonError(w, "构造插件 Web API 请求失败", http.StatusInternalServerError)
+		s.rawJSONError(w, "构造插件 Web API 请求失败", http.StatusInternalServerError)
 		return
 	}
 	response, err := s.pluginManager.ExecutePluginWeb(
@@ -163,7 +163,7 @@ func (s *Server) handlePluginWebAPI(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 	if err != nil {
-		s.jsonError(w, "插件 Web API 执行失败: "+err.Error(), http.StatusInternalServerError)
+		s.rawJSONError(w, "插件 Web API 执行失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writePluginWebResponse(w, response)

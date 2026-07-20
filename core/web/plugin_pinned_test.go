@@ -24,9 +24,7 @@ func TestHandlePluginsSortsPinnedBeforeUnpinned(t *testing.T) {
 			t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
 		}
 		var plugins []map[string]interface{}
-		if err := json.Unmarshal(recorder.Body.Bytes(), &plugins); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, recorder, &plugins)
 		ids := []string{plugins[0]["id"].(string), plugins[1]["id"].(string), plugins[2]["id"].(string)}
 		if ids[0] != "bravo" || ids[1] != "charlie" || ids[2] != "alpha" {
 			t.Fatalf("unexpected plugin order: %#v", ids)

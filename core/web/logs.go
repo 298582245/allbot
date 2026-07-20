@@ -712,7 +712,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jsonResponse(w, map[string]interface{}{"message": "日志已清空", "deleted": deleted})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -744,13 +744,13 @@ func (s *Server) handleLogSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jsonResponse(w, map[string]interface{}{"message": "日志设置已保存", "retention_days": req.RetentionDays})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
 func (s *Server) handleLogCleanup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	days := 0

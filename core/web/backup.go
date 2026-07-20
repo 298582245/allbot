@@ -21,7 +21,7 @@ func (s *Server) handleBackups(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		s.handleCreateBackup(w, r)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -114,7 +114,7 @@ func (s *Server) handleBackupSettings(w http.ResponseWriter, r *http.Request) {
 		service.Reload()
 		s.jsonResponse(w, map[string]interface{}{"message": "保存成功", "settings": settings, "status": service.Status()})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -124,7 +124,7 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	s.jsonResponse(w, service.Status())
@@ -154,7 +154,7 @@ func (s *Server) handleImportBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 512<<20)
@@ -187,7 +187,7 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request, nam
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var options backup.RestoreOptions
@@ -237,7 +237,7 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request, name
 		return
 	}
 	if r.Method != http.MethodDelete {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if err := service.Delete(name); err != nil {

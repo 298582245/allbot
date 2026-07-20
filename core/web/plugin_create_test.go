@@ -300,9 +300,7 @@ func TestPluginTemplatesAPI(t *testing.T) {
 		t.Fatalf("expected ok, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var result []map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, recorder, &result)
 	if len(result) != 3 {
 		t.Fatalf("expected 3 templates, got %d: %#v", len(result), result)
 	}
@@ -372,9 +370,7 @@ func TestCreatePluginPreviewReturnsGeneratedFiles(t *testing.T) {
 		t.Fatalf("expected ok, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var result map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, recorder, &result)
 	if result["plugin_id"] != "ql_demo" || result["template"] != "python_account_ql" || result["entry"] != "main.py" {
 		t.Fatalf("unexpected preview summary: %#v", result)
 	}
@@ -396,9 +392,7 @@ func TestCreatePluginValidateAcceptsAccountQLTemplates(t *testing.T) {
 		t.Fatalf("expected ok, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var result map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, recorder, &result)
 	if result["ok"] != true {
 		t.Fatalf("expected ok validate response: %#v", result)
 	}
@@ -414,9 +408,7 @@ func TestCreatePluginValidateAcceptsNodePluginWithPythonTaskScript(t *testing.T)
 		t.Fatalf("expected ok, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var result map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, recorder, &result)
 	if result["ok"] != true {
 		t.Fatalf("expected ok validate response: %#v", result)
 	}
@@ -432,9 +424,7 @@ func TestCreatePluginValidateRejectsInvalidCron(t *testing.T) {
 	req.AccountQL.Cron = "bad cron"
 	recorder := performPluginCreateRequest(t, server, http.MethodPost, "/api/plugins/validate", req, server.handlePluginCreateValidate)
 	var result map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, recorder, &result)
 	if result["ok"] != false {
 		t.Fatalf("expected invalid cron response: %#v", result)
 	}
@@ -450,9 +440,7 @@ func TestCreatePluginValidateRejectsInvalidTaskScript(t *testing.T) {
 	req.AccountQL.TaskScript = "../task.js"
 	recorder := performPluginCreateRequest(t, server, http.MethodPost, "/api/plugins/validate", req, server.handlePluginCreateValidate)
 	var result map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, recorder, &result)
 	if result["ok"] != false {
 		t.Fatalf("expected invalid task script response: %#v", result)
 	}
@@ -469,9 +457,7 @@ func TestCreatePluginReturnsDiagnosticsAndMetadata(t *testing.T) {
 			t.Fatalf("expected ok, got %d: %s", recorder.Code, recorder.Body.String())
 		}
 		var result map[string]interface{}
-		if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, recorder, &result)
 		if result["id"] != "ql_demo" || result["plugin_id"] != "ql_demo" || result["template"] != "nodejs_account_ql" {
 			t.Fatalf("unexpected create response: %#v", result)
 		}

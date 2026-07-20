@@ -1,7 +1,6 @@
 package web
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,9 +23,7 @@ func TestHandleAdapterPlatforms(t *testing.T) {
 		t.Fatalf("response should not expose function fields: %s", recorder.Body.String())
 	}
 	var items []map[string]interface{}
-	if err := json.NewDecoder(recorder.Body).Decode(&items); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &items)
 	byPlatform := make(map[string]map[string]interface{})
 	for _, item := range items {
 		platform, _ := item["platform"].(string)

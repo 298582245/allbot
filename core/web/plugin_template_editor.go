@@ -133,7 +133,7 @@ func (s *Server) handlePluginTemplateEditor(w http.ResponseWriter, r *http.Reque
 		}
 		s.jsonResponse(w, state)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 

@@ -1,7 +1,6 @@
 package web
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,9 +30,7 @@ func TestHandlePluginRecycleBinListsBackupFiles(t *testing.T) {
 	var response struct {
 		Items []pluginBackupFile `json:"items"`
 	}
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response returned error: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if len(response.Items) != 2 {
 		t.Fatalf("items len = %d, expected 2: %+v", len(response.Items), response.Items)
 	}

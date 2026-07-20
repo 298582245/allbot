@@ -71,9 +71,7 @@ func TestTemplateEditorGetAndPutRegeneratePlugin(t *testing.T) {
 			t.Fatalf("expected get ok, got %d: %s", get.Code, get.Body.String())
 		}
 		var state templateEditorState
-		if err := json.Unmarshal(get.Body.Bytes(), &state); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, get, &state)
 		if !state.Editable || state.RequiresConvert || state.TemplateSource == nil || state.SourceChanged {
 			t.Fatalf("unexpected editor state: %#v", state)
 		}
@@ -106,9 +104,7 @@ func TestTemplateEditorProtectsExternallyModifiedGeneratedFile(t *testing.T) {
 		}
 		get := performTemplateEditorRequest(t, server, http.MethodGet, "ql_demo", nil)
 		var state templateEditorState
-		if err := json.Unmarshal(get.Body.Bytes(), &state); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, get, &state)
 		if !state.SourceChanged || len(state.ModifiedFiles) != 1 || state.ModifiedFiles[0] != "main.js" {
 			t.Fatalf("external modification not detected: %#v", state)
 		}
@@ -138,9 +134,7 @@ func TestTemplateEditorProtectsPluginConfigModification(t *testing.T) {
 		}
 		get := performTemplateEditorRequest(t, server, http.MethodGet, "ql_demo", nil)
 		var state templateEditorState
-		if err := json.Unmarshal(get.Body.Bytes(), &state); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, get, &state)
 		if !state.SourceChanged || !containsString(state.ModifiedFiles, "plugin.json") {
 			t.Fatalf("plugin.json modification was not detected: %#v", state)
 		}
@@ -153,9 +147,7 @@ func TestTemplateEditorRejectsUnexpectedGeneratedTarget(t *testing.T) {
 		pluginRoot := filepath.Join("plugins", "ql_demo")
 		get := performTemplateEditorRequest(t, server, http.MethodGet, "ql_demo", nil)
 		var state templateEditorState
-		if err := json.Unmarshal(get.Body.Bytes(), &state); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, get, &state)
 		state.TemplateSource.Account.TaskScript = "scripts/custom.js"
 		customPath := filepath.Join(pluginRoot, "scripts", "custom.js")
 		if err := os.WriteFile(customPath, []byte("user content"), 0644); err != nil {
@@ -187,9 +179,7 @@ func TestTemplateEditorExplicitlyConvertsLegacyAccountPlugin(t *testing.T) {
 
 		get := performTemplateEditorRequest(t, server, http.MethodGet, "ql_demo", nil)
 		var before templateEditorState
-		if err := json.Unmarshal(get.Body.Bytes(), &before); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, get, &before)
 		if before.Editable || !before.RequiresConvert || before.ConversionSource == nil {
 			t.Fatalf("legacy plugin should require conversion: %#v", before)
 		}
@@ -214,9 +204,7 @@ func TestTemplateEditorExplicitlyConvertsLegacyAccountPlugin(t *testing.T) {
 			t.Fatalf("explicit conversion failed, got %d: %s", converted.Code, converted.Body.String())
 		}
 		var after templateEditorState
-		if err := json.Unmarshal(converted.Body.Bytes(), &after); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, converted, &after)
 		if !after.Editable || after.RequiresConvert || after.TemplateSource == nil {
 			t.Fatalf("unexpected converted state: %#v", after)
 		}
@@ -251,9 +239,7 @@ func TestTemplateEditorPreservesUnmanagedPluginConfig(t *testing.T) {
 
 		get := performTemplateEditorRequest(t, server, http.MethodGet, "ql_demo", nil)
 		var state templateEditorState
-		if err := json.Unmarshal(get.Body.Bytes(), &state); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, get, &state)
 		state.TemplateSource.Account.EnableCKCheck = boolPtr(false)
 		put := performTemplateEditorRequest(t, server, http.MethodPut, "ql_demo", templateEditorRequest{TemplateSource: state.TemplateSource, OverwriteGeneratedFiles: true})
 		if put.Code != http.StatusOK {
@@ -290,9 +276,7 @@ func TestTemplateEditorValidationFailureDoesNotChangeState(t *testing.T) {
 		}
 		get := performTemplateEditorRequest(t, server, http.MethodGet, "ql_demo", nil)
 		var state templateEditorState
-		if err := json.Unmarshal(get.Body.Bytes(), &state); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, get, &state)
 		state.TemplateSource.Account.ParseInputCode = ""
 		put := performTemplateEditorRequest(t, server, http.MethodPut, "ql_demo", templateEditorRequest{TemplateSource: state.TemplateSource})
 		if put.Code != http.StatusBadRequest {
@@ -324,8 +308,12 @@ func TestTemplateEditorGetFallbackStates(t *testing.T) {
 			t.Fatal(err)
 		}
 		ordinary := performTemplateEditorRequest(t, server, http.MethodGet, "plain", nil)
+		if ordinary.Code != http.StatusOK {
+			t.Fatalf("unexpected ordinary plugin status: %d %s", ordinary.Code, ordinary.Body.String())
+		}
 		var state templateEditorState
-		if ordinary.Code != http.StatusOK || json.Unmarshal(ordinary.Body.Bytes(), &state) != nil || state.Editable || state.RequiresConvert {
+		decodeUnifiedResponseData(t, ordinary, &state)
+		if state.Editable || state.RequiresConvert {
 			t.Fatalf("unexpected ordinary plugin state: %d %s", ordinary.Code, ordinary.Body.String())
 		}
 		if missing := performTemplateEditorRequest(t, server, http.MethodGet, "missing", nil); missing.Code != http.StatusNotFound {
@@ -345,9 +333,7 @@ func TestTemplateEditorRestoresFilesWhenReloadFails(t *testing.T) {
 		originalEntry := readTextFile(t, filepath.Join(pluginRoot, "main.js"))
 		get := performTemplateEditorRequest(t, server, http.MethodGet, "ql_demo", nil)
 		var state templateEditorState
-		if err := json.Unmarshal(get.Body.Bytes(), &state); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, get, &state)
 		state.TemplateSource.Plugin.Runtime = "python"
 		state.TemplateSource.Template = "python_account_ql"
 		state.TemplateSource.Account.ScriptRuntime = "python"

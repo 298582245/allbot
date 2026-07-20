@@ -48,7 +48,7 @@ type statisticsLogSummary struct {
 
 func (s *Server) handleStatisticsOverview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if s.adapterManager == nil || s.adapterManager.GetDatabase() == nil {
@@ -81,7 +81,7 @@ func (s *Server) handleStatisticsOverview(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleMessageTotalTrend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if s.adapterManager == nil || s.adapterManager.GetDatabase() == nil {
@@ -99,7 +99,7 @@ func (s *Server) handleMessageTotalTrend(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handlePluginTriggerTrend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if s.adapterManager == nil || s.adapterManager.GetDatabase() == nil {

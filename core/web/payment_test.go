@@ -418,6 +418,11 @@ func TestHandlePaymentQRCodeRejectsInvalidToken(t *testing.T) {
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", recorder.Code, recorder.Body.String())
 	}
+	var response map[string]interface{}
+	decodeResponseJSON(t, recorder, &response)
+	if _, wrapped := response["code"]; wrapped {
+		t.Fatalf("open payment error should not use backend envelope: %s", recorder.Body.String())
+	}
 }
 
 func TestHandlePaymentQRCodeRejectsMissingOrder(t *testing.T) {
@@ -570,7 +575,5 @@ func performPaymentJSONRequest(t *testing.T, handler func(http.ResponseWriter, *
 
 func decodePaymentResponse(t *testing.T, recorder *httptest.ResponseRecorder, target interface{}) {
 	t.Helper()
-	if err := json.Unmarshal(recorder.Body.Bytes(), target); err != nil {
-		t.Fatalf("decode response failed: %v, body=%s", err, recorder.Body.String())
-	}
+	decodeUnifiedResponseData(t, recorder, target)
 }

@@ -1,7 +1,6 @@
 package web
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,9 +24,7 @@ func TestHandleStatisticsOverviewIncludesLogStorage(t *testing.T) {
 			t.Fatalf("expected 200, got %d %s", recorder.Code, recorder.Body.String())
 		}
 		var response statisticsOverview
-		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-			t.Fatalf("decode response returned error: %v", err)
-		}
+		decodeUnifiedResponseData(t, recorder, &response)
 		if response.Logs.FileCount != 2 || response.Logs.TotalSizeBytes != 11 {
 			t.Fatalf("unexpected log storage summary: %+v", response.Logs)
 		}
@@ -56,9 +53,7 @@ func TestHandleStatisticsOverviewKeepsScriptRunStatsAfterCleanup(t *testing.T) {
 		t.Fatalf("expected 200, got %d %s", recorder.Code, recorder.Body.String())
 	}
 	var response statisticsOverview
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response returned error: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response.ScriptTasks.Total != 1 || response.ScriptTasks.Success != 1 || response.ScriptTasks.Failed != 0 {
 		t.Fatalf("unexpected script task summary: %+v", response.ScriptTasks)
 	}
@@ -81,9 +76,7 @@ func TestHandleMessageTotalTrend(t *testing.T) {
 		t.Fatalf("expected 200, got %d %s", recorder.Code, recorder.Body.String())
 	}
 	var response config.MessageTotalTrendSummary
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response returned error: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response.Granularity != "day" || len(response.Labels) != 1 || len(response.Totals) != 1 || len(response.PrivateTotals) != 1 || len(response.GroupTotals) != 1 {
 		t.Fatalf("unexpected trend response: %+v", response)
 	}
@@ -114,9 +107,7 @@ func TestHandlePluginTriggerTrend(t *testing.T) {
 		t.Fatalf("expected 200, got %d %s", recorder.Code, recorder.Body.String())
 	}
 	var response config.PluginTriggerTrendSummary
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response returned error: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response.Total != 5 || len(response.Labels) != 1 || len(response.Plugins) != 1 || response.Plugins[0].PluginID != "alpha" || response.Plugins[0].Counts[0] != 5 {
 		t.Fatalf("unexpected plugin trigger trend response: %+v", response)
 	}
@@ -144,9 +135,7 @@ func TestHandlePluginTriggerTrendWithMonthRange(t *testing.T) {
 		t.Fatalf("expected 200, got %d %s", recorder.Code, recorder.Body.String())
 	}
 	var response config.PluginTriggerTrendSummary
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response returned error: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response.Granularity != "month" || response.Total != 5 || len(response.Plugins) != 1 || response.Plugins[0].Counts[0] != 5 {
 		t.Fatalf("unexpected monthly plugin trigger trend response: %+v", response)
 	}

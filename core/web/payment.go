@@ -42,13 +42,13 @@ func (s *Server) handlePaymentSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jsonResponse(w, publicPaymentSettings(saved))
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
 func (s *Server) handlePaymentOrders(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	query := r.URL.Query()
@@ -87,7 +87,7 @@ func (s *Server) handlePaymentOrderDetail(w http.ResponseWriter, r *http.Request
 	case http.MethodDelete:
 		s.deletePaymentOrder(w, orderNo)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -157,11 +157,11 @@ func (s *Server) handleOpenAPIQRCode(w http.ResponseWriter, r *http.Request) {
 		content = strings.TrimSpace(r.URL.Query().Get("content"))
 	}
 	if content == "" {
-		s.jsonError(w, "二维码内容不能为空", http.StatusBadRequest)
+		s.rawJSONError(w, "二维码内容不能为空", http.StatusBadRequest)
 		return
 	}
 	if len(content) > 2048 {
-		s.jsonError(w, "二维码内容不能超过 2048 字符", http.StatusBadRequest)
+		s.rawJSONError(w, "二维码内容不能超过 2048 字符", http.StatusBadRequest)
 		return
 	}
 	s.writeQRCodePNG(w, content)
@@ -175,31 +175,31 @@ func (s *Server) handlePaymentQRCode(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/open/payments/qrcode/"), "/")
 	parts := strings.Split(path, "/")
 	if len(parts) != 2 || !strings.HasSuffix(parts[1], ".png") {
-		s.jsonError(w, "二维码路径无效", http.StatusBadRequest)
+		s.rawJSONError(w, "二维码路径无效", http.StatusBadRequest)
 		return
 	}
 	orderNo := strings.TrimSpace(parts[0])
 	token := strings.TrimSuffix(strings.TrimSpace(parts[1]), ".png")
 	if orderNo == "" || token == "" {
-		s.jsonError(w, "二维码路径无效", http.StatusBadRequest)
+		s.rawJSONError(w, "二维码路径无效", http.StatusBadRequest)
 		return
 	}
 	order, err := s.adapterManager.GetDatabase().GetPaymentOrder(orderNo)
 	if err == sql.ErrNoRows {
-		s.jsonError(w, "订单不存在", http.StatusNotFound)
+		s.rawJSONError(w, "订单不存在", http.StatusNotFound)
 		return
 	}
 	if err != nil {
-		s.jsonError(w, "获取支付订单失败: "+err.Error(), http.StatusInternalServerError)
+		s.rawJSONError(w, "获取支付订单失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	content := payment.PaymentQRCodeContent(order)
 	if content == "" {
-		s.jsonError(w, "订单缺少二维码内容", http.StatusBadRequest)
+		s.rawJSONError(w, "订单缺少二维码内容", http.StatusBadRequest)
 		return
 	}
 	if token != payment.PaymentQRCodeToken(order.OrderNo, content) {
-		s.jsonError(w, "二维码 token 无效", http.StatusForbidden)
+		s.rawJSONError(w, "二维码 token 无效", http.StatusForbidden)
 		return
 	}
 	s.writeQRCodePNG(w, content)
@@ -208,7 +208,7 @@ func (s *Server) handlePaymentQRCode(w http.ResponseWriter, r *http.Request) {
 func (s *Server) writeQRCodePNG(w http.ResponseWriter, content string) {
 	png, err := qrcode.Encode(content, qrcode.Medium, 256)
 	if err != nil {
-		s.jsonError(w, "生成二维码失败: "+err.Error(), http.StatusInternalServerError)
+		s.rawJSONError(w, "生成二维码失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
@@ -223,31 +223,31 @@ func (s *Server) handleAlipayBillCashier(w http.ResponseWriter, r *http.Request)
 	}
 	orderNo := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/open/payments/alipay-bill/cashier/"), "/")
 	if orderNo == "" || strings.Contains(orderNo, "/") {
-		s.jsonError(w, "订单号不能为空", http.StatusBadRequest)
+		s.rawJSONError(w, "订单号不能为空", http.StatusBadRequest)
 		return
 	}
 	db := s.adapterManager.GetDatabase()
 	order, err := db.GetPaymentOrder(orderNo)
 	if err == sql.ErrNoRows {
-		s.jsonError(w, "订单不存在", http.StatusNotFound)
+		s.rawJSONError(w, "订单不存在", http.StatusNotFound)
 		return
 	}
 	if err != nil {
-		s.jsonError(w, "获取支付订单失败: "+err.Error(), http.StatusInternalServerError)
+		s.rawJSONError(w, "获取支付订单失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	settings, err := db.GetPaymentSettings()
 	if err != nil {
-		s.jsonError(w, "获取支付设置失败: "+err.Error(), http.StatusInternalServerError)
+		s.rawJSONError(w, "获取支付设置失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if !strings.EqualFold(order.Provider, "alipay_bill") || order.Status != "pending" {
-		s.jsonError(w, "订单不可支付", http.StatusBadRequest)
+		s.rawJSONError(w, "订单不可支付", http.StatusBadRequest)
 		return
 	}
 	userID := strings.TrimSpace(settings.AlipayBill.TransferUserID)
 	if userID == "" {
-		s.jsonError(w, "支付宝收款 UID 未配置", http.StatusBadRequest)
+		s.rawJSONError(w, "支付宝收款 UID 未配置", http.StatusBadRequest)
 		return
 	}
 	data := struct {
@@ -333,7 +333,7 @@ func (s *Server) confirmEpayRequest(r *http.Request, writeOrder bool) bool {
 
 func (s *Server) handlePaymentOrderQuery(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	orderNo := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/payments/orders/"), "/query")

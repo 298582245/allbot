@@ -2,7 +2,6 @@ package web
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -31,9 +30,7 @@ func TestHandleAdaptersSortsPinnedBeforeUnpinned(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var adapters []map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &adapters); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, recorder, &adapters)
 	remarks := []string{adapters[0]["remark"].(string), adapters[1]["remark"].(string), adapters[2]["remark"].(string)}
 	if remarks[0] != "置顶一" || remarks[1] != "置顶二" || remarks[2] != "未置顶" {
 		t.Fatalf("unexpected adapter order: %#v", remarks)

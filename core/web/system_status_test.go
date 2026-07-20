@@ -32,9 +32,7 @@ func TestSystemStatusSeparatesAdapterTotalAndRunning(t *testing.T) {
 		t.Fatalf("expected ok, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var response map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response["adapterCount"].(float64) != 2 {
 		t.Fatalf("adapterCount = %#v", response["adapterCount"])
 	}
@@ -53,9 +51,7 @@ func TestSystemStatusIncludesAllBotResourceFields(t *testing.T) {
 		t.Fatalf("expected ok, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var response map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	assertPercentField(t, response, "allBotCpuUsagePercent")
 	assertPercentField(t, response, "allBotMemoryUsagePercent")
 	assertPercentField(t, response, "allBotPeakCpuUsagePercent")
@@ -211,9 +207,7 @@ func TestSystemStatusReturnsTotalAndCurrentUptimeSeconds(t *testing.T) {
 		t.Fatalf("expected ok, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var response map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	currentSeconds := int64(response["currentUptimeSeconds"].(float64))
 	totalSeconds := int64(response["totalUptimeSeconds"].(float64))
 	if currentSeconds < 7190 || currentSeconds > 7210 {

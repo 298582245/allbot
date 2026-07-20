@@ -1,7 +1,6 @@
 package web
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -174,9 +173,7 @@ func TestHandlePluginConfigDefaultsScriptEnv(t *testing.T) {
 			t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
 		}
 		var response map[string]interface{}
-		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, recorder, &response)
 		config, ok := response["script_env"].(map[string]interface{})
 		if !ok || config["enabled"] != false {
 			t.Fatalf("script_env default missing: %#v", response["script_env"])

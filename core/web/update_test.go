@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -184,9 +183,7 @@ func TestHandleSystemUpdateStatusDefault(t *testing.T) {
 		t.Fatalf("status = %d", recorder.Code)
 	}
 	var response updater.UpgradeState
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response.Status != updater.UpgradeStatusIdle {
 		t.Fatalf("upgrade status = %#v", response)
 	}
@@ -235,9 +232,7 @@ func performSystemUpdateRequest(t *testing.T, server *Server, method string) upd
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	var response updateInfoResponse
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	return response
 }
 

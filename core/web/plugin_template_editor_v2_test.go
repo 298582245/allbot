@@ -46,9 +46,7 @@ func TestHybridTemplateEditorGetPutSingleAndMultipleSections(t *testing.T) {
 			t.Fatalf("get status=%d body=%s", get.Code, get.Body.String())
 		}
 		var state templateEditorState
-		if err := json.Unmarshal(get.Body.Bytes(), &state); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, get, &state)
 		if state.Version != 2 || state.Mode != "hybrid" || !state.Editable || len(state.TemplateSource.Sections) != 2 {
 			t.Fatalf("unexpected v2 state: %#v", state)
 		}
@@ -102,9 +100,7 @@ func TestHybridTemplateEditorSupportsRegisteredSourceWithoutPluginTemplateFields
 			t.Fatalf("get status=%d body=%s", get.Code, get.Body.String())
 		}
 		var state templateEditorState
-		if err := json.Unmarshal(get.Body.Bytes(), &state); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, get, &state)
 		if !state.Editable || state.Version != hybridTemplateSourceVersion || state.Template != "nodejs_account_ql" || state.TemplateVersion != "3.0.0" {
 			t.Fatalf("unexpected legacy v2 state: %#v", state)
 		}
@@ -304,9 +300,7 @@ func TestHybridPluginFilesAllowEditingEveryFile(t *testing.T) {
 			Editable bool   `json:"editable"`
 			Text     bool   `json:"text"`
 		}
-		if err := json.Unmarshal(pluginJSON.Body.Bytes(), &pluginFile); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, pluginJSON, &pluginFile)
 		if !pluginFile.Editable || !pluginFile.Text {
 			t.Fatalf("plugin.json should be editable: %#v", pluginFile)
 		}
@@ -347,9 +341,7 @@ func TestHybridPluginFilesAllowEditingEveryFile(t *testing.T) {
 					Editable bool   `json:"editable"`
 					Text     bool   `json:"text"`
 				}
-				if err := json.Unmarshal(get.Body.Bytes(), &file); err != nil {
-					t.Fatal(err)
-				}
+				decodeUnifiedResponseData(t, get, &file)
 				if !file.Editable || !file.Text {
 					t.Fatalf("file should be editable: %#v", file)
 				}
@@ -397,9 +389,7 @@ func TestHybridPluginFilesAllowCreateDeleteAndDetectConflicts(t *testing.T) {
 		var file struct {
 			SHA256 string `json:"sha256"`
 		}
-		if err := json.Unmarshal(get.Body.Bytes(), &file); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, get, &file)
 		if err := os.WriteFile(filepath.Join(root, "extra", "new.script"), []byte("external=true"), 0644); err != nil {
 			t.Fatal(err)
 		}

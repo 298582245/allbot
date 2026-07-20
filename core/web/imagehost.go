@@ -33,7 +33,7 @@ func (s *Server) handleImages(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		s.handleUploadImage(w, r, service)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -52,7 +52,7 @@ func (s *Server) handleImageDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodDelete {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if err := service.Delete(path); err != nil {
@@ -92,7 +92,7 @@ func (s *Server) handleImageSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jsonResponse(w, saved)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -130,22 +130,22 @@ func (s *Server) handleUploadImage(w http.ResponseWriter, r *http.Request, servi
 }
 
 func (s *Server) handleOpenImage(w http.ResponseWriter, r *http.Request) {
-	service, ok := s.requireImageHostService(w)
-	if !ok {
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if s.imageHostService == nil {
+		s.rawJSONError(w, "图床服务未初始化", http.StatusInternalServerError)
+		return
+	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/open/images/")
-	asset, err := service.ResolvePublic(path)
+	asset, err := s.imageHostService.ResolvePublic(path)
 	if err != nil {
 		if errors.Is(err, imagehost.ErrNotFound) || errors.Is(err, imagehost.ErrInvalidInput) {
-			s.jsonError(w, "图片不存在", http.StatusNotFound)
+			s.rawJSONError(w, "图片不存在", http.StatusNotFound)
 			return
 		}
-		s.jsonError(w, "读取图片失败: "+err.Error(), http.StatusInternalServerError)
+		s.rawJSONError(w, "读取图片失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", asset.ContentType)

@@ -255,7 +255,7 @@ function getEditorCode() {
 }
 
 function errorMessage(error) {
-  return error?.response?.data?.error || error?.message || '未知错误'
+  return error?.response?.data?.msg || error?.response?.data?.error || error?.response?.data?.message || error?.message || '未知错误'
 }
 
 function normalizeOpenPath(path) {

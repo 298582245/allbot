@@ -22,7 +22,7 @@ const (
 
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	limit, offset, ok := s.parseUserPagination(w, r)
@@ -68,7 +68,7 @@ func (s *Server) handleUserDetail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUserGet(w http.ResponseWriter, r *http.Request, unionID string) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	detail, err := s.adapterManager.GetDatabase().GetUserDetail(unionID)
@@ -80,7 +80,7 @@ func (s *Server) handleUserGet(w http.ResponseWriter, r *http.Request, unionID s
 
 func (s *Server) handleUserStatus(w http.ResponseWriter, r *http.Request, unionID string) {
 	if r.Method != http.MethodPatch {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var request struct {
@@ -102,7 +102,7 @@ func (s *Server) handleUserStatus(w http.ResponseWriter, r *http.Request, unionI
 
 func (s *Server) handleUserPointsAdjust(w http.ResponseWriter, r *http.Request, unionID string) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var request struct {
@@ -139,7 +139,7 @@ func (s *Server) handleUserPointsAdjust(w http.ResponseWriter, r *http.Request, 
 
 func (s *Server) handleUserPointTransactions(w http.ResponseWriter, r *http.Request, unionID string) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	limit, offset, ok := s.parseUserPagination(w, r)
@@ -166,7 +166,7 @@ func (s *Server) handleUserPointTransactions(w http.ResponseWriter, r *http.Requ
 
 func (s *Server) handleUserAccounts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	limit, offset, ok := s.parseUserPagination(w, r)

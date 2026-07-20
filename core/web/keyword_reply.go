@@ -30,7 +30,7 @@ func (s *Server) handleKeywordReplies(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jsonResponse(w, map[string]interface{}{"message": "保存成功"})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -61,6 +61,6 @@ func (s *Server) handleKeywordReplyDetail(w http.ResponseWriter, r *http.Request
 		}
 		s.jsonResponse(w, map[string]interface{}{"message": "删除成功"})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }

@@ -147,7 +147,5 @@ func performOpenAPIJSONRequest(t *testing.T, handler func(http.ResponseWriter, *
 
 func decodeOpenAPIResponse(t *testing.T, recorder *httptest.ResponseRecorder, target interface{}) {
 	t.Helper()
-	if err := json.Unmarshal(recorder.Body.Bytes(), target); err != nil {
-		t.Fatalf("decode response failed: %v, body=%s", err, recorder.Body.String())
-	}
+	decodeUnifiedResponseData(t, recorder, target)
 }

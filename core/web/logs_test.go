@@ -244,9 +244,7 @@ func TestHandleLogsQueryPaginationAndFilter(t *testing.T) {
 			t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
 		}
 		var result LogQueryResult
-		if err := json.NewDecoder(recorder.Body).Decode(&result); err != nil {
-			t.Fatal(err)
-		}
+		decodeUnifiedResponseData(t, recorder, &result)
 		if result.Total != 2 || len(result.Items) != 1 || result.Items[0].Message != "keyword second" {
 			t.Fatalf("unexpected response: %#v", result)
 		}
@@ -325,9 +323,7 @@ func TestHandleLogDownloadRejectsInvalidRequests(t *testing.T) {
 				if recorder.Code != test.status {
 					t.Fatalf("expected status %d, got %d: %s", test.status, recorder.Code, recorder.Body.String())
 				}
-				if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-					t.Fatalf("expected JSON error response, got %q", got)
-				}
+				assertUnifiedErrorBody(t, recorder, test.status)
 			})
 		})
 	}

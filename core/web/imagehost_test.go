@@ -28,9 +28,7 @@ func TestHandleImagesUploadAndOpen(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var asset imagehost.ImageAssetResponse
-	if err := json.Unmarshal(recorder.Body.Bytes(), &asset); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, recorder, &asset)
 	if asset.PublicID == "" || asset.URL == "" || asset.ContentType != "image/png" {
 		t.Fatalf("asset unexpected: %+v", asset)
 	}
@@ -74,9 +72,7 @@ func TestHandleImagesListSettingsAndDelete(t *testing.T) {
 		t.Fatalf("upload failed: %d %s", uploadRecorder.Code, uploadRecorder.Body.String())
 	}
 	var asset imagehost.ImageAssetResponse
-	if err := json.Unmarshal(uploadRecorder.Body.Bytes(), &asset); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, uploadRecorder, &asset)
 
 	listRecorder := httptest.NewRecorder()
 	server.handleImages(listRecorder, httptest.NewRequest(http.MethodGet, "/api/images?keyword=demo&content_type=image/png", nil))
@@ -144,9 +140,7 @@ func TestHandleImageSettingsKeepOldReturnsMigration(t *testing.T) {
 			Action  string `json:"action"`
 		} `json:"migration"`
 	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, recorder, &response)
 	if response.StorageDir != newDir || !response.Migration.Changed || response.Migration.Action != "keep_old" {
 		t.Fatalf("response unexpected: %+v", response)
 	}
@@ -161,9 +155,7 @@ func TestHandleImageSettingsMigrateKeepsPublicImageAvailable(t *testing.T) {
 		t.Fatalf("upload failed: %d %s", uploadRecorder.Code, uploadRecorder.Body.String())
 	}
 	var asset imagehost.ImageAssetResponse
-	if err := json.Unmarshal(uploadRecorder.Body.Bytes(), &asset); err != nil {
-		t.Fatal(err)
-	}
+	decodeUnifiedResponseData(t, uploadRecorder, &asset)
 	oldSettings, err := server.imageHostService.Settings()
 	if err != nil {
 		t.Fatal(err)

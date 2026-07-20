@@ -8,10 +8,14 @@ const webChatRequest = async (path, options = {}) => {
   })
   const contentType = response.headers.get('Content-Type') || ''
   const data = contentType.includes('application/json') ? await response.json() : await response.text()
+  const isEnvelope = data !== null && typeof data === 'object' && !Array.isArray(data) &&
+    Object.prototype.hasOwnProperty.call(data, 'code') &&
+    Object.prototype.hasOwnProperty.call(data, 'msg') &&
+    Object.prototype.hasOwnProperty.call(data, 'data')
   if (!response.ok || data?.error) {
-    throw new Error(data?.error || '请求失败')
+    throw new Error(data?.msg || data?.error || data?.message || '请求失败')
   }
-  return data
+  return isEnvelope ? data.data : data
 }
 
 export const sendWebChatEmailCode = (email, purpose = 'register') => webChatRequest('/email-code', { method: 'POST', body: JSON.stringify({ email, purpose }) })

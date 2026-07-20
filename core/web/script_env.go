@@ -49,13 +49,13 @@ func (s *Server) handleScriptEnvs(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jsonResponse(w, map[string]interface{}{"message": "批量操作已完成", "affected": affected})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
 func (s *Server) handleScriptEnvImport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var items []config.ScriptEnvImportItem
@@ -127,6 +127,6 @@ func (s *Server) handleScriptEnvDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jsonResponse(w, map[string]interface{}{"message": "脚本环境变量已删除"})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }

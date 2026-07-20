@@ -67,7 +67,7 @@ func (s *Server) UpdateService() *updater.Service {
 
 func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
@@ -77,7 +77,7 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSystemUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	s.jsonResponse(w, s.ensureUpdateService().CurrentState())
@@ -85,7 +85,7 @@ func (s *Server) handleSystemUpdateStatus(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
