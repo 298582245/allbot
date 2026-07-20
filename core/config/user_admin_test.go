@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -116,6 +117,87 @@ func TestSetUserDisabledKeepsWebLocalDisabledIndependent(t *testing.T) {
 	}
 	if _, err := db.VerifyWebChatLogin(webUser.Email, "oldpassword123"); err == nil {
 		t.Fatal("Web Chat 独立禁用仍应阻止登录")
+	}
+}
+
+func TestCreateUserBindCodeReusesUnexpiredCode(t *testing.T) {
+	db := newUserAdminTestDatabase(t)
+
+	first, err := db.CreateUserBindCode("telegram", "source-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := db.CreateUserBindCode("telegram", "source-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Code != first.Code {
+		t.Fatalf("有效期内应复用绑定码: first=%s second=%s", first.Code, second.Code)
+	}
+	if !second.ExpiresAt.Equal(first.ExpiresAt) || !second.CreatedAt.Equal(first.CreatedAt) {
+		t.Fatalf("复用绑定码不应刷新有效期: first=%#v second=%#v", first, second)
+	}
+
+	if _, err := db.db.Exec(`UPDATE user_bind_codes SET expires_at = datetime('now', '-1 minute') WHERE code = ?`, first.Code); err != nil {
+		t.Fatal(err)
+	}
+	third, err := db.CreateUserBindCode("telegram", "source-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !third.ExpiresAt.After(time.Now()) || third.CreatedAt.Before(first.CreatedAt) {
+		t.Fatalf("过期后应生成新的有效绑定码: %#v", third)
+	}
+	var activeCount int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM user_bind_codes WHERE platform = ? AND user_id = ? AND expires_at > CURRENT_TIMESTAMP`, "telegram", "source-user").Scan(&activeCount); err != nil {
+		t.Fatal(err)
+	}
+	if activeCount != 1 {
+		t.Fatalf("同一用户应仅保留一个有效绑定码，实际 %d 个", activeCount)
+	}
+}
+
+func TestCreateUserBindCodeConcurrentCallsReuseCode(t *testing.T) {
+	db := newUserAdminTestDatabase(t)
+	const calls = 8
+	start := make(chan struct{})
+	results := make(chan struct {
+		code string
+		err  error
+	}, calls)
+	for range calls {
+		go func() {
+			<-start
+			code, err := db.CreateUserBindCode("telegram", "concurrent-user")
+			result := struct {
+				code string
+				err  error
+			}{err: err}
+			if code != nil {
+				result.code = code.Code
+			}
+			results <- result
+		}()
+	}
+	close(start)
+
+	codes := make(map[string]struct{})
+	for range calls {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("CreateUserBindCode returned error: %v", result.err)
+		}
+		codes[result.code] = struct{}{}
+	}
+	if len(codes) != 1 {
+		t.Fatalf("并发获取应返回同一个绑定码: %#v", codes)
+	}
+	var activeCount int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM user_bind_codes WHERE platform = ? AND user_id = ? AND expires_at > CURRENT_TIMESTAMP`, "telegram", "concurrent-user").Scan(&activeCount); err != nil {
+		t.Fatal(err)
+	}
+	if activeCount != 1 {
+		t.Fatalf("并发获取后应仅有一个有效绑定码，实际 %d 个", activeCount)
 	}
 }
 

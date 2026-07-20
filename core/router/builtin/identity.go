@@ -3,7 +3,9 @@ package builtin
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
+	"time"
 )
 
 func replyMyID(ctx *Context) error {
@@ -124,7 +126,11 @@ func createBindCode(ctx *Context) string {
 	if err != nil {
 		return "生成绑定码失败：" + err.Error()
 	}
-	return fmt.Sprintf("绑定码：%s\n请在其他平台私聊机器人发送：绑定 %s\n有效期：10分钟", code.Code, code.Code)
+	remainingMinutes := int(math.Ceil(time.Until(code.ExpiresAt).Minutes()))
+	if remainingMinutes < 1 {
+		remainingMinutes = 1
+	}
+	return fmt.Sprintf("绑定码：%s\n请在其他平台私聊机器人发送：绑定 %s\n剩余有效期：%d分钟", code.Code, code.Code, remainingMinutes)
 }
 
 func userPlatformBindings(ctx *Context) string {

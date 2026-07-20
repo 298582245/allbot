@@ -427,6 +427,28 @@ func TestWebChatWriteRequiresCSRF(t *testing.T) {
 	}
 }
 
+func TestWebChatMessageLimitUsesAdapterConfig(t *testing.T) {
+	server, mailer := newWebChatTestServer(t, false)
+	saveRunningWebChatAdapterWithLimit(t, server.adapterManager, 1)
+	cookie, csrf := registerWebChatTestUser(t, server, mailer)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		rr := httptest.NewRecorder()
+		req := jsonRequest("/api/open/web-chat/messages", map[string]string{"type": "text", "content": "hello"}, csrf)
+		req.AddCookie(cookie)
+		server.handleWebChatAPI(rr, req)
+		if attempt == 1 && rr.Code != http.StatusOK {
+			t.Fatalf("first message status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if attempt == 2 {
+			if rr.Code != http.StatusTooManyRequests {
+				t.Fatalf("second message status=%d body=%s", rr.Code, rr.Body.String())
+			}
+			assertUnifiedErrorBody(t, rr, http.StatusTooManyRequests)
+		}
+	}
+}
+
 func TestWebChatUserSendOnlyAllowsText(t *testing.T) {
 	server, mailer := newWebChatTestServer(t, true)
 	sessionCookie, csrf := registerWebChatTestUser(t, server, mailer)
@@ -934,13 +956,22 @@ func writeWebChatTestPlugin(t *testing.T, pluginDir, pluginID, webChatJSON strin
 
 func saveRunningWebChatAdapter(t *testing.T, adapterManager *config.AdapterManager) {
 	t.Helper()
-	err := adapterManager.SaveAdapterConfig(0, config.WebChatPlatform, "", "", true, map[string]interface{}{
+	saveRunningWebChatAdapterWithLimit(t, adapterManager, 0)
+}
+
+func saveRunningWebChatAdapterWithLimit(t *testing.T, adapterManager *config.AdapterManager, messageLimit int) {
+	t.Helper()
+	adapterConfig := map[string]interface{}{
 		"smtp_host":     "smtp.example.com",
 		"smtp_port":     "587",
 		"smtp_username": "user",
 		"smtp_password": "pass",
 		"smtp_from":     "bot@example.com",
-	})
+	}
+	if messageLimit > 0 {
+		adapterConfig["message_limit_per_minute"] = messageLimit
+	}
+	err := adapterManager.SaveAdapterConfig(0, config.WebChatPlatform, "", "", true, adapterConfig)
 	if err != nil {
 		t.Fatalf("SaveAdapterConfig returned error: %v", err)
 	}

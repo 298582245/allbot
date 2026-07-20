@@ -600,7 +600,7 @@ func (s *Server) handleWebChatSendMessage(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	if !defaultWebChatLimiter.Allow("msg:"+session.User.UserID, time.Minute, 60) {
+	if !defaultWebChatLimiter.Allow("msg:"+session.User.UserID, time.Minute, adp.MessageLimitPerMinute()) {
 		s.jsonError(w, "发送过于频繁", http.StatusTooManyRequests)
 		return
 	}

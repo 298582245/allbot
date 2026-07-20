@@ -70,6 +70,44 @@ func TestParseConfigForRegistryTrimsAndBuildsAdapter(t *testing.T) {
 	}
 }
 
+func TestParseConfigForRegistryUsesMessageLimit(t *testing.T) {
+	parsed, err := parseConfigForRegistry(`{"smtp_host":"smtp.example.com","smtp_port":"587","smtp_username":"user","smtp_password":"pass","smtp_from":"bot@example.com","message_limit_per_minute":15}`)
+	if err != nil {
+		t.Fatalf("parseConfigForRegistry returned error: %v", err)
+	}
+	cfg := parsed.(*Config)
+	if cfg.MessageLimitPerMinute != 15 {
+		t.Fatalf("MessageLimitPerMinute = %d, want 15", cfg.MessageLimitPerMinute)
+	}
+	adp, err := newAdapterFromRegistry(parsed)
+	if err != nil {
+		t.Fatalf("newAdapterFromRegistry returned error: %v", err)
+	}
+	if got := adp.(*Adapter).MessageLimitPerMinute(); got != 15 {
+		t.Fatalf("MessageLimitPerMinute() = %d, want 15", got)
+	}
+}
+
+func TestParseConfigForRegistryUsesDefaultMessageLimit(t *testing.T) {
+	cases := map[string]string{
+		"missing":  `{"smtp_host":"smtp.example.com","smtp_port":"587","smtp_username":"user","smtp_password":"pass","smtp_from":"bot@example.com"}`,
+		"zero":     `{"smtp_host":"smtp.example.com","smtp_port":"587","smtp_username":"user","smtp_password":"pass","smtp_from":"bot@example.com","message_limit_per_minute":0}`,
+		"negative": `{"smtp_host":"smtp.example.com","smtp_port":"587","smtp_username":"user","smtp_password":"pass","smtp_from":"bot@example.com","message_limit_per_minute":-1}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			parsed, err := parseConfigForRegistry(raw)
+			if err != nil {
+				t.Fatalf("parseConfigForRegistry returned error: %v", err)
+			}
+			cfg := parsed.(*Config)
+			if cfg.MessageLimitPerMinute != DefaultMessageLimitPerMinute {
+				t.Fatalf("MessageLimitPerMinute = %d, want %d", cfg.MessageLimitPerMinute, DefaultMessageLimitPerMinute)
+			}
+		})
+	}
+}
+
 func TestParseConfigForRegistryUsesDefaultSMTPSubjectWhenMissing(t *testing.T) {
 	parsed, err := parseConfigForRegistry(`{"smtp_host":"smtp.example.com","smtp_port":"587","smtp_username":"user","smtp_password":"pass","smtp_from":"bot@example.com"}`)
 	if err != nil {

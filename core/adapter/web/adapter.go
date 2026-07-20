@@ -17,6 +17,8 @@ const platformName = "web"
 
 const DefaultSMTPSubject = "AllBot Web 聊天室验证码"
 
+const DefaultMessageLimitPerMinute = 60
+
 type Adapter struct {
 	database       *config.Database
 	messageHandler func(*types.Message)
@@ -27,12 +29,13 @@ type Adapter struct {
 }
 
 type Config struct {
-	SMTPHost     string `json:"smtp_host"`
-	SMTPPort     string `json:"smtp_port"`
-	SMTPUsername string `json:"smtp_username"`
-	SMTPPassword string `json:"smtp_password"`
-	SMTPFrom     string `json:"smtp_from"`
-	SMTPSubject  string `json:"smtp_subject"`
+	SMTPHost              string `json:"smtp_host"`
+	SMTPPort              string `json:"smtp_port"`
+	SMTPUsername          string `json:"smtp_username"`
+	SMTPPassword          string `json:"smtp_password"`
+	SMTPFrom              string `json:"smtp_from"`
+	SMTPSubject           string `json:"smtp_subject"`
+	MessageLimitPerMinute int    `json:"message_limit_per_minute"`
 }
 
 func NewAdapter() *Adapter {
@@ -40,17 +43,29 @@ func NewAdapter() *Adapter {
 }
 
 func NewAdapterWithConfig(cfg *Config) *Adapter {
-	adapter := &Adapter{subscribers: make(map[string]map[chan *config.WebChatMessage]struct{})}
+	configValue := Config{}
 	if cfg != nil {
-		adapter.config = normalizeConfig(*cfg)
+		configValue = *cfg
 	}
-	return adapter
+	return &Adapter{
+		subscribers: make(map[string]map[chan *config.WebChatMessage]struct{}),
+		config:      normalizeConfig(configValue),
+	}
 }
 
 func (a *Adapter) SMTPConfig() Config {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.config
+}
+
+func (a *Adapter) MessageLimitPerMinute() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.config.MessageLimitPerMinute <= 0 {
+		return DefaultMessageLimitPerMinute
+	}
+	return a.config.MessageLimitPerMinute
 }
 
 func (a *Adapter) SetDatabase(database *config.Database) {
@@ -304,6 +319,9 @@ func normalizeConfig(cfg Config) Config {
 	cfg.SMTPSubject = strings.TrimSpace(cfg.SMTPSubject)
 	if cfg.SMTPSubject == "" {
 		cfg.SMTPSubject = DefaultSMTPSubject
+	}
+	if cfg.MessageLimitPerMinute <= 0 {
+		cfg.MessageLimitPerMinute = DefaultMessageLimitPerMinute
 	}
 	return cfg
 }

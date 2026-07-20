@@ -16,9 +16,10 @@ import (
 )
 
 type Database struct {
-	db       *sql.DB
-	path     string
-	pointsMu sync.Mutex
+	db         *sql.DB
+	path       string
+	pointsMu   sync.Mutex
+	bindCodeMu sync.Mutex
 }
 
 func NewDatabase(dbPath string) (*Database, error) {
@@ -418,6 +419,8 @@ func createTables(db *sql.DB) error {
 		expires_at DATETIME NOT NULL,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE INDEX IF NOT EXISTS idx_user_bind_codes_account_expiry ON user_bind_codes(platform, user_id, expires_at DESC);
 
 	CREATE TABLE IF NOT EXISTS web_chat_users (
 		user_id TEXT PRIMARY KEY,

@@ -143,17 +143,16 @@ func TestHandleAdapterPlatforms(t *testing.T) {
 	if !ok || len(webSchema) == 0 {
 		t.Fatalf("web config_schema = %#v", web["config_schema"])
 	}
-	var subjectField map[string]interface{}
+	webFields := make(map[string]map[string]interface{})
 	for _, field := range webSchema {
 		fieldMap, ok := field.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		if fieldMap["key"] == "smtp_subject" {
-			subjectField = fieldMap
-			break
-		}
+		key, _ := fieldMap["key"].(string)
+		webFields[key] = fieldMap
 	}
+	subjectField := webFields["smtp_subject"]
 	if subjectField == nil {
 		t.Fatalf("missing smtp_subject in web schema: %#v", webSchema)
 	}
@@ -162,6 +161,16 @@ func TestHandleAdapterPlatforms(t *testing.T) {
 	}
 	if subjectField["default"] != webadapter.DefaultSMTPSubject {
 		t.Fatalf("smtp_subject default = %#v, want %q", subjectField["default"], webadapter.DefaultSMTPSubject)
+	}
+	messageLimitField := webFields["message_limit_per_minute"]
+	if messageLimitField == nil {
+		t.Fatalf("missing message_limit_per_minute in web schema: %#v", webSchema)
+	}
+	if messageLimitField["type"] != "number" || messageLimitField["required"] != false {
+		t.Fatalf("message_limit_per_minute field = %#v", messageLimitField)
+	}
+	if messageLimitField["default"] != float64(webadapter.DefaultMessageLimitPerMinute) {
+		t.Fatalf("message_limit_per_minute default = %#v, want %d", messageLimitField["default"], webadapter.DefaultMessageLimitPerMinute)
 	}
 }
 

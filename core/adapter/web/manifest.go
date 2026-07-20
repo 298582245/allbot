@@ -20,6 +20,7 @@ func init() {
 			{Key: "smtp_password", Label: "SMTP 密码", Type: "password", Required: true, Help: "SMTP 登录密码或授权码"},
 			{Key: "smtp_from", Label: "发件人", Type: "text", Required: true, Help: "验证码邮件发件人地址"},
 			{Key: "smtp_subject", Label: "验证码邮件标题", Type: "text", Required: false, Default: DefaultSMTPSubject, Help: "留空时使用默认标题"},
+			{Key: "message_limit_per_minute", Label: "每分钟消息限制", Type: "number", Required: false, Default: DefaultMessageLimitPerMinute, Help: fmt.Sprintf("单个 Web 聊天用户每分钟最多发送的消息数，留空或小于等于 0 时使用默认值 %d", DefaultMessageLimitPerMinute)},
 		},
 		Capabilities: registry.Capabilities{SendText: true, SendImage: true, SendFile: true, SendMarkdown: true, SendRich: true, SendMixedContent: true, PrivateMessage: true},
 		ParseConfig:  parseConfigForRegistry,

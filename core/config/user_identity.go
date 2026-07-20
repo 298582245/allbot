@@ -110,22 +110,32 @@ func (d *Database) EnsureUserAccount(platform, userID string) (*UserAccount, err
 }
 
 func (d *Database) CreateUserBindCode(platform, userID string) (*UserBindCode, error) {
+	d.bindCodeMu.Lock()
+	defer d.bindCodeMu.Unlock()
+
 	account, err := d.EnsureUserAccount(platform, userID)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := d.db.Exec(`DELETE FROM user_bind_codes WHERE platform = ? AND user_id = ? OR expires_at <= CURRENT_TIMESTAMP`, account.Platform, account.UserID); err != nil {
+
+	var existing UserBindCode
+	err = d.db.QueryRow(`SELECT code, platform, user_id, union_id, expires_at, created_at FROM user_bind_codes WHERE platform = ? AND user_id = ? AND expires_at > CURRENT_TIMESTAMP ORDER BY expires_at DESC LIMIT 1`, account.Platform, account.UserID).Scan(&existing.Code, &existing.Platform, &existing.UserID, &existing.UnionID, &existing.ExpiresAt, &existing.CreatedAt)
+	if err == nil {
+		return &existing, nil
+	}
+	if err != sql.ErrNoRows {
 		return nil, err
 	}
 	code, err := randomDigits(6)
 	if err != nil {
 		return nil, err
 	}
-	expiresAt := time.Now().Add(bindCodeTTL)
-	if _, err := d.db.Exec(`INSERT INTO user_bind_codes (code, platform, user_id, union_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`, code, account.Platform, account.UserID, account.UnionID, expiresAt); err != nil {
+	createdAt := time.Now()
+	expiresAt := createdAt.Add(bindCodeTTL)
+	if _, err := d.db.Exec(`INSERT INTO user_bind_codes (code, platform, user_id, union_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`, code, account.Platform, account.UserID, account.UnionID, expiresAt, createdAt); err != nil {
 		return nil, err
 	}
-	return &UserBindCode{Code: code, Platform: account.Platform, UserID: account.UserID, UnionID: account.UnionID, ExpiresAt: expiresAt, CreatedAt: time.Now()}, nil
+	return &UserBindCode{Code: code, Platform: account.Platform, UserID: account.UserID, UnionID: account.UnionID, ExpiresAt: expiresAt, CreatedAt: createdAt}, nil
 }
 
 func (d *Database) BindUserByCode(platform, userID, code string) (*UserAccount, *UserAccount, error) {
