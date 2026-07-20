@@ -66,6 +66,7 @@ type Plugin struct {
 	Template          string
 	TemplateVersion   string
 	TemplateMetadata  map[string]interface{}
+	TemplateSource    map[string]interface{}
 }
 
 type OpenAPIConfig struct {
@@ -174,4 +175,5 @@ type PluginConfig struct {
 	Template          string                  `json:"template,omitempty"`
 	TemplateVersion   string                  `json:"template_version,omitempty"`
 	TemplateMetadata  map[string]interface{}  `json:"template_metadata,omitempty"`
+	TemplateSource    map[string]interface{}  `json:"template_source,omitempty"`
 }

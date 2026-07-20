@@ -99,6 +99,7 @@ type Server struct {
 	historicalResourceGetSetting func() (string, error)
 	historicalResourceSetSetting func(string) error
 	serverMu                     sync.Mutex
+	pluginMutationLocks          sync.Map
 	httpServer                   *http.Server
 	openAPIAccess                atomicOpenAPIAccess
 	openAPIStats                 *openAPIStatsRecorder
@@ -152,6 +153,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/openapis", s.handleOpenAPIConfigs)
 	mux.HandleFunc("/api/openapis/", s.handleOpenAPIConfigDetail)
 	mux.HandleFunc("/api/plugins/config/", s.handlePluginConfig)
+	mux.HandleFunc("/api/plugins/template-editor/", s.handlePluginTemplateEditor)
 	mux.HandleFunc("/api/plugins/export/", s.handlePluginExport)
 	mux.HandleFunc("/api/plugins/files/", s.handlePluginFiles)
 	mux.HandleFunc("/api/plugins/code/", s.handlePluginCode)
@@ -964,6 +966,9 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodPut {
+		mutationLock := s.pluginMutationLock(pluginID)
+		mutationLock.Lock()
+		defer mutationLock.Unlock()
 		var config map[string]interface{}
 		if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
 			s.jsonError(w, "Invalid request", http.StatusBadRequest)
@@ -1150,6 +1155,9 @@ func (s *Server) handlePluginCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodPut {
+		mutationLock := s.pluginMutationLock(pluginID)
+		mutationLock.Lock()
+		defer mutationLock.Unlock()
 		var req struct {
 			Code string `json:"code"`
 		}
@@ -1241,20 +1249,20 @@ func (s *Server) handlePluginFiles(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "不能预览文件夹", http.StatusBadRequest)
 			return
 		}
-		if !isTextPreviewFile(filePath) {
-			s.jsonResponse(w, map[string]interface{}{"path": filepath.ToSlash(filePath), "filename": filepath.Base(filePath), "editable": false, "text": false, "size": info.Size()})
-			return
-		}
 		data, err := os.ReadFile(fullPath)
 		if err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		s.jsonResponse(w, map[string]interface{}{"path": filepath.ToSlash(filePath), "filename": filepath.Base(filePath), "code": string(data), "editable": true, "text": true, "size": info.Size()})
+		s.jsonResponse(w, map[string]interface{}{"path": filepath.ToSlash(filePath), "filename": filepath.Base(filePath), "code": string(data), "sha256": sha256Bytes(data), "editable": true, "text": true, "size": info.Size()})
 	case http.MethodPut:
+		mutationLock := s.pluginMutationLock(pluginID)
+		mutationLock.Lock()
+		defer mutationLock.Unlock()
 		var req struct {
-			Path string `json:"path"`
-			Code string `json:"code"`
+			Path           string `json:"path"`
+			Code           string `json:"code"`
+			ExpectedSHA256 string `json:"expected_sha256"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			s.jsonError(w, "Invalid request", http.StatusBadRequest)
@@ -1262,10 +1270,6 @@ func (s *Server) handlePluginFiles(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.TrimSpace(req.Path) == "" {
 			s.jsonError(w, "文件路径不能为空", http.StatusBadRequest)
-			return
-		}
-		if !isTextPreviewFile(req.Path) {
-			s.jsonError(w, "该文件类型不支持在线编辑", http.StatusBadRequest)
 			return
 		}
 		fullPath, err := safePluginPath(pluginRoot, req.Path)
@@ -1282,13 +1286,25 @@ func (s *Server) handlePluginFiles(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "不能保存文件夹", http.StatusBadRequest)
 			return
 		}
+		currentData, err := os.ReadFile(fullPath)
+		if err != nil {
+			s.jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if strings.TrimSpace(req.ExpectedSHA256) != "" && !strings.EqualFold(req.ExpectedSHA256, sha256Bytes(currentData)) {
+			s.jsonError(w, "文件已在编辑器之外修改，请重新加载后再保存", http.StatusConflict)
+			return
+		}
 		if err := os.WriteFile(fullPath, []byte(req.Code), 0644); err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		_ = s.pluginManager.ReloadPlugin(pluginID)
-		s.jsonResponse(w, map[string]interface{}{"message": "文件已保存并生效"})
+		s.jsonResponse(w, map[string]interface{}{"message": "文件已保存并生效", "sha256": sha256Bytes([]byte(req.Code))})
 	case http.MethodPost:
+		mutationLock := s.pluginMutationLock(pluginID)
+		mutationLock.Lock()
+		defer mutationLock.Unlock()
 		var req struct {
 			Path string `json:"path"`
 			Type string `json:"type"`
@@ -1327,10 +1343,6 @@ func (s *Server) handlePluginFiles(w http.ResponseWriter, r *http.Request) {
 			}
 			s.jsonResponse(w, map[string]interface{}{"message": "文件夹已创建", "path": filepath.ToSlash(filePath), "type": entryType})
 		case "file":
-			if !isTextPreviewFile(filePath) {
-				s.jsonError(w, "该文件类型不支持在线编辑", http.StatusBadRequest)
-				return
-			}
 			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 				s.jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -1345,6 +1357,9 @@ func (s *Server) handlePluginFiles(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "创建类型无效", http.StatusBadRequest)
 		}
 	case http.MethodDelete:
+		mutationLock := s.pluginMutationLock(pluginID)
+		mutationLock.Lock()
+		defer mutationLock.Unlock()
 		filePath := strings.TrimSpace(r.URL.Query().Get("path"))
 		if filePath == "" {
 			var req struct {
@@ -1398,7 +1413,7 @@ func buildPluginFileTree(root, relative string) ([]map[string]interface{}, error
 		if err != nil {
 			return nil, err
 		}
-		item := map[string]interface{}{"name": name, "path": relPath, "type": "file", "text": isTextPreviewFile(relPath), "size": info.Size()}
+		item := map[string]interface{}{"name": name, "path": relPath, "type": "file", "text": true, "size": info.Size()}
 		if entry.IsDir() {
 			children, err := buildPluginFileTree(root, relPath)
 			if err != nil {
@@ -1470,15 +1485,6 @@ func safePluginEntryPath(root, runtimeName, entry string) (string, error) {
 		return "", fmt.Errorf("入口文件不能是目录")
 	}
 	return fullPath, nil
-}
-
-func isTextPreviewFile(path string) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".go", ".js", ".ts", ".jsx", ".tsx", ".vue", ".py", ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".html", ".css", ".scss", ".sql", ".sh", ".bat", ".ps1", ".env":
-		return true
-	default:
-		return false
-	}
 }
 
 func (s *Server) webAssetsHandler() http.Handler {

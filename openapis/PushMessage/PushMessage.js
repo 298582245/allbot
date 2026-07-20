@@ -34,10 +34,13 @@ function readOptionalQuery(query, name) {
 const HTTP_URL_PATTERN = /https?:\/\/[^\s<>"']+/giu
 const HAS_HTTP_URL_PATTERN = /https?:\/\/[^\s<>"']+/iu
 const CHINESE_FIELD_PATTERN = /^([\p{Script=Han}][\p{Script=Han}A-Za-z0-9（）()·/_-]{0,19})(\s*[：:])(\s*)(.*)$/u
-const ADDRESS_FIELDS = new Set(['地址', '链接', '网址', 'URL', '访问地址', '下载地址', '详情地址'])
 
 function escapeMarkdownText(value) {
   return value.replace(/[\\`*_[\]{}()<>#+\-.!|~]/g, '\\$&')
+}
+
+function unescapeMarkdownUrl(url) {
+  return url.replace(/\\([\\`*_[\]{}()<>#+\-.!|~?])/g, '$1')
 }
 
 function escapeMarkdownLinkDestination(url) {
@@ -66,10 +69,11 @@ function formatAddressValue(value) {
 
   for (const match of value.matchAll(HTTP_URL_PATTERN)) {
     const matchedUrl = match[0]
-    const url = trimUrlTrailingPunctuation(matchedUrl)
-    const trailing = matchedUrl.slice(url.length)
+    const escapedUrl = trimUrlTrailingPunctuation(matchedUrl)
+    const url = unescapeMarkdownUrl(escapedUrl)
+    const trailing = matchedUrl.slice(escapedUrl.length)
     result += escapeMarkdownText(value.slice(offset, match.index))
-    result += `[${escapeMarkdownText(url)}](${escapeMarkdownLinkDestination(url)})`
+    result += `[点击打开](${escapeMarkdownLinkDestination(url)})`
     result += escapeMarkdownText(trailing)
     offset = match.index + matchedUrl.length
   }
@@ -89,10 +93,9 @@ function messageToMarkdown(message) {
     const field = content.match(CHINESE_FIELD_PATTERN)
     if (field) {
       const [, label, separator, spacing, value] = field
-      const formattedValue = ADDRESS_FIELDS.has(label)
-        ? formatAddressValue(value)
-        : escapeMarkdownText(value)
-      return `**${escapeMarkdownText(label)}${separator.trim()}**${spacing}${formattedValue}`
+      const formattedValue = formatAddressValue(value)
+      const valueSpacing = value === '' ? '' : (spacing || ' ')
+      return `**${escapeMarkdownText(label)}${separator.trim()}**${valueSpacing}${formattedValue}`
     }
 
     const escaped = escapeMarkdownText(content)
@@ -101,7 +104,7 @@ function messageToMarkdown(message) {
       return `### ${escaped}`
     }
     return escaped
-  }).join('\n')
+  }).filter(Boolean).join('\n\n')
 }
 
 module.exports.action = async function action(ctx, req, res) {

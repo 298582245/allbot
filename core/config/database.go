@@ -270,6 +270,7 @@ func createTables(db *sql.DB) error {
 		runtime TEXT NOT NULL,
 		structure TEXT NOT NULL DEFAULT '',
 		metadata TEXT NOT NULL DEFAULT '{}',
+		template_source TEXT NOT NULL DEFAULT '{}',
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
@@ -623,6 +624,9 @@ func createTables(db *sql.DB) error {
 	if _, err := db.Exec(settingsSchema); err != nil {
 		return err
 	}
+	if err := migratePluginTemplateMetadataTable(db); err != nil {
+		return err
+	}
 
 	if err := migrateUsersTable(db); err != nil {
 		return err
@@ -827,6 +831,18 @@ func migrateUsersTable(db *sql.DB) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func migratePluginTemplateMetadataTable(db *sql.DB) error {
+	columns, err := tableColumns(db, "plugin_template_metadata")
+	if err != nil {
+		return err
+	}
+	if columns["template_source"] {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE plugin_template_metadata ADD COLUMN template_source TEXT NOT NULL DEFAULT '{}'`)
+	return err
 }
 
 func migrateAdaptersTable(db *sql.DB) error {

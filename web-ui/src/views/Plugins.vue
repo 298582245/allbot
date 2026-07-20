@@ -747,6 +747,19 @@ import { javascript } from '@codemirror/lang-javascript'
 import { python } from '@codemirror/lang-python'
 import { oneDark } from '@codemirror/theme-one-dark'
 import StdPagination from '@/components/StdPagination.vue'
+import {
+  accountQLCommands as buildAccountQLCommands,
+  accountQLTriggerPreview as buildAccountQLTriggerPreview,
+  createEmptyAccountQLConfig,
+  defaultAfterRunCode as sharedDefaultAfterRunCode,
+  defaultCheckCkCode as sharedDefaultCheckCkCode,
+  defaultParseInputCode as sharedDefaultParseInputCode,
+  defaultQueryCode as sharedDefaultQueryCode,
+  defaultRouteCode as sharedDefaultRouteCode,
+  defaultRouteFunctionName as sharedDefaultRouteFunctionName,
+  isAccountQLTemplate as isAccountQLTemplateName,
+  normalizeScriptRuntime as sharedNormalizeScriptRuntime
+} from '@/utils/accountQlTemplate'
 
 const router = useRouter()
 
@@ -868,7 +881,7 @@ function configSelectOptions(field) {
   return [{ label: String(field.default || ''), value: String(field.default || '') }].filter(option => option.value)
 }
 
-const isAccountQLTemplate = computed(() => createForm.value.template === 'nodejs_account_ql' || createForm.value.template === 'python_account_ql')
+const isAccountQLTemplate = computed(() => isAccountQLTemplateName(createForm.value.template))
 const isPythonAccountQLTemplate = computed(() => createForm.value.template === 'python_account_ql')
 const accountQLRuntime = computed(() => isPythonAccountQLTemplate.value ? 'python' : 'nodejs')
 const selectedTemplateDescription = computed(() => {
@@ -883,22 +896,11 @@ const createPreviewIssues = computed(() => [
   ...(Array.isArray(createPreviewData.value?.warnings) ? createPreviewData.value.warnings : [])
 ])
 
-const accountQLCommands = computed(() => {
-  const accountQL = createForm.value.account_ql || {}
-  const commands = ['登录', '账号', '管理', '查询', '运行', '一键运行', '签到', '删除', '授权', '帮助']
-  if (accountQL.enable_ck_check) commands.push('CK检测')
-  if (accountQL.enable_expire_check) commands.push('过期检测')
-  ;(accountQL.routes || []).forEach((route) => {
-    const command = String(route.command || '').trim()
-    if (command) commands.push(command)
-  })
-  return commands
-})
+const accountQLCommands = computed(() => buildAccountQLCommands(createForm.value.account_ql || {}))
 
 const accountQLTriggerPreview = computed(() => {
   if (createPreviewData.value?.trigger) return createPreviewData.value.trigger
-  const prefix = String(createForm.value.account_ql?.prefix || '前缀').trim() || '前缀'
-  return `^(${escapeRegExp(prefix)})(${accountQLCommands.value.map(escapeRegExp).join('|')})$`
+  return buildAccountQLTriggerPreview(createForm.value.account_ql || {})
 })
 
 
@@ -1369,29 +1371,7 @@ function createEmptyPluginForm() {
     template: 'basic',
     script_env: createScriptEnvConfig(),
     user_config_schema: [],
-    account_ql: {
-      prefix: '',
-      table_name: '',
-      env_name: '',
-      task_script: 'scripts/task.js',
-      script_runtime: 'nodejs',
-      auth_price_per_month: 0,
-      cron: '0 8 * * *',
-      wait_scheduled: true,
-      enable_after_run: false,
-      after_run_code: defaultAfterRunCode('nodejs'),
-      enable_ck_check: true,
-      ck_check_cron: '25 9 * * *',
-      check_ck_code: defaultCheckCkCode('nodejs'),
-      enable_expire_check: false,
-      expire_check_cron: '15 9 * * *',
-      expire_notify_days: '7,3,1,0',
-      expire_delete_after_days: -1,
-      run_wait_timeout: 7200,
-      parse_input_code: defaultParseInputCode('nodejs'),
-      query_code: defaultQueryCode('nodejs'),
-      routes: []
-    }
+    account_ql: createEmptyAccountQLConfig('nodejs')
   }
 }
 
@@ -1475,84 +1455,27 @@ function normalizeCreatePayload(form) {
 }
 
 function defaultParseInputCode(runtime = accountQLRuntime.value) {
-  if (runtime === 'python') {
-    return `def parse_input(raw, ctx):
-    value = str(raw or '').strip()
-    if not value:
-        raise RuntimeError('账号 CK 不能为空')
-    return {
-        "env_value": value,
-        "unique_key": value,
-        "display_name": value[:8],
-    }`
-  }
-  return `function parseInput(raw, ctx) {
-  const value = String(raw || '').trim();
-  if (!value) throw new Error('账号 CK 不能为空');
-  return {
-    envValue: value,
-    uniqueKey: value,
-    displayName: value.slice(0, 8)
-  };
-}`
+  return sharedDefaultParseInputCode(runtime)
 }
 
 function defaultQueryCode(runtime = accountQLRuntime.value) {
-  if (runtime === 'python') {
-    return `async def query(account, ctx, index):
-    return {
-        "状态": account.get("status") or "active",
-    }`
-  }
-  return "async function query(account, ctx, index) {\n  return `${index + 1}. ${account.account_name}｜${account.status || 'active'}`;\n}"
+  return sharedDefaultQueryCode(runtime)
 }
 
 function defaultAfterRunCode(runtime = accountQLRuntime.value) {
-  if (runtime === 'python') {
-    return `async def after_run(ctx, accounts, result, helpers):
-    if result.get("status") != "success":
-        return
-    # 示例：一键运行成功后给触发会话推送消息，可按业务条件改为 ctx.send_message 或 ctx.push
-    await ctx.reply(f"一键运行完成，账号数：{len(accounts)}")`
-  }
-  return `async function afterRun(ctx, accounts, result, helpers) {
-  if (result?.status !== 'success') return;
-  // 示例：一键运行成功后给触发会话推送消息，可按业务条件改为 ctx.sendMessage 或 ctx.push
-  await ctx.reply(` + '`一键运行完成，账号数：${accounts.length}`' + `);
-}`
+  return sharedDefaultAfterRunCode(runtime)
 }
 
 function defaultCheckCkCode(runtime = accountQLRuntime.value) {
-  if (runtime === 'python') {
-    return `async def check_ck(account, ctx):
-    return {
-        "valid": True,
-        "reason": "",
-    }`
-  }
-  return `async function checkCk(account, ctx) {
-  return {
-    valid: true,
-    reason: ''
-  };
-}`
+  return sharedDefaultCheckCkCode(runtime)
 }
 
 function defaultRouteFunctionName(index, runtime = accountQLRuntime.value) {
-  return runtime === 'python' ? `custom_route_${index + 1}` : `customRoute${index + 1}`
+  return sharedDefaultRouteFunctionName(index, runtime)
 }
 
 function defaultRouteCode(functionName = '', runtime = accountQLRuntime.value) {
-  const name = functionName || defaultRouteFunctionName(0, runtime)
-  if (runtime === 'python') {
-    return `async def ${name}(ctx, helpers):
-    accounts = await helpers.list_mine({"status": "active"})
-    await ctx.reply(f"账号数：{len(accounts)}")`
-  }
-  return `async function ${name}(ctx, helpers) {
-  const accounts = await helpers.listMine({ status: 'active' });
-  return ctx.reply(` + '`账号数：${accounts.length}`' + `);
-}`
+  return sharedDefaultRouteCode(functionName, runtime)
 }
 
 function resetAccountQLDefaultState() {
@@ -1616,13 +1539,7 @@ function isDefaultTaskScript(value, baseID) {
 }
 
 function normalizeScriptRuntime(value, taskScript = '', fallback = 'nodejs') {
-  const runtime = String(value || '').trim().toLowerCase()
-  if (runtime === 'node' || runtime === 'js' || runtime === 'javascript') return 'nodejs'
-  if (runtime === 'nodejs' || runtime === 'python') return runtime
-  const ext = String(taskScript || '').trim().toLowerCase().split('?')[0]
-  if (ext.endsWith('.py')) return 'python'
-  if (ext.endsWith('.js') || ext.endsWith('.mjs') || ext.endsWith('.cjs')) return 'nodejs'
-  return fallback === 'python' ? 'python' : 'nodejs'
+  return sharedNormalizeScriptRuntime(value, taskScript, fallback)
 }
 
 function sanitizePluginID(value) {

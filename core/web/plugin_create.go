@@ -84,6 +84,7 @@ type createGeneratedFile struct {
 	Role    string `json:"role"`
 	Content string `json:"content,omitempty"`
 	Bytes   int    `json:"bytes"`
+	SHA256  string `json:"sha256,omitempty"`
 	Written bool   `json:"written,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
@@ -203,6 +204,9 @@ func (s *Server) handleCreatePlugin(w http.ResponseWriter, r *http.Request) {
 
 	metadataSaved := false
 	cleanupOnError := func() {
+		if s.pluginManager != nil {
+			s.pluginManager.RemoveLoadedPlugin(plan.PluginID)
+		}
 		_ = os.RemoveAll(pluginPath)
 		if metadataSaved {
 			_ = s.deletePlanTemplateMetadata(plan.PluginID)
@@ -391,18 +395,27 @@ func renderCreatePluginConfig(plan *createPluginPlan) types.PluginConfig {
 }
 
 func renderCreatePluginFiles(plan *createPluginPlan) []createGeneratedFile {
-	configBytes, _ := json.MarshalIndent(renderCreatePluginConfig(plan), "", "  ")
-	files := []createGeneratedFile{{Path: "plugin.json", Role: "config", Content: string(configBytes), Bytes: len(configBytes)}}
 	entryCode := pluginTemplate(plan.Runtime, plan.Config.UserConfigSchema)
 	if plan.AccountQL != nil {
 		entryCode = accountQLPluginTemplate(*plan.AccountQL)
 	}
-	files = append(files, createGeneratedFile{Path: plan.Entry, Role: "entry", Content: entryCode, Bytes: len([]byte(entryCode))})
+	generatedFiles := []createGeneratedFile{{Path: plan.Entry, Role: "entry", Content: entryCode, Bytes: len([]byte(entryCode)), SHA256: sha256Text(entryCode)}}
 	if plan.AccountQL != nil {
 		scriptCode := accountQLTaskScriptTemplate(plan.AccountQL.ScriptRuntime, plan.AccountQL.EnvName)
-		files = append(files, createGeneratedFile{Path: plan.AccountQL.TaskScript, Role: "task_script", Content: scriptCode, Bytes: len([]byte(scriptCode))})
+		generatedFiles = append(generatedFiles, createGeneratedFile{Path: plan.AccountQL.TaskScript, Role: "task_script", Content: scriptCode, Bytes: len([]byte(scriptCode)), SHA256: sha256Text(scriptCode)})
+		source := buildTemplateSource(plan, generatedFiles)
+		source.Files = append(source.Files, templateSourceFile{Path: "plugin.json", Role: "config", SHA256: pluginConfigSHA256(plan.Config)})
+		plan.Config.TemplateSource = templateSourceMap(source)
 	}
-	return files
+	configBytes, _ := json.MarshalIndent(renderCreatePluginConfig(plan), "", "  ")
+	configFile := createGeneratedFile{Path: "plugin.json", Role: "config", Content: string(configBytes), Bytes: len(configBytes), SHA256: sha256Bytes(configBytes)}
+	return append([]createGeneratedFile{configFile}, generatedFiles...)
+}
+
+func pluginConfigSHA256(value types.PluginConfig) string {
+	value.TemplateSource = nil
+	data, _ := json.Marshal(value)
+	return sha256Bytes(data)
 }
 
 func buildAccountQLTemplateMetadata(plan *createPluginPlan) map[string]interface{} {
@@ -587,7 +600,7 @@ func (s *Server) savePlanTemplateMetadata(plan *createPluginPlan) error {
 	if database == nil {
 		return fmt.Errorf("数据库不可用，无法保存模板元数据")
 	}
-	return database.SavePluginTemplateMetadata(&config.PluginTemplateMetadata{PluginID: plan.PluginID, Template: plan.Template, TemplateVersion: plan.TemplateVersion, Runtime: plan.Runtime, Structure: createPlanStructure(plan), Metadata: plan.Metadata})
+	return database.SavePluginTemplateMetadata(&config.PluginTemplateMetadata{PluginID: plan.PluginID, Template: plan.Template, TemplateVersion: plan.TemplateVersion, Runtime: plan.Runtime, Structure: createPlanStructure(plan), Metadata: plan.Metadata, TemplateSource: plan.Config.TemplateSource})
 }
 
 func (s *Server) deletePlanTemplateMetadata(pluginID string) error {

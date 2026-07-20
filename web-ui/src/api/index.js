@@ -171,6 +171,34 @@ export const createPlugin = (data) => {
   })
 }
 
+// 获取插件模板编辑模型
+export const getPluginTemplateEditor = (pluginId) => {
+  return request({
+    url: `/plugins/template-editor/${encodeURIComponent(String(pluginId))}`,
+    method: 'get',
+    silent: true
+  })
+}
+
+// 保存插件模板编辑模型
+export const updatePluginTemplateEditor = (pluginId, data) => {
+  return request({
+    url: `/plugins/template-editor/${encodeURIComponent(String(pluginId))}`,
+    method: 'put',
+    data,
+    silent: true
+  })
+}
+
+// 将旧账号模板插件转换为可分类编辑模型
+export const convertPluginTemplateEditor = (pluginId, data = {}) => {
+  return updatePluginTemplateEditor(pluginId, {
+    ...data,
+    convert_legacy: true,
+    overwrite_generated_files: true
+  })
+}
+
 // 控制插件（启动/停止/重启）
 export const controlPlugin = (pluginId, action) => {
   return request({

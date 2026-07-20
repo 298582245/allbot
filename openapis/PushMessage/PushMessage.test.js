@@ -112,13 +112,12 @@ test('含 HTTP 链接时发送 Markdown 富消息并保留原文回退', async (
     parts: [{
       type: 'markdown',
       markdown: [
-        '',
         '### 限时 \\*福利\\* \\[精选\\]',
-        '**商品名称：**咖啡豆\\_特价',
-        '**地址：**[https://example\\.com/detail\\_\\(1\\)?from=a&tag=b](https://example.com/detail_%281%29?from=a&tag=b)',
-        '**备注：**原价 \\#99，访问 https://other\\.example/a\\_\\(2\\)',
+        '**商品名称：** 咖啡豆\\_特价',
+        '**地址：** [点击打开](https://example.com/detail_%281%29?from=a&tag=b)',
+        '**备注：** 原价 \\#99，访问 [点击打开](https://other.example/a_%282%29)',
         '普通 \\(文本\\) \\<标签\\> \\~结束\\~'
-      ].join('\n')
+      ].join('\n\n')
     }],
     prefer: 'markdown',
     fallbackText: message
@@ -147,10 +146,10 @@ test('标题跳过字段行并支持大小写混合的 HTTPS 地址标签', asyn
   assert.deepEqual(richCalls[0].parts, [{
     type: 'markdown',
     markdown: [
-      '**任务状态：**成功',
+      '**任务状态：** 成功',
       '### 执行结果 \\[完成\\]',
-      '**下载地址:** [HTTPS://example\\.com/file\\_\\(final\\)\\.zip](HTTPS://example.com/file_%28final%29.zip)。'
-    ].join('\n')
+      '**下载地址:** [点击打开](HTTPS://example.com/file_%28final%29.zip)。'
+    ].join('\n\n')
   }])
   assert.equal(richCalls[0].fallbackText, message)
   assert.equal(richCalls[0].prefer, 'markdown')
@@ -165,8 +164,62 @@ test('地址链接排除西文句末标点和未配对右括号', async () => {
 
   assert.equal(richCalls[0].parts[0].markdown, [
     '### 更新通知',
-    '**地址：**[https://example\\.com/a\\_\\(1\\)](https://example.com/a_%281%29)\\),\\.'
-  ].join('\n'))
+    '**地址：** [点击打开](https://example.com/a_%281%29)\\),\\.'
+  ].join('\n\n'))
+})
+
+test('多条线报的标题、内容、时间和地址均独立成段', async () => {
+  const message = [
+    '线报-赚客吧 线报',
+    '标题：仅剩10年前的大毛尸体',
+    '内容：',
+    '时间：2026-07-18 23:04',
+    '地址：http://new.ixbk.net/zuankeba/6655007.html',
+    '标题：800高价收支付宝探店品',
+    '内容：高价收购上海团购券',
+    '时间：2026-07-18 23:04',
+    '地址：http://new.ixbk.net/zuankeba/6655004.html'
+  ].join('\n')
+  const { richCalls } = await invoke({
+    body: { message },
+    query: { adapter_id: '3', group_id: 'group-openid' }
+  })
+
+  assert.equal(richCalls.length, 1)
+  assert.deepEqual(richCalls[0].parts[0].markdown.split('\n\n'), [
+    '### 线报\\-赚客吧 线报',
+    '**标题：** 仅剩10年前的大毛尸体',
+    '**内容：**',
+    '**时间：** 2026\\-07\\-18 23:04',
+    '**地址：** [点击打开](http://new.ixbk.net/zuankeba/6655007.html)',
+    '**标题：** 800高价收支付宝探店品',
+    '**内容：** 高价收购上海团购券',
+    '**时间：** 2026\\-07\\-18 23:04',
+    '**地址：** [点击打开](http://new.ixbk.net/zuankeba/6655004.html)'
+  ])
+  assert.equal(richCalls[0].fallbackText, message)
+})
+
+test('普通字段中的已转义链接转换为手机 QQ 兼容的短链接文本', async () => {
+  const message = [
+    '大潮',
+    '用户： 19002004136 微信领取链接：https://m\\.aihoge\\.com/lottery/rotor/drawRedPacket?CHECK\\_CODE=AX6a5c28ef73ca2bo9FB',
+    '用户： 18174700780 微信领取链接：https://m\\.aihoge\\.com/lottery/rotor/drawRedPacket?CHECK\\_CODE=AX6a598660be2cepPRCe',
+    '时间只不过是人类定义的，时间不会往回走'
+  ].join('\n')
+  const { richCalls } = await invoke({
+    body: { message },
+    query: { adapter_id: '3', group_id: 'group-openid' }
+  })
+
+  assert.equal(richCalls.length, 1)
+  assert.deepEqual(richCalls[0].parts[0].markdown.split('\n\n'), [
+    '### 大潮',
+    '**用户：** 19002004136 微信领取链接：[点击打开](https://m.aihoge.com/lottery/rotor/drawRedPacket?CHECK_CODE=AX6a5c28ef73ca2bo9FB)',
+    '**用户：** 18174700780 微信领取链接：[点击打开](https://m.aihoge.com/lottery/rotor/drawRedPacket?CHECK_CODE=AX6a598660be2cepPRCe)',
+    '时间只不过是人类定义的，时间不会往回走'
+  ])
+  assert.equal(richCalls[0].fallbackText, message)
 })
 
 test('保留 Telegram 和钉钉等平台的原始目标 ID', async () => {

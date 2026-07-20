@@ -1178,8 +1178,9 @@ function normalizeExternalUrl(value) {
 .version-current {
   margin-top: 4px;
   color: var(--text-primary);
-  font: 700 26px/1.25 var(--font-heading);
+  font: 700 24px/1.25 var(--font-heading);
   letter-spacing: -0.035em;
+  text-align: center;
 }
 .version-latest {
   display: flex;

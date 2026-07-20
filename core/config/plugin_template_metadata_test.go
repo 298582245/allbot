@@ -16,6 +16,7 @@ func TestPluginTemplateMetadataSaveGetUpsertDelete(t *testing.T) {
 		Runtime:         "nodejs",
 		Structure:       "account_ql",
 		Metadata:        map[string]interface{}{"env_name": "DEMO_CK"},
+		TemplateSource:  map[string]interface{}{"version": float64(1), "template": "nodejs_account_ql"},
 	}
 	if err := db.SavePluginTemplateMetadata(first); err != nil {
 		t.Fatal(err)
@@ -24,7 +25,7 @@ func TestPluginTemplateMetadataSaveGetUpsertDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored == nil || stored.Template != "nodejs_account_ql" || stored.Metadata["env_name"] != "DEMO_CK" {
+	if stored == nil || stored.Template != "nodejs_account_ql" || stored.Metadata["env_name"] != "DEMO_CK" || stored.TemplateSource["template"] != "nodejs_account_ql" {
 		t.Fatalf("unexpected stored metadata: %#v", stored)
 	}
 

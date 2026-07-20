@@ -336,6 +336,16 @@ func (m *Manager) GetPlugin(pluginID string) *PluginProcess {
 	return m.plugins[pluginID]
 }
 
+func (m *Manager) RemoveLoadedPlugin(pluginID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	process := m.plugins[pluginID]
+	if process != nil && process.Cmd != nil && process.Cmd.Process != nil {
+		_ = process.Cmd.Process.Kill()
+	}
+	delete(m.plugins, pluginID)
+}
+
 func (m *Manager) GetAllPlugins() []*PluginProcess {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1999,6 +2009,7 @@ func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
 		Template:          config.Template,
 		TemplateVersion:   config.TemplateVersion,
 		TemplateMetadata:  config.TemplateMetadata,
+		TemplateSource:    config.TemplateSource,
 	}, nil
 }
 
