@@ -33,7 +33,7 @@ func TestHandlePaymentSettingsGetDefault(t *testing.T) {
 	}
 	var response config.PaymentSettings
 	decodePaymentResponse(t, recorder, &response)
-	if response.PointsPerRMB != 100 || response.CurrencyUnit != "RMB" || response.HidePayURL || len(response.Methods) != 2 || response.Methods[0].Code != "points" || response.Methods[1].Provider != "alipay_bill" {
+	if response.PointsPerRMB != 100 || response.MaxPaymentAmountCents != 999999 || response.CurrencyUnit != "RMB" || response.HidePayURL || len(response.Methods) != 2 || response.Methods[0].Code != "points" || response.Methods[1].Provider != "alipay_bill" {
 		t.Fatalf("unexpected response: %#v", response)
 	}
 	if !strings.Contains(recorder.Body.String(), "\"hide_pay_url\"") {
@@ -46,6 +46,7 @@ func TestHandlePaymentSettingsPutSuccess(t *testing.T) {
 	defer cleanup()
 	payload := config.DefaultPaymentSettings()
 	payload.PointsPerRMB = 66
+	payload.MaxPaymentAmountCents = 234567
 	payload.CurrencyUnit = "元"
 	payload.EpayQueryIntervalSeconds = 2
 	payload.HidePayURL = true
@@ -60,7 +61,7 @@ func TestHandlePaymentSettingsPutSuccess(t *testing.T) {
 	}
 	var response config.PaymentSettings
 	decodePaymentResponse(t, recorder, &response)
-	if response.PointsPerRMB != 66 || response.CurrencyUnit != "元" || response.EpayQueryIntervalSeconds != 2 || !response.HidePayURL || response.QRCodeBaseURL != "https://qr.example.com/base" || response.EpaySubmitSubject != "后台伪造标题" || !response.Epay.HasKey || response.Epay.Key != "" {
+	if response.PointsPerRMB != 66 || response.MaxPaymentAmountCents != 234567 || response.CurrencyUnit != "元" || response.EpayQueryIntervalSeconds != 2 || !response.HidePayURL || response.QRCodeBaseURL != "https://qr.example.com/base" || response.EpaySubmitSubject != "后台伪造标题" || !response.Epay.HasKey || response.Epay.Key != "" {
 		t.Fatalf("unexpected response: %#v", response)
 	}
 }
@@ -70,6 +71,17 @@ func TestHandlePaymentSettingsPutRejectsInvalidPointsPerRMB(t *testing.T) {
 	defer cleanup()
 	payload := config.DefaultPaymentSettings()
 	payload.PointsPerRMB = 0
+	recorder := performPaymentJSONRequest(t, server.handlePaymentSettings, http.MethodPut, "/api/payments/settings", payload)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestHandlePaymentSettingsPutRejectsInvalidMaxPaymentAmount(t *testing.T) {
+	server, cleanup := newPaymentTestServer(t)
+	defer cleanup()
+	payload := config.DefaultPaymentSettings()
+	payload.MaxPaymentAmountCents = 0
 	recorder := performPaymentJSONRequest(t, server.handlePaymentSettings, http.MethodPut, "/api/payments/settings", payload)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", recorder.Code, recorder.Body.String())
@@ -445,6 +457,43 @@ func TestHandlePaymentQRCodeRejectsMissingContent(t *testing.T) {
 	server.handlePaymentQRCode(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestHandleAlipayBillCashierRequiresOrderToken(t *testing.T) {
+	server, cleanup := newPaymentTestServer(t)
+	defer cleanup()
+	settings := config.DefaultPaymentSettings()
+	settings.AlipayBill.TransferUserID = "2088123456789012"
+	if err := server.adapterManager.GetDatabase().SavePaymentSettings(&settings); err != nil {
+		t.Fatalf("SavePaymentSettings returned error: %v", err)
+	}
+	order, err := server.adapterManager.GetDatabase().CreatePaymentOrder(&config.PaymentOrder{
+		OrderNo: "PWEB_CASHIER", UnionID: "union-web", Subject: "cashier", AmountCents: 100,
+		PointsAmount: 100, Provider: "alipay_bill", Method: "alipay_transfer", Status: "pending",
+		Metadata: "{}", ExpiredAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreatePaymentOrder returned error: %v", err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		token  string
+		status int
+	}{
+		{name: "missing", status: http.StatusNotFound},
+		{name: "invalid", token: "invalid", status: http.StatusNotFound},
+		{name: "valid", token: order.CashierToken, status: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/api/open/payments/alipay-bill/cashier/PWEB_CASHIER?token="+url.QueryEscape(test.token), nil)
+			server.handleAlipayBillCashier(recorder, request)
+			if recorder.Code != test.status {
+				t.Fatalf("status = %d, expected %d: %s", recorder.Code, test.status, recorder.Body.String())
+			}
+		})
 	}
 }
 

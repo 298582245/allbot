@@ -17,12 +17,13 @@ type PaymentProvider interface {
 }
 
 type ProviderCreateRequest struct {
-	OrderNo     string
-	Subject     string
-	AmountCents int64
-	Method      string
-	NotifyURL   string
-	ReturnURL   string
+	OrderNo      string
+	CashierToken string
+	Subject      string
+	AmountCents  int64
+	Method       string
+	NotifyURL    string
+	ReturnURL    string
 }
 
 type ProviderOrder struct {

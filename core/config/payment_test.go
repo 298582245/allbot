@@ -2,9 +2,46 @@ package config
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestMigratePaymentOrdersTableBackfillsCashierTokens(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("sql.Open returned error: %v", err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`CREATE TABLE payment_orders (order_no TEXT NOT NULL UNIQUE); INSERT INTO payment_orders (order_no) VALUES ('P1'), ('P2')`); err != nil {
+		t.Fatalf("create legacy payment_orders returned error: %v", err)
+	}
+	if err := migratePaymentOrdersTable(database); err != nil {
+		t.Fatalf("migratePaymentOrdersTable returned error: %v", err)
+	}
+	rows, err := database.Query(`SELECT cashier_token FROM payment_orders ORDER BY order_no`)
+	if err != nil {
+		t.Fatalf("query cashier tokens returned error: %v", err)
+	}
+	defer rows.Close()
+	tokens := map[string]bool{}
+	for rows.Next() {
+		var token string
+		if err := rows.Scan(&token); err != nil {
+			t.Fatalf("scan cashier token returned error: %v", err)
+		}
+		if len(token) != 64 || strings.Trim(token, "0123456789abcdef") != "" {
+			t.Fatalf("invalid cashier token %q", token)
+		}
+		tokens[token] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate cashier tokens returned error: %v", err)
+	}
+	if len(tokens) != 2 {
+		t.Fatalf("expected two unique cashier tokens, got %d", len(tokens))
+	}
+}
 
 func TestDefaultPaymentSettings(t *testing.T) {
 	db := newPaymentTestDatabase(t)
@@ -14,6 +51,9 @@ func TestDefaultPaymentSettings(t *testing.T) {
 	}
 	if settings.PointsPerRMB != 100 {
 		t.Fatalf("expected default points_per_rmb 100, got %d", settings.PointsPerRMB)
+	}
+	if settings.MaxPaymentAmountCents != 999999 {
+		t.Fatalf("expected default max_payment_amount_cents 999999, got %d", settings.MaxPaymentAmountCents)
 	}
 	if settings.CurrencyUnit != "RMB" {
 		t.Fatalf("expected default currency_unit RMB, got %s", settings.CurrencyUnit)
@@ -45,6 +85,7 @@ func TestSaveAndGetPaymentSettings(t *testing.T) {
 	db := newPaymentTestDatabase(t)
 	settings := DefaultPaymentSettings()
 	settings.PointsPerRMB = 80
+	settings.MaxPaymentAmountCents = 123456
 	settings.CurrencyUnit = "元"
 	settings.MaxPendingPayments = 3
 	settings.EpayQueryIntervalSeconds = 2
@@ -62,7 +103,7 @@ func TestSaveAndGetPaymentSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPaymentSettings returned error: %v", err)
 	}
-	if saved.PointsPerRMB != 80 || saved.CurrencyUnit != "元" || saved.MaxPendingPayments != 3 || saved.EpayQueryIntervalSeconds != 2 || !saved.ThirdPartyEnabled || !saved.HidePayURL || saved.QRCodeBaseURL != "https://qr.example.com/base" || saved.EpaySubmitSubject != "后台伪造标题" || saved.Epay.SignType != "RSA" || saved.Epay.Version != "v2" {
+	if saved.PointsPerRMB != 80 || saved.MaxPaymentAmountCents != 123456 || saved.CurrencyUnit != "元" || saved.MaxPendingPayments != 3 || saved.EpayQueryIntervalSeconds != 2 || !saved.ThirdPartyEnabled || !saved.HidePayURL || saved.QRCodeBaseURL != "https://qr.example.com/base" || saved.EpaySubmitSubject != "后台伪造标题" || saved.Epay.SignType != "RSA" || saved.Epay.Version != "v2" {
 		t.Fatalf("unexpected saved settings: %#v", saved)
 	}
 	if len(saved.Methods) != 3 || saved.Methods[2].Code != "alipay" {
@@ -85,6 +126,24 @@ func TestSavePaymentSettingsRejectsInvalidMaxPendingPayments(t *testing.T) {
 	settings.MaxPendingPayments = 0
 	if err := db.SavePaymentSettings(&settings); err == nil {
 		t.Fatal("expected invalid max_pending_payments to fail")
+	}
+}
+
+func TestSavePaymentSettingsRejectsInvalidMaxPaymentAmount(t *testing.T) {
+	db := newPaymentTestDatabase(t)
+	settings := DefaultPaymentSettings()
+	settings.MaxPaymentAmountCents = 0
+	if err := db.SavePaymentSettings(&settings); err == nil {
+		t.Fatal("expected invalid max_payment_amount_cents to fail")
+	}
+}
+
+func TestNormalizePaymentSettingsDefaultsMissingMaxPaymentAmount(t *testing.T) {
+	settings := DefaultPaymentSettings()
+	settings.MaxPaymentAmountCents = 0
+	normalized := NormalizePaymentSettings(&settings)
+	if normalized.MaxPaymentAmountCents != 999999 {
+		t.Fatalf("expected legacy max payment amount to normalize to 999999, got %d", normalized.MaxPaymentAmountCents)
 	}
 }
 

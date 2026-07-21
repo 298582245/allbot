@@ -1,6 +1,6 @@
 module github.com/allbot/allbot
 
-go 1.26.1
+go 1.26.5
 
 require (
 	github.com/gorilla/websocket v1.5.0

@@ -328,6 +328,7 @@ func createTables(db *sql.DB) error {
 	CREATE TABLE IF NOT EXISTS payment_orders (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		order_no TEXT NOT NULL UNIQUE,
+		cashier_token TEXT NOT NULL DEFAULT '',
 		plugin_id TEXT NOT NULL DEFAULT '',
 		union_id TEXT NOT NULL,
 		platform TEXT NOT NULL DEFAULT '',
@@ -630,6 +631,9 @@ func createTables(db *sql.DB) error {
 	if err := migratePluginTemplateMetadataTable(db); err != nil {
 		return err
 	}
+	if err := migratePaymentOrdersTable(db); err != nil {
+		return err
+	}
 
 	if err := migrateUsersTable(db); err != nil {
 		return err
@@ -845,6 +849,60 @@ func migratePluginTemplateMetadataTable(db *sql.DB) error {
 		return nil
 	}
 	_, err = db.Exec(`ALTER TABLE plugin_template_metadata ADD COLUMN template_source TEXT NOT NULL DEFAULT '{}'`)
+	return err
+}
+
+func migratePaymentOrdersTable(db *sql.DB) error {
+	columns, err := tableColumns(db, "payment_orders")
+	if err != nil {
+		return err
+	}
+	if !columns["cashier_token"] {
+		if _, err := db.Exec(`ALTER TABLE payment_orders ADD COLUMN cashier_token TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+
+	rows, err := db.Query(`SELECT order_no FROM payment_orders WHERE TRIM(cashier_token) = ''`)
+	if err != nil {
+		return err
+	}
+	var orderNumbers []string
+	for rows.Next() {
+		var orderNumber string
+		if err := rows.Scan(&orderNumber); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		orderNumbers = append(orderNumbers, orderNumber)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(orderNumbers) > 0 {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		for _, orderNumber := range orderNumbers {
+			token, err := GeneratePaymentAccessToken()
+			if err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+			if _, err := tx.Exec(`UPDATE payment_orders SET cashier_token = ? WHERE order_no = ? AND TRIM(cashier_token) = ''`, token, orderNumber); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_orders_cashier_token ON payment_orders(cashier_token) WHERE TRIM(cashier_token) <> ''`)
 	return err
 }
 

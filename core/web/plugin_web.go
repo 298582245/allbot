@@ -127,6 +127,7 @@ func (s *Server) handlePluginWebAPI(w http.ResponseWriter, r *http.Request) {
 		s.rawJSONError(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxPluginWebRequestBody)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		s.rawJSONError(w, "读取请求体失败", http.StatusBadRequest)
@@ -151,6 +152,12 @@ func (s *Server) handlePluginWebAPI(w http.ResponseWriter, r *http.Request) {
 		s.rawJSONError(w, "构造插件 Web API 请求失败", http.StatusInternalServerError)
 		return
 	}
+	releaseExecution := s.acquirePluginExecution()
+	if releaseExecution == nil {
+		s.rawJSONError(w, "Plugin Web API execution concurrency limit reached", http.StatusTooManyRequests)
+		return
+	}
+	defer releaseExecution()
 	response, err := s.pluginManager.ExecutePluginWeb(
 		pluginItem,
 		pluginPath,

@@ -28,6 +28,10 @@
             <el-input v-model="paymentSettings.currency_unit" maxlength="16" placeholder="RMB" class="compact-input" />
             <span class="hint">用于聊天提示里的支付金额单位，默认 RMB</span>
           </el-form-item>
+          <el-form-item label="单笔支付上限">
+            <el-input-number v-model="maxPaymentAmount" :min="0.01" :step="0.01" :precision="2" controls-position="right" />
+            <span class="hint">单笔支付金额不能超过此上限，默认 9999.99 元</span>
+          </el-form-item>
           <el-form-item label="同时支付个数">
             <el-input-number v-model="paymentSettings.max_pending_payments" :min="1" :max="999" :step="1" :precision="0" />
             <span class="hint">待支付订单达到上限时，新支付会提示稍后再试</span>
@@ -253,7 +257,15 @@ import request from '@/utils/request'
 const loading = ref(false)
 const saving = ref(false)
 const receiptQRFileInput = ref(null)
+const defaultMaxPaymentAmountCents = 999999
 const paymentSettings = reactive(createDefaultPaymentSettings())
+const maxPaymentAmount = computed({
+  get: () => paymentSettings.max_payment_amount_cents / 100,
+  set: value => {
+    const amount = Number(value)
+    paymentSettings.max_payment_amount_cents = Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) : defaultMaxPaymentAmountCents
+  }
+})
 
 const pageDescription = '配置积分兑换、第三方支付通道和同时待支付订单数量。'
 const showPageDescription = () => {
@@ -397,6 +409,7 @@ function extractAlipayReceiptQRURL(value) {
 function createDefaultPaymentSettings() {
   return {
     points_per_rmb: 100,
+    max_payment_amount_cents: defaultMaxPaymentAmountCents,
     currency_unit: 'RMB',
     max_pending_payments: 10,
     epay_query_interval_seconds: 5,
@@ -454,6 +467,7 @@ function normalizePaymentSettings(value) {
   const epay = source.epay && typeof source.epay === 'object' ? source.epay : {}
   const alipayBill = source.alipay_bill && typeof source.alipay_bill === 'object' ? source.alipay_bill : {}
   const pointsPerRmb = Number(source.points_per_rmb || defaults.points_per_rmb)
+  const maxPaymentAmount = Number(source.max_payment_amount_cents || defaults.max_payment_amount_cents)
   const maxPending = Number(source.max_pending_payments || defaults.max_pending_payments)
   const queryInterval = Number(source.epay_query_interval_seconds || defaults.epay_query_interval_seconds)
   const alipayQueryMinutesBack = Number(alipayBill.query_minutes_back || defaults.alipay_bill.query_minutes_back)
@@ -465,6 +479,7 @@ function normalizePaymentSettings(value) {
     ...defaults,
     ...source,
     points_per_rmb: Number.isFinite(pointsPerRmb) && pointsPerRmb > 0 ? Math.trunc(pointsPerRmb) : defaults.points_per_rmb,
+    max_payment_amount_cents: Number.isFinite(maxPaymentAmount) && maxPaymentAmount > 0 ? Math.trunc(maxPaymentAmount) : defaults.max_payment_amount_cents,
     currency_unit: String(source.currency_unit || defaults.currency_unit).trim() || defaults.currency_unit,
     max_pending_payments: Number.isFinite(maxPending) && maxPending > 0 ? Math.trunc(maxPending) : defaults.max_pending_payments,
     epay_query_interval_seconds: Number.isFinite(queryInterval) && queryInterval > 0 ? Math.trunc(queryInterval) : defaults.epay_query_interval_seconds,

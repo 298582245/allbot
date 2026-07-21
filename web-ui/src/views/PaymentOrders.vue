@@ -84,10 +84,12 @@
           <el-table-column prop="subject" label="标题" min-width="150" show-overflow-tooltip />
           <el-table-column prop="union_id" label="用户" min-width="140" show-overflow-tooltip />
           <el-table-column prop="plugin_id" label="插件" min-width="120" show-overflow-tooltip />
-          <el-table-column label="RMB" width="90">
-            <template #default="{ row }">{{ formatAmount(row.amount_cents) }}</template>
+          <el-table-column label="RMB" :width="amountColumnWidth">
+            <template #default="{ row }"><span class="nowrap-cell">{{ formatAmount(row.amount_cents) }}</span></template>
           </el-table-column>
-          <el-table-column prop="points_amount" label="积分" width="90" />
+          <el-table-column label="积分" :width="pointsColumnWidth">
+            <template #default="{ row }"><span class="nowrap-cell">{{ row.points_amount }}</span></template>
+          </el-table-column>
           <el-table-column prop="provider" label="渠道" width="90" />
           <el-table-column prop="method" label="方式" width="140" />
           <el-table-column label="状态" width="110">
@@ -235,6 +237,8 @@ const currentPage = ref(1)
 const pageSize = 20
 const detailVisible = ref(false)
 const detail = reactive({ order: null, events: [] })
+const defaultPaymentColumnSettings = { max_payment_amount_cents: 999999, points_per_rmb: 100 }
+const paymentSettings = ref({ ...defaultPaymentColumnSettings })
 const filters = reactive({ order_no: '', union_id: '', plugin_id: '', status: '', provider: '', method: '' })
 
 const pageDescription = '追踪支付订单、回调原文和状态事件，支持对可查询第三方待支付订单手动查询。'
@@ -245,6 +249,14 @@ const showPageDescription = () => {
 const hasSelection = computed(() => selectedItems.value.length > 0)
 const selectedOrderNoSet = computed(() => new Set(selectedItems.value.map(orderKey)))
 const advancedFilterCount = computed(() => ['union_id', 'plugin_id', 'status', 'provider', 'method'].filter(key => String(filters[key] || '').trim()).length)
+const amountColumnWidth = computed(() => columnWidth([
+  formatAmount(paymentSettings.value.max_payment_amount_cents),
+  ...orders.value.map(row => formatAmount(row.amount_cents))
+]))
+const pointsColumnWidth = computed(() => {
+  const maxPoints = Math.ceil(paymentSettings.value.max_payment_amount_cents * paymentSettings.value.points_per_rmb / 100)
+  return columnWidth([String(maxPoints), ...orders.value.map(row => String(row.points_amount ?? ''))])
+})
 
 watch(orders, () => {
   const currentOrderNos = new Set(orders.value.map(orderKey))
@@ -252,15 +264,26 @@ watch(orders, () => {
   nextTick(syncDesktopSelection)
 })
 
+const loadPaymentSettings = async () => {
+  try {
+    const settings = await request.get('/payments/settings', { silent: true })
+    paymentSettings.value = {
+      max_payment_amount_cents: Number(settings?.max_payment_amount_cents) > 0 ? Number(settings.max_payment_amount_cents) : defaultPaymentColumnSettings.max_payment_amount_cents,
+      points_per_rmb: Number(settings?.points_per_rmb) > 0 ? Number(settings.points_per_rmb) : defaultPaymentColumnSettings.points_per_rmb
+    }
+  } catch {
+    paymentSettings.value = { ...defaultPaymentColumnSettings }
+  }
+}
+
 const loadOrders = async () => {
   loading.value = true
   try {
-    const params = {
+    const data = await request.get('/payments/orders', { params: {
       ...cleanFilters(filters),
       limit: pageSize,
       offset: (currentPage.value - 1) * pageSize
-    }
-    const data = await request.get('/payments/orders', { params })
+    } })
     orders.value = Array.isArray(data.items) ? data.items : []
     total.value = Number(data.total || 0)
   } finally {
@@ -406,6 +429,10 @@ function formatAmount(cents) {
   return `${Math.floor(value / 100)}.${String(Math.abs(value % 100)).padStart(2, '0')}`
 }
 
+function columnWidth(texts) {
+  return Math.max(90, Math.max(...texts.map(text => text.length)) * 8 + 28)
+}
+
 function formatTime(value) {
   if (!value) return '-'
   const date = new Date(value)
@@ -446,7 +473,10 @@ function statusTagType(status) {
   return 'info'
 }
 
-onMounted(loadOrders)
+onMounted(() => {
+  loadOrders()
+  loadPaymentSettings()
+})
 </script>
 
 <style scoped>
@@ -464,6 +494,7 @@ onMounted(loadOrders)
 .selected-count { color: #909399; font-size: 13px; white-space: nowrap; }
 .orders-table-wrap { flex: 1; min-height: 0; }
 .status-tag { max-width: none; }
+.nowrap-cell { white-space: nowrap; }
 .mobile-orders-grid { display: none; }
 .detail-body { display: grid; gap: 16px; }
 .detail-section { padding: 14px; border: 1px solid #ebeef5; border-radius: 10px; background: #fff; }

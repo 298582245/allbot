@@ -83,6 +83,10 @@ type Server struct {
 	lastPersistedRuntimeSeconds  int64
 	sessionMu                    sync.RWMutex
 	sessions                     map[string]time.Time
+	loginLimiterMu               sync.Mutex
+	loginLimiter                 *adminLoginLimiter
+	pluginExecutionMu            sync.Mutex
+	pluginExecutionSlots         chan struct{}
 	resourceMu                   sync.Mutex
 	lastCPUIdle                  uint64
 	lastCPUTotal                 uint64
@@ -232,7 +236,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/login/", s.handleAccessCodeEntry)
 	mux.HandleFunc("/", s.handleIndex)
 
-	server := &http.Server{Addr: ":" + s.port, Handler: s.corsMiddleware(s.authMiddleware(mux))}
+	server := &http.Server{Addr: ":" + s.port, Handler: s.corsMiddleware(s.authMiddleware(mux)), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 5 * time.Minute, IdleTimeout: 2 * time.Minute}
 	s.serverMu.Lock()
 	s.httpServer = server
 	s.serverMu.Unlock()
@@ -339,9 +343,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
 	var req struct{ Username, Password string }
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.jsonError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	loginKey := adminLoginKey(r, req.Username)
+	if blocked, retryAfter := s.loginLimiterForRequest().blocked(loginKey); blocked {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+		s.jsonError(w, "Too many login attempts", http.StatusTooManyRequests)
 		return
 	}
 	username, err := s.currentAdminUsername()
@@ -355,9 +367,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Username != username || !ok {
+		s.loginLimiterForRequest().recordFailure(loginKey)
 		s.jsonError(w, "Invalid credentials", http.StatusUnauthorized)
 		return
 	}
+	s.loginLimiterForRequest().clear(loginKey)
 	token, err := s.createAdminSession()
 	if err != nil {
 		s.jsonError(w, "创建登录会话失败", http.StatusInternalServerError)

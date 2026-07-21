@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -218,6 +219,10 @@ func (s *Service) WaitPay(req WaitPayRequest, io Interaction) (PaymentResult, er
 		return PaymentResult{Status: "failed", Subject: req.Subject, AmountCents: amountCents, Message: err.Error()}, err
 	}
 	settingsValue := config.NormalizePaymentSettings(settings)
+	if amountCents > settingsValue.MaxPaymentAmountCents {
+		message := fmt.Sprintf("单笔支付金额不能超过 %s %s", formatAmount(settingsValue.MaxPaymentAmountCents), paymentCurrencyUnit(settingsValue))
+		return PaymentResult{Status: "failed", Subject: req.Subject, AmountCents: amountCents, Message: message}, errors.New(message)
+	}
 	if err = s.ensureUserPendingPaymentCapacity(req.UnionID); err != nil {
 		return PaymentResult{Status: "failed", Subject: req.Subject, AmountCents: amountCents, Message: err.Error()}, err
 	}
@@ -416,7 +421,7 @@ func (s *Service) waitAlipayBill(req WaitPayRequest, settings config.PaymentSett
 	if err != nil {
 		return PaymentResult{Status: "failed", Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, Message: err.Error()}, err
 	}
-	providerOrder, err := provider.CreateOrder(ProviderCreateRequest{OrderNo: order.OrderNo, Subject: req.Subject, AmountCents: payableAmountCents, Method: alipayBillMethodCode(method)})
+	providerOrder, err := provider.CreateOrder(ProviderCreateRequest{OrderNo: order.OrderNo, CashierToken: order.CashierToken, Subject: req.Subject, AmountCents: payableAmountCents, Method: alipayBillMethodCode(method)})
 	if err != nil {
 		_ = s.database.UpdatePaymentOrderStatus(order.OrderNo, "failed", "支付宝账单下单失败", map[string]string{"error": err.Error()})
 		return PaymentResult{Status: "failed", OrderNo: order.OrderNo, Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: payableAmountCents, PointsAmount: pointsAmount, Message: err.Error()}, err

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -221,6 +222,11 @@ func (s *Server) handleAlipayBillCashier(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	cashierToken := strings.TrimSpace(r.URL.Query().Get("token"))
+	if cashierToken == "" {
+		s.rawJSONError(w, "cashier access token is invalid", http.StatusNotFound)
+		return
+	}
 	orderNo := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/open/payments/alipay-bill/cashier/"), "/")
 	if orderNo == "" || strings.Contains(orderNo, "/") {
 		s.rawJSONError(w, "订单号不能为空", http.StatusBadRequest)
@@ -229,7 +235,11 @@ func (s *Server) handleAlipayBillCashier(w http.ResponseWriter, r *http.Request)
 	db := s.adapterManager.GetDatabase()
 	order, err := db.GetPaymentOrder(orderNo)
 	if err == sql.ErrNoRows {
-		s.rawJSONError(w, "订单不存在", http.StatusNotFound)
+		s.rawJSONError(w, "cashier access token is invalid", http.StatusNotFound)
+		return
+	}
+	if err == nil && subtle.ConstantTimeCompare([]byte(cashierToken), []byte(order.CashierToken)) != 1 {
+		s.rawJSONError(w, "cashier access token is invalid", http.StatusNotFound)
 		return
 	}
 	if err != nil {

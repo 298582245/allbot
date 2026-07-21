@@ -69,12 +69,24 @@ func TestAlipayBillCreateOrderUsesCashierBaseURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAlipayBillProvider returned error: %v", err)
 	}
-	order, err := provider.CreateOrder(ProviderCreateRequest{OrderNo: "PTEST_CASHIER", AmountCents: 500, Method: "alipay_transfer"})
+	order, err := provider.CreateOrder(ProviderCreateRequest{OrderNo: "PTEST_CASHIER", CashierToken: "cashier-token", AmountCents: 500, Method: "alipay_transfer"})
 	if err != nil {
 		t.Fatalf("CreateOrder returned error: %v", err)
 	}
-	if !strings.HasPrefix(order.PayURL, "alipays://platformapi/startapp?") || !strings.Contains(order.PayURL, "appId=20000067") || !strings.Contains(order.PayURL, "url=https%3A%2F%2Fpay.example.com%2Fapi%2Fopen%2Fpayments%2Falipay-bill%2Fcashier%2FPTEST_CASHIER") || !strings.Contains(order.Raw, "cashier") {
+	if !strings.HasPrefix(order.PayURL, "alipays://platformapi/startapp?") || !strings.Contains(order.PayURL, "appId=20000067") || !strings.Contains(order.PayURL, "url=https%3A%2F%2Fpay.example.com%2Fapi%2Fopen%2Fpayments%2Falipay-bill%2Fcashier%2FPTEST_CASHIER%3Ftoken%3Dcashier-token") || !strings.Contains(order.Raw, "cashier") {
 		t.Fatalf("unexpected cashier url: %#v", order)
+	}
+}
+
+func TestAlipayBillCashierRequiresToken(t *testing.T) {
+	settings := testAlipayBillSettings("https://openapi.alipay.com/gateway.do")
+	settings.CashierBaseURL = "https://pay.example.com/"
+	provider, err := NewAlipayBillProvider(settings, nil)
+	if err != nil {
+		t.Fatalf("NewAlipayBillProvider returned error: %v", err)
+	}
+	if _, err := provider.CreateOrder(ProviderCreateRequest{OrderNo: "PTEST_CASHIER", AmountCents: 500, Method: "alipay_transfer"}); err == nil {
+		t.Fatal("expected missing cashier token to be rejected")
 	}
 }
 

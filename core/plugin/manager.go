@@ -991,7 +991,9 @@ func (m *Manager) ExecutePluginWeb(plugin *types.Plugin, pluginPath string, payl
 }
 
 func (m *Manager) executePluginWebViaDirect(plugin *types.Plugin, pluginPath string, payload []byte, dbFunc func(string, PluginDBAction) PluginDBResult, sendMessageFunc func(string, SendMessageAction) PluginUserResult, sendRichMessageFunc func(string, RichMessageAction) PluginUserResult, sendImageMessageFunc func(string, ImageMessageAction) PluginUserResult) (PluginWebResponse, error) {
-	cmd, err := m.newDirectCommand(plugin, pluginPath)
+	ctx, cancel := context.WithTimeout(context.Background(), pluginRequestExecutionTimeout)
+	defer cancel()
+	cmd, err := m.newDirectCommandContext(ctx, plugin, pluginPath)
 	if err != nil {
 		return PluginWebResponse{}, err
 	}
@@ -1119,6 +1121,9 @@ func (m *Manager) executePluginWebViaDirect(plugin *types.Plugin, pluginPath str
 	if err := scanner.Err(); err != nil {
 		_ = cmd.Process.Kill()
 		_ = waitPluginProcess(cmd, stderrDone)
+		if ctx.Err() != nil {
+			return PluginWebResponse{}, fmt.Errorf("plugin web execution timed out")
+		}
 		return PluginWebResponse{}, err
 	}
 	_ = stdin.Close()
@@ -1156,7 +1161,9 @@ func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string,
 	if err != nil {
 		return types.OpenAPIResponse{}, err
 	}
-	cmd, err := m.newOpenAPICommand(endpoint, workDir)
+	ctx, cancel := context.WithTimeout(context.Background(), pluginRequestExecutionTimeout)
+	defer cancel()
+	cmd, err := m.newOpenAPICommandContext(ctx, endpoint, workDir)
 	if err != nil {
 		return types.OpenAPIResponse{}, err
 	}
@@ -1289,6 +1296,9 @@ func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string,
 	if err := scanner.Err(); err != nil {
 		_ = cmd.Process.Kill()
 		_ = waitPluginProcess(cmd, stderrDone)
+		if ctx.Err() != nil {
+			return types.OpenAPIResponse{}, fmt.Errorf("open api execution timed out")
+		}
 		return types.OpenAPIResponse{}, err
 	}
 	_ = stdin.Close()
@@ -1296,7 +1306,7 @@ func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string,
 	return types.OpenAPIResponse{}, fmt.Errorf("Open API 未返回 http_response")
 }
 
-func (m *Manager) newOpenAPICommand(endpoint types.OpenAPIEndpoint, workDir string) (*exec.Cmd, error) {
+func (m *Manager) newOpenAPICommandContext(ctx context.Context, endpoint types.OpenAPIEndpoint, workDir string) (*exec.Cmd, error) {
 	sdkRoot, err := filepath.Abs("sdk")
 	if err != nil {
 		return nil, err
@@ -1307,12 +1317,12 @@ func (m *Manager) newOpenAPICommand(endpoint types.OpenAPIEndpoint, workDir stri
 	}
 	switch endpoint.Runtime {
 	case "python":
-		cmd := exec.Command(resolved.Executable, "-u", filepath.Join(sdkRoot, "python", "allbot_direct.py"), "openapi", endpoint.Entry)
+		cmd := exec.CommandContext(ctx, resolved.Executable, "-u", filepath.Join(sdkRoot, "python", "allbot_direct.py"), "openapi", endpoint.Entry)
 		cmd.Dir = workDir
 		cmd.Env = append(os.Environ(), fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", endpoint.ID), fmt.Sprintf("ALLBOT_RUNTIME_PROFILE=%s", resolved.Profile.ID), "PYTHONUTF8=1", "PYTHONUNBUFFERED=1")
 		return cmd, nil
 	case "nodejs":
-		cmd := exec.Command(resolved.Executable, filepath.Join(sdkRoot, "nodejs", "allbot_direct.js"), "openapi", endpoint.Entry)
+		cmd := exec.CommandContext(ctx, resolved.Executable, filepath.Join(sdkRoot, "nodejs", "allbot_direct.js"), "openapi", endpoint.Entry)
 		cmd.Dir = workDir
 		cmd.Env = append(os.Environ(), fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", endpoint.ID), fmt.Sprintf("ALLBOT_RUNTIME_PROFILE=%s", resolved.Profile.ID), fmt.Sprintf("NODE_PATH=%s", resolved.NodePath))
 		return cmd, nil
@@ -1322,6 +1332,10 @@ func (m *Manager) newOpenAPICommand(endpoint types.OpenAPIEndpoint, workDir stri
 }
 
 func (m *Manager) newDirectCommand(plugin *types.Plugin, pluginPath string) (*exec.Cmd, error) {
+	return m.newDirectCommandContext(context.Background(), plugin, pluginPath)
+}
+
+func (m *Manager) newDirectCommandContext(ctx context.Context, plugin *types.Plugin, pluginPath string) (*exec.Cmd, error) {
 	entryPath, err := pluginEntryPath(pluginPath, plugin.Runtime, plugin.Entry)
 	if err != nil {
 		return nil, err
@@ -1332,12 +1346,12 @@ func (m *Manager) newDirectCommand(plugin *types.Plugin, pluginPath string) (*ex
 	}
 	switch plugin.Runtime {
 	case "python":
-		cmd := exec.Command(resolved.Executable, "-u", entryPath)
+		cmd := exec.CommandContext(ctx, resolved.Executable, "-u", entryPath)
 		cmd.Dir = pluginPath
 		cmd.Env = append(os.Environ(), fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", plugin.ID), fmt.Sprintf("ALLBOT_RUNTIME_PROFILE=%s", resolved.Profile.ID), "PYTHONUTF8=1", "PYTHONUNBUFFERED=1")
 		return cmd, nil
 	case "nodejs":
-		cmd := exec.Command(resolved.Executable, entryPath)
+		cmd := exec.CommandContext(ctx, resolved.Executable, entryPath)
 		cmd.Dir = pluginPath
 		cmd.Env = append(os.Environ(), fmt.Sprintf("ALLBOT_PLUGIN_ID=%s", plugin.ID), fmt.Sprintf("ALLBOT_RUNTIME_PROFILE=%s", resolved.Profile.ID), fmt.Sprintf("NODE_PATH=%s", resolved.NodePath))
 		return cmd, nil

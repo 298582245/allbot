@@ -77,6 +77,58 @@ func TestEnabledPointMethodsOnlyReturnsEnabledPoints(t *testing.T) {
 	}
 }
 
+func TestWaitPayRejectsAmountAboveConfiguredLimit(t *testing.T) {
+	db := newServiceTestDatabase(t)
+	settings, err := db.GetPaymentSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.MaxPaymentAmountCents = 999999
+	settings.CurrencyUnit = "星币"
+	if err := db.SavePaymentSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewService(db).WaitPay(WaitPayRequest{UnionID: "union-limit", Subject: "超额支付", AmountRaw: json.RawMessage(`"10000.00"`), Timeout: 30}, Interaction{Reply: func(string) error {
+		t.Fatal("payment prompt should not be sent")
+		return nil
+	}, Listen: func(int) string {
+		t.Fatal("payment method should not be requested")
+		return "1"
+	}})
+	if err == nil || result.Status != "failed" || !strings.Contains(result.Message, "9999.99") || !strings.Contains(result.Message, "星币") {
+		t.Fatalf("unexpected result: %#v, err=%v", result, err)
+	}
+	_, total, err := db.ListPaymentOrders(config.PaymentOrderQuery{UnionID: "union-limit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 0 {
+		t.Fatalf("rejected amount should not create order, got %d", total)
+	}
+}
+
+func TestWaitPayAllowsAmountAtConfiguredLimit(t *testing.T) {
+	db := newServiceTestDatabase(t)
+	if _, err := db.AddUserPoints("union-limit-equal", 999999); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := db.GetPaymentSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.MaxPaymentAmountCents = 999999
+	if err := db.SavePaymentSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewService(db).WaitPay(WaitPayRequest{UnionID: "union-limit-equal", Subject: "上限支付", AmountRaw: json.RawMessage(`"9999.99"`), Timeout: 30}, Interaction{Listen: func(int) string { return "1" }})
+	if err != nil {
+		t.Fatalf("amount at configured limit should continue: %v", err)
+	}
+	if result.Status != "paid" || result.AmountCents != 999999 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
 func TestWaitPayPointsSuccess(t *testing.T) {
 	db := newServiceTestDatabase(t)
 	if _, err := db.AddUserPoints("union-pay", 200); err != nil {

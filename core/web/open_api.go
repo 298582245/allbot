@@ -114,6 +114,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		s.rawJSONError(statusWriter, "客户端 IP 不在 Open API 白名单", http.StatusForbidden)
 		return
 	}
+	r.Body = http.MaxBytesReader(statusWriter, r.Body, maxPluginWebRequestBody)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		s.rawJSONError(statusWriter, "读取请求体失败", http.StatusBadRequest)
@@ -137,6 +138,12 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[INFO] OpenAPI 调用开始 endpoint=%s method=%s path=%s client=%s body=%dB", endpoint.ID, requestData.Method, requestData.RawPath, requestData.ClientIP, len(body))
+	releaseExecution := s.acquirePluginExecution()
+	if releaseExecution == nil {
+		s.rawJSONError(statusWriter, "Open API execution concurrency limit reached", http.StatusTooManyRequests)
+		return
+	}
+	defer releaseExecution()
 	response, err := s.pluginManager.ExecuteOpenAPI(
 		*endpoint,
 		openAPIEndpointDir(endpoint.ID),

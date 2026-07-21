@@ -4,6 +4,7 @@ AllBot v1.0.4
 1. 新增内置指令botid，修复groupid部分适配器问题
 2. 增加插件分类编辑并开放完整文件编辑
 3. 统一后台与 WebChat API 响应格式
+4. 复用有效绑定码并增加 Web 消息限流
 
 AllBot v1.0.3
 1. 上个版本忘记说了支持docker和docker-compose了

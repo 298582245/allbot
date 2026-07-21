@@ -99,7 +99,7 @@ func (s *Server) handleWebChatEmailCode(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if !defaultWebChatLimiter.Allow("email:"+webChatClientIP(r), time.Minute, 10) {
+	if !defaultWebChatLimiter.Allow("email:"+s.webChatClientIP(r), time.Minute, 10) {
 		s.jsonError(w, "请求过于频繁", http.StatusTooManyRequests)
 		return
 	}
@@ -126,7 +126,7 @@ func (s *Server) handleWebChatEmailCode(w http.ResponseWriter, r *http.Request) 
 		if purpose == config.WebChatEmailPurposeLogin {
 			keyPrefix = "email-login:"
 		}
-		purposeKey := keyPrefix + webChatClientIP(r) + ":" + strings.ToLower(strings.TrimSpace(req.Email))
+		purposeKey := keyPrefix + s.webChatClientIP(r) + ":" + strings.ToLower(strings.TrimSpace(req.Email))
 		if !defaultWebChatLimiter.Allow(purposeKey, time.Minute, 1) {
 			s.jsonError(w, "请求过于频繁", http.StatusTooManyRequests)
 			return
@@ -149,7 +149,7 @@ func (s *Server) handleWebChatEmailCode(w http.ResponseWriter, r *http.Request) 
 		s.jsonError(w, "生成验证码失败", http.StatusInternalServerError)
 		return
 	}
-	if err := database.CreateWebChatEmailCode(req.Email, code, purpose, webChatClientIP(r)); err != nil {
+	if err := database.CreateWebChatEmailCode(req.Email, code, purpose, s.webChatClientIP(r)); err != nil {
 		s.jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -172,7 +172,7 @@ func (s *Server) handleWebChatRegister(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireRunningWebChatAdapter(w); !ok {
 		return
 	}
-	if !defaultWebChatLimiter.Allow("register:"+webChatClientIP(r), 10*time.Minute, 20) {
+	if !defaultWebChatLimiter.Allow("register:"+s.webChatClientIP(r), 10*time.Minute, 20) {
 		s.jsonError(w, "注册请求过于频繁", http.StatusTooManyRequests)
 		return
 	}
@@ -197,7 +197,7 @@ func (s *Server) handleWebChatRegister(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	session, err := database.CreateWebChatSession(user.UserID, r.UserAgent(), webChatClientIP(r))
+	session, err := database.CreateWebChatSession(user.UserID, r.UserAgent(), s.webChatClientIP(r))
 	if err != nil {
 		s.jsonError(w, "创建会话失败", http.StatusInternalServerError)
 		return
@@ -227,7 +227,7 @@ func (s *Server) handleWebChatResetPassword(w http.ResponseWriter, r *http.Reque
 		s.jsonError(w, "请求数据无效", http.StatusBadRequest)
 		return
 	}
-	key := "reset-password:" + webChatClientIP(r) + ":" + strings.ToLower(strings.TrimSpace(req.Email))
+	key := "reset-password:" + s.webChatClientIP(r) + ":" + strings.ToLower(strings.TrimSpace(req.Email))
 	if !defaultWebChatLimiter.Allow(key, 10*time.Minute, 20) {
 		s.jsonError(w, "重置密码请求过于频繁", http.StatusTooManyRequests)
 		return
@@ -260,7 +260,7 @@ func (s *Server) handleWebChatLogin(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, "请求数据无效", http.StatusBadRequest)
 		return
 	}
-	key := "login:" + webChatClientIP(r) + ":" + strings.ToLower(strings.TrimSpace(req.Login))
+	key := "login:" + s.webChatClientIP(r) + ":" + strings.ToLower(strings.TrimSpace(req.Login))
 	if !defaultWebChatLimiter.Allow(key, 10*time.Minute, 20) {
 		s.jsonError(w, "登录请求过于频繁", http.StatusTooManyRequests)
 		return
@@ -274,7 +274,7 @@ func (s *Server) handleWebChatLogin(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, "账号或密码错误", http.StatusUnauthorized)
 		return
 	}
-	session, err := database.CreateWebChatSession(user.UserID, r.UserAgent(), webChatClientIP(r))
+	session, err := database.CreateWebChatSession(user.UserID, r.UserAgent(), s.webChatClientIP(r))
 	if err != nil {
 		s.jsonError(w, "创建会话失败", http.StatusInternalServerError)
 		return
@@ -303,7 +303,7 @@ func (s *Server) handleWebChatEmailLogin(w http.ResponseWriter, r *http.Request)
 		s.jsonError(w, "请求数据无效", http.StatusBadRequest)
 		return
 	}
-	key := "email-login-submit:" + webChatClientIP(r) + ":" + strings.ToLower(strings.TrimSpace(req.Email))
+	key := "email-login-submit:" + s.webChatClientIP(r) + ":" + strings.ToLower(strings.TrimSpace(req.Email))
 	if !defaultWebChatLimiter.Allow(key, 10*time.Minute, 20) {
 		s.jsonError(w, "登录请求过于频繁", http.StatusTooManyRequests)
 		return
@@ -317,7 +317,7 @@ func (s *Server) handleWebChatEmailLogin(w http.ResponseWriter, r *http.Request)
 		s.jsonError(w, "邮箱验证码错误", http.StatusUnauthorized)
 		return
 	}
-	session, err := database.CreateWebChatSession(user.UserID, r.UserAgent(), webChatClientIP(r))
+	session, err := database.CreateWebChatSession(user.UserID, r.UserAgent(), s.webChatClientIP(r))
 	if err != nil {
 		s.jsonError(w, "创建会话失败", http.StatusInternalServerError)
 		return
@@ -390,7 +390,7 @@ func (s *Server) handleWebChatPlatformCode(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	username := strings.TrimSpace(req.Username)
-	if !defaultWebChatLimiter.Allow("platform-code:"+webChatClientIP(r)+":"+strconv.FormatInt(platformConfig.ID, 10)+":"+strings.ToLower(username), time.Minute, 1) {
+	if !defaultWebChatLimiter.Allow("platform-code:"+s.webChatClientIP(r)+":"+strconv.FormatInt(platformConfig.ID, 10)+":"+strings.ToLower(username), time.Minute, 1) {
 		s.jsonError(w, "请求过于频繁", http.StatusTooManyRequests)
 		return
 	}
@@ -413,7 +413,7 @@ func (s *Server) handleWebChatPlatformCode(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	adapterID := strconv.FormatInt(platformConfig.ID, 10)
-	if err := database.CreateWebChatPlatformCode(platformConfig.Platform, adapterID, account.UserID, account.UnionID, code, webChatClientIP(r)); err != nil {
+	if err := database.CreateWebChatPlatformCode(platformConfig.Platform, adapterID, account.UserID, account.UnionID, code, s.webChatClientIP(r)); err != nil {
 		s.jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -446,7 +446,7 @@ func (s *Server) handleWebChatPlatformLogin(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	username := strings.TrimSpace(req.Username)
-	key := "platform-login:" + webChatClientIP(r) + ":" + strconv.FormatInt(platformConfig.ID, 10) + ":" + strings.ToLower(username)
+	key := "platform-login:" + s.webChatClientIP(r) + ":" + strconv.FormatInt(platformConfig.ID, 10) + ":" + strings.ToLower(username)
 	if !defaultWebChatLimiter.Allow(key, 10*time.Minute, 20) {
 		s.jsonError(w, "登录请求过于频繁", http.StatusTooManyRequests)
 		return
@@ -465,7 +465,7 @@ func (s *Server) handleWebChatPlatformLogin(w http.ResponseWriter, r *http.Reque
 		s.jsonError(w, "平台验证码错误", http.StatusUnauthorized)
 		return
 	}
-	session, err := database.CreateWebChatSession(user.UserID, r.UserAgent(), webChatClientIP(r))
+	session, err := database.CreateWebChatSession(user.UserID, r.UserAgent(), s.webChatClientIP(r))
 	if err != nil {
 		s.jsonError(w, "创建会话失败", http.StatusInternalServerError)
 		return
@@ -1074,14 +1074,29 @@ func (s *Server) validWebChatOrigin(r *http.Request) bool {
 	return strings.EqualFold(parsed.Host, r.Host)
 }
 
-func webChatClientIP(r *http.Request) string {
-	if value := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); value != "" {
-		return strings.TrimSpace(strings.Split(value, ",")[0])
+func (s *Server) webChatClientIP(r *http.Request) string {
+	remote := parseOpenAPIAddress(r.RemoteAddr)
+	access := s.currentOpenAPIAccess()
+	if remote.IsValid() && access.trustedProxies.contains(remote) {
+		forwarded := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+		for index := len(forwarded) - 1; index >= 0; index-- {
+			candidate := parseOpenAPIAddress(forwarded[index])
+			if !candidate.IsValid() {
+				continue
+			}
+			if access.trustedProxies.contains(candidate) {
+				continue
+			}
+			return candidate.String()
+		}
+		if candidate := parseOpenAPIAddress(r.Header.Get("X-Real-IP")); candidate.IsValid() {
+			return candidate.String()
+		}
 	}
-	if value := strings.TrimSpace(r.Header.Get("X-Real-IP")); value != "" {
-		return value
+	if remote.IsValid() {
+		return remote.String()
 	}
-	return strings.TrimSpace(strings.Split(r.RemoteAddr, ":")[0])
+	return strings.TrimSpace(r.RemoteAddr)
 }
 
 func webChatPluginGroupID(pluginID string) string {

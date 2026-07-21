@@ -61,7 +61,7 @@ request.interceptors.response.use(
       } else if (!error.config?.silent) {
         ElMessage.error(data?.msg || data?.error || data?.message || '请求失败')
       }
-    } else {
+    } else if (!error.config?.silent) {
       ElMessage.error('网络错误，请检查连接')
     }
 

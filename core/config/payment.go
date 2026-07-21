@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	paymentPointsPerRMBKey = "payment.points_per_rmb"
-	paymentConfigKey       = "payment.config"
+	paymentPointsPerRMBKey             = "payment.points_per_rmb"
+	paymentConfigKey                   = "payment.config"
+	defaultMaxPaymentAmountCents int64 = 999999
 )
 
 var validPaymentOrderStatuses = map[string]bool{
@@ -28,6 +29,7 @@ var validPaymentOrderStatuses = map[string]bool{
 
 type PaymentSettings struct {
 	PointsPerRMB             int64                  `json:"points_per_rmb"`
+	MaxPaymentAmountCents    int64                  `json:"max_payment_amount_cents"`
 	CurrencyUnit             string                 `json:"currency_unit"`
 	ThirdPartyEnabled        bool                   `json:"third_party_enabled"`
 	HidePayURL               bool                   `json:"hide_pay_url"`
@@ -86,6 +88,7 @@ type AlipayBillSettings struct {
 type PaymentOrder struct {
 	ID              int64      `json:"id"`
 	OrderNo         string     `json:"order_no"`
+	CashierToken    string     `json:"-"`
 	PluginID        string     `json:"plugin_id"`
 	UnionID         string     `json:"union_id"`
 	Platform        string     `json:"platform"`
@@ -228,6 +231,7 @@ type ProviderPaymentConfirmation struct {
 func DefaultPaymentSettings() PaymentSettings {
 	return PaymentSettings{
 		PointsPerRMB:             100,
+		MaxPaymentAmountCents:    defaultMaxPaymentAmountCents,
 		CurrencyUnit:             "RMB",
 		ThirdPartyEnabled:        false,
 		MaxPendingPayments:       10,
@@ -295,6 +299,9 @@ func NormalizePaymentSettings(settings *PaymentSettings) PaymentSettings {
 	result = *settings
 	if result.PointsPerRMB <= 0 {
 		result.PointsPerRMB = 100
+	}
+	if result.MaxPaymentAmountCents <= 0 {
+		result.MaxPaymentAmountCents = defaultMaxPaymentAmountCents
 	}
 	result.CurrencyUnit = strings.TrimSpace(result.CurrencyUnit)
 	if result.CurrencyUnit == "" {
@@ -365,6 +372,9 @@ func ValidatePaymentSettings(settings *PaymentSettings) error {
 	}
 	if settings.PointsPerRMB <= 0 {
 		return fmt.Errorf("积分兑换比例必须大于 0")
+	}
+	if settings.MaxPaymentAmountCents <= 0 {
+		return fmt.Errorf("单笔支付上限必须大于 0")
 	}
 	if len([]rune(strings.TrimSpace(settings.CurrencyUnit))) > 16 {
 		return fmt.Errorf("支付金额单位不能超过 16 个字符")
@@ -521,6 +531,9 @@ func (d *Database) SavePaymentSettings(settings *PaymentSettings) error {
 	if settings != nil && settings.MaxPendingPayments <= 0 {
 		return fmt.Errorf("同时支付个数必须大于 0")
 	}
+	if settings != nil && settings.MaxPaymentAmountCents <= 0 {
+		return fmt.Errorf("单笔支付上限必须大于 0")
+	}
 	current, _ := d.readPaymentConfigOnly()
 	if settings != nil {
 		if settings.Epay.Key == "" && settings.Epay.HasKey {
@@ -616,6 +629,10 @@ func (d *Database) SettlePointsPayment(input PointsPaymentSettlement) (*PointsPa
 	if err != nil {
 		return nil, err
 	}
+	cashierToken, err := GeneratePaymentAccessToken()
+	if err != nil {
+		return nil, err
+	}
 	d.pointsMu.Lock()
 	defer d.pointsMu.Unlock()
 	tx, err := d.db.Begin()
@@ -631,9 +648,9 @@ func (d *Database) SettlePointsPayment(input PointsPaymentSettlement) (*PointsPa
 		return nil, err
 	}
 	if _, err = tx.Exec(`
-		INSERT INTO payment_orders (order_no, plugin_id, union_id, platform, adapter_id, user_id, group_id, subject, amount_cents, points_amount, provider, method, status, metadata, expired_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-	`, orderNo, input.PluginID, input.UnionID, input.Platform, input.AdapterID, input.UserID, input.GroupID, input.Subject, input.AmountCents, input.PointsAmount, input.Provider, input.Method, metadata, input.ExpiredAt); err != nil {
+		INSERT INTO payment_orders (order_no, cashier_token, plugin_id, union_id, platform, adapter_id, user_id, group_id, subject, amount_cents, points_amount, provider, method, status, metadata, expired_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, orderNo, cashierToken, input.PluginID, input.UnionID, input.Platform, input.AdapterID, input.UserID, input.GroupID, input.Subject, input.AmountCents, input.PointsAmount, input.Provider, input.Method, metadata, input.ExpiredAt); err != nil {
 		return nil, err
 	}
 	if err = appendPaymentEventTx(tx, orderNo, "created", "订单创建", metadata); err != nil {
@@ -758,15 +775,19 @@ func (d *Database) CreateProviderPaymentOrder(input ProviderPaymentOrderInput) (
 	if err != nil {
 		return nil, err
 	}
+	cashierToken, err := GeneratePaymentAccessToken()
+	if err != nil {
+		return nil, err
+	}
 	tx, err := d.db.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 	if _, err = tx.Exec(`
-		INSERT INTO payment_orders (order_no, plugin_id, union_id, platform, adapter_id, user_id, group_id, subject, amount_cents, points_amount, provider, method, status, metadata, expired_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-	`, orderNo, input.PluginID, input.UnionID, input.Platform, input.AdapterID, input.UserID, input.GroupID, input.Subject, input.AmountCents, input.PointsAmount, input.Provider, input.Method, metadata, input.ExpiredAt); err != nil {
+		INSERT INTO payment_orders (order_no, cashier_token, plugin_id, union_id, platform, adapter_id, user_id, group_id, subject, amount_cents, points_amount, provider, method, status, metadata, expired_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, orderNo, cashierToken, input.PluginID, input.UnionID, input.Platform, input.AdapterID, input.UserID, input.GroupID, input.Subject, input.AmountCents, input.PointsAmount, input.Provider, input.Method, metadata, input.ExpiredAt); err != nil {
 		return nil, err
 	}
 	if err = appendPaymentEventTx(tx, orderNo, "created", "订单创建", metadata); err != nil {
@@ -893,6 +914,13 @@ func (d *Database) CreatePaymentOrder(order *PaymentOrder) (*PaymentOrder, error
 		order.OrderNo = orderNo
 	}
 	order.OrderNo = strings.TrimSpace(order.OrderNo)
+	if strings.TrimSpace(order.CashierToken) == "" {
+		cashierToken, err := GeneratePaymentAccessToken()
+		if err != nil {
+			return nil, err
+		}
+		order.CashierToken = cashierToken
+	}
 	order.UnionID = strings.TrimSpace(order.UnionID)
 	order.Subject = strings.TrimSpace(order.Subject)
 	order.Provider = strings.TrimSpace(order.Provider)
@@ -914,9 +942,9 @@ func (d *Database) CreatePaymentOrder(order *PaymentOrder) (*PaymentOrder, error
 		order.ExpiredAt = time.Now().Add(15 * time.Minute)
 	}
 	_, err := d.db.Exec(`
-		INSERT INTO payment_orders (order_no, plugin_id, union_id, platform, adapter_id, user_id, group_id, subject, amount_cents, points_amount, provider, method, status, provider_order_no, pay_url, qrcode, notify_raw, metadata, expired_at, paid_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-	`, order.OrderNo, order.PluginID, order.UnionID, order.Platform, order.AdapterID, order.UserID, order.GroupID, order.Subject, order.AmountCents, order.PointsAmount, order.Provider, order.Method, order.Status, order.ProviderOrderNo, order.PayURL, order.QRCode, order.NotifyRaw, order.Metadata, order.ExpiredAt, order.PaidAt)
+		INSERT INTO payment_orders (order_no, cashier_token, plugin_id, union_id, platform, adapter_id, user_id, group_id, subject, amount_cents, points_amount, provider, method, status, provider_order_no, pay_url, qrcode, notify_raw, metadata, expired_at, paid_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, order.OrderNo, order.CashierToken, order.PluginID, order.UnionID, order.Platform, order.AdapterID, order.UserID, order.GroupID, order.Subject, order.AmountCents, order.PointsAmount, order.Provider, order.Method, order.Status, order.ProviderOrderNo, order.PayURL, order.QRCode, order.NotifyRaw, order.Metadata, order.ExpiredAt, order.PaidAt)
 	if err != nil {
 		return nil, err
 	}
@@ -929,6 +957,14 @@ func GeneratePaymentOrderNo() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("P%s%06d", time.Now().Format("20060102150405"), value.Int64()), nil
+}
+
+func GeneratePaymentAccessToken() (string, error) {
+	buffer := make([]byte, 32)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", buffer), nil
 }
 
 func (d *Database) GetPaymentOrder(orderNo string) (*PaymentOrder, error) {
@@ -1326,13 +1362,13 @@ func (d *Database) readPaymentConfigOnly() (PaymentSettings, error) {
 }
 
 func paymentOrderSelectSQL() string {
-	return `SELECT id, order_no, plugin_id, union_id, platform, adapter_id, user_id, group_id, subject, amount_cents, points_amount, provider, method, status, provider_order_no, pay_url, qrcode, notify_raw, metadata, expired_at, paid_at, created_at, updated_at FROM payment_orders`
+	return `SELECT id, order_no, cashier_token, plugin_id, union_id, platform, adapter_id, user_id, group_id, subject, amount_cents, points_amount, provider, method, status, provider_order_no, pay_url, qrcode, notify_raw, metadata, expired_at, paid_at, created_at, updated_at FROM payment_orders`
 }
 
 func scanPaymentOrder(row interface{ Scan(...interface{}) error }) (*PaymentOrder, error) {
 	var item PaymentOrder
 	var paidAt sql.NullTime
-	if err := row.Scan(&item.ID, &item.OrderNo, &item.PluginID, &item.UnionID, &item.Platform, &item.AdapterID, &item.UserID, &item.GroupID, &item.Subject, &item.AmountCents, &item.PointsAmount, &item.Provider, &item.Method, &item.Status, &item.ProviderOrderNo, &item.PayURL, &item.QRCode, &item.NotifyRaw, &item.Metadata, &item.ExpiredAt, &paidAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.OrderNo, &item.CashierToken, &item.PluginID, &item.UnionID, &item.Platform, &item.AdapterID, &item.UserID, &item.GroupID, &item.Subject, &item.AmountCents, &item.PointsAmount, &item.Provider, &item.Method, &item.Status, &item.ProviderOrderNo, &item.PayURL, &item.QRCode, &item.NotifyRaw, &item.Metadata, &item.ExpiredAt, &paidAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if paidAt.Valid {

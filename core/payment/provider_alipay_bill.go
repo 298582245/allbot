@@ -171,7 +171,10 @@ func (p *AlipayBillProvider) buildPaymentURL(req ProviderCreateRequest) (string,
 		return "", "", fmt.Errorf("支付宝收款 UID 不能为空")
 	}
 	if cashierBaseURL := strings.TrimSpace(p.settings.CashierBaseURL); cashierBaseURL != "" {
-		return buildAlipayCashierOpenURL(cashierBaseURL, req.OrderNo), "cashier", nil
+		if strings.TrimSpace(req.CashierToken) == "" {
+			return "", "", fmt.Errorf("鏀粯瀹濇敹閾跺彴 token 涓嶈兘涓虹┖")
+		}
+		return buildAlipayCashierOpenURL(cashierBaseURL, req.OrderNo, req.CashierToken), "cashier", nil
 	}
 	return buildAlipayTransferURL(transferUserID, p.settings.TransferUserName, req.AmountCents, req.OrderNo), "transfer", nil
 }
@@ -238,8 +241,11 @@ func extractAlipayQrcodeParam(value string) string {
 	return strings.TrimSpace(decoded)
 }
 
-func buildAlipayCashierOpenURL(baseURL, orderNo string) string {
+func buildAlipayCashierOpenURL(baseURL, orderNo, cashierToken string) string {
 	cashierURL := strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/api/open/payments/alipay-bill/cashier/" + url.PathEscape(strings.TrimSpace(orderNo))
+	query := url.Values{}
+	query.Set("token", strings.TrimSpace(cashierToken))
+	cashierURL += "?" + query.Encode()
 	values := url.Values{}
 	values.Set("appId", "20000067")
 	values.Set("url", cashierURL)
