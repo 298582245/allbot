@@ -212,6 +212,7 @@
       v-model="dialogVisible"
       :title="form.id ? '编辑定时任务' : '新增定时任务'"
       width="680px"
+      @closed="clearUserAccountCandidates"
     >
       <el-form :model="form" label-width="110px">
         <el-form-item label="任务名称">
@@ -277,7 +278,37 @@
           </el-select>
         </el-form-item>
         <el-form-item label="用户 ID">
-          <el-input v-model="form.user_id" placeholder="伪造为哪个用户发送" />
+          <el-select
+            v-model="form.user_id"
+            filterable
+            remote
+            allow-create
+            clearable
+            default-first-option
+            :loading="userAccountLoading"
+            :debounce="300"
+            :remote-method="searchUserAccounts"
+            placeholder="选择或输入用户 ID"
+            style="width: 100%"
+            @visible-change="handleUserSelectVisibleChange"
+          >
+            <el-option
+              v-for="account in userAccountCandidates"
+              :key="`${account.platform || form.platform}:${account.user_id}`"
+              :label="account.user_id"
+              :value="account.user_id"
+            >
+              <div class="user-account-option">
+                <span>{{ account.user_id }}</span>
+                <span v-if="account.union_id" class="user-account-union">
+                  UnionID：{{ account.union_id }}
+                </span>
+              </div>
+            </el-option>
+          </el-select>
+          <span class="hint">
+            {{ form.platform ? "输入关键字搜索当前平台账号；未注册用户也可直接填写。" : "请先选择平台，再搜索平台账号。" }}
+          </span>
         </el-form-item>
         <el-form-item label="群 ID">
           <el-input v-model="form.group_id" placeholder="留空表示私聊消息" />
@@ -310,7 +341,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { InfoFilled } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import request from "@/utils/request";
-import { getAdapterPlatforms, getAdapters } from "@/api";
+import { getAdapterPlatforms, getAdapters, getUserAccounts } from "@/api";
 import StdPagination from '@/components/StdPagination.vue'
 
 const loading = ref(false);
@@ -319,6 +350,11 @@ const runningId = ref(0);
 const dialogVisible = ref(false);
 const items = ref([]);
 const adapters = ref([]);
+const userAccountCandidates = ref([]);
+const userAccountLoading = ref(false);
+const userAccountLoaded = ref(false);
+let userAccountRequestSeq = 0;
+const userAccountSearchLimit = 50;
 const adapterPlatformFallback = [
   { label: "QQ", value: "qq" },
   { label: "QQ 官方机器人", value: "qq_office" },
@@ -446,7 +482,9 @@ const openDialog = (item) => {
   Object.assign(form, createEmptyForm(), item ? { ...item } : {});
   if (!form.source) form.source = item?.source || "user";
   ensureSelectedAdapterMatchesPlatform();
+  clearUserAccountCandidates();
   dialogVisible.value = true;
+  searchUserAccounts(form.user_id);
 };
 
 const saveItem = async () => {
@@ -562,7 +600,76 @@ const deleteSelectedItems = async () => {
 
 const handlePlatformChange = () => {
   ensureSelectedAdapterMatchesPlatform();
+  clearUserAccountCandidates();
+  searchUserAccounts(form.user_id);
 };
+
+const searchUserAccounts = async (query = "") => {
+  const platform = normalizedPlatform();
+  const requestSeq = ++userAccountRequestSeq;
+  if (!platform) {
+    userAccountCandidates.value = [];
+    userAccountLoading.value = false;
+    userAccountLoaded.value = false;
+    return;
+  }
+
+  userAccountCandidates.value = [];
+  userAccountLoading.value = true;
+  userAccountLoaded.value = false;
+  try {
+    const data = await getUserAccounts({
+      platform,
+      keyword: String(query || "").trim(),
+      limit: userAccountSearchLimit,
+      offset: 0,
+    });
+    if (requestSeq !== userAccountRequestSeq || platform !== normalizedPlatform()) return;
+    userAccountCandidates.value = normalizeUserAccounts(data?.items);
+    userAccountLoaded.value = true;
+  } catch {
+    if (requestSeq === userAccountRequestSeq) userAccountCandidates.value = [];
+  } finally {
+    if (requestSeq === userAccountRequestSeq) userAccountLoading.value = false;
+  }
+};
+
+const handleUserSelectVisibleChange = (visible) => {
+  if (visible && normalizedPlatform() && !userAccountLoading.value && !userAccountLoaded.value) {
+    searchUserAccounts(form.user_id);
+  }
+};
+
+function clearUserAccountCandidates() {
+  userAccountRequestSeq += 1;
+  userAccountCandidates.value = [];
+  userAccountLoading.value = false;
+  userAccountLoaded.value = false;
+}
+
+function normalizedPlatform() {
+  return String(form.platform || "").trim();
+}
+
+function normalizeUserAccounts(items) {
+  if (!Array.isArray(items)) return [];
+  const seen = new Set();
+  return items.reduce((accounts, item) => {
+    const userId = String(item?.user_id || "").trim();
+    if (!userId) return accounts;
+    const platform = String(item?.platform || normalizedPlatform()).trim();
+    const key = `${platform}:${userId}`;
+    if (seen.has(key)) return accounts;
+    seen.add(key);
+    accounts.push({
+      ...item,
+      platform,
+      user_id: userId,
+      union_id: String(item?.union_id || "").trim(),
+    });
+    return accounts;
+  }, []);
+}
 
 const runItem = async (item) => {
   runningId.value = item.id;
@@ -776,6 +883,21 @@ function formatTime(value) {
   margin-top: 4px;
   color: #909399;
   font-size: 12px;
+}
+.user-account-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+.user-account-union {
+  color: #909399;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 768px) {
