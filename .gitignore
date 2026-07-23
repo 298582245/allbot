@@ -9,8 +9,7 @@ config.db
 
 .claude/
 
-# 插件与备份运行文件
-plugins/
+# 备份与运行文件
 backups/
 others/
 

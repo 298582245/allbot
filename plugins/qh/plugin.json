@@ -1,0 +1,62 @@
+{
+  "name": "茄皇助手",
+  "version": "1.0.0",
+  "runtime": "nodejs",
+  "entry": "main.js",
+  "platforms": ["web"],
+  "trigger": "^(<@!?\\d+>\\s*)?茄皇",
+  "enabled": true,
+  "priority": 0,
+  "user_config_schema": [
+    {
+      "key": "auth_price_per_month",
+      "label": "授权月费（积分）",
+      "type": "number",
+      "default": "0",
+      "description": "设置为 0 则无需授权即可使用"
+    },
+    {
+      "key": "cron",
+      "label": "定时运行 cron",
+      "type": "text",
+      "default": "0 6 * * *",
+      "description": "每天 6 点自动运行"
+    },
+    {
+      "key": "run_wait_timeout",
+      "label": "脚本运行超时（秒）",
+      "type": "number",
+      "default": "600",
+      "description": "每个账号脚本执行的最大等待时间"
+    },
+    {
+      "key": "task_script",
+      "label": "任务脚本路径",
+      "type": "text",
+      "default": "scripts/task.js",
+      "description": "插件目录下脚本的相对路径"
+    },
+    {
+      "key": "script_runtime",
+      "label": "脚本运行环境",
+      "type": "select",
+      "default": "nodejs",
+      "options": ["nodejs", "python"]
+    }
+  ],
+  "web_chat": {
+    "enabled": true,
+    "title": "茄皇助手",
+    "description": "茄皇农场自动化任务",
+    "placeholder": "输入指令开始使用",
+    "entry_text": "茄皇",
+    "quick_actions": [
+      {"label": "登录", "text": "茄皇登录"},
+      {"label": "签到", "text": "茄皇签到"},
+      {"label": "查询", "text": "茄皇查询"},
+      {"label": "账号", "text": "茄皇账号"},
+      {"label": "帮助", "text": "茄皇帮助"}
+    ],
+    "keywords": ["茄皇", "qh"]
+  }
+}
