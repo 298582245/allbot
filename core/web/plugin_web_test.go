@@ -55,11 +55,26 @@ func TestHandlePluginWebStaticServesEntryAndBlocksTraversal(t *testing.T) {
 		if entryRecorder.Code != http.StatusOK || !strings.Contains(entryRecorder.Body.String(), "shop panel") {
 			t.Fatalf("entry response = %d %s", entryRecorder.Code, entryRecorder.Body.String())
 		}
+		if entryRecorder.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("entry Cache-Control = %q", entryRecorder.Header().Get("Cache-Control"))
+		}
 
 		assetRecorder := httptest.NewRecorder()
 		server.handlePluginWebStatic(assetRecorder, httptest.NewRequest(http.MethodGet, "/plugin-web/shop/app.js", nil))
 		if assetRecorder.Code != http.StatusOK || !strings.Contains(assetRecorder.Body.String(), "plugin app") {
 			t.Fatalf("asset response = %d %s", assetRecorder.Code, assetRecorder.Body.String())
+		}
+		if assetRecorder.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("asset Cache-Control = %q", assetRecorder.Header().Get("Cache-Control"))
+		}
+
+		headRecorder := httptest.NewRecorder()
+		server.handlePluginWebStatic(headRecorder, httptest.NewRequest(http.MethodHead, "/plugin-web/shop/app.js", nil))
+		if headRecorder.Code != http.StatusOK || headRecorder.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("HEAD response = %d, Cache-Control = %q", headRecorder.Code, headRecorder.Header().Get("Cache-Control"))
+		}
+		if headRecorder.Body.Len() != 0 {
+			t.Fatalf("HEAD response body = %q", headRecorder.Body.String())
 		}
 
 		blockedRecorder := httptest.NewRecorder()

@@ -258,6 +258,27 @@
               />
               <div class="field-tip">用于 Web 聊天室搜索或分类展示。</div>
             </el-form-item>
+            <el-form-item label="快捷指令">
+              <div class="web-chat-quick-actions">
+                <div class="web-chat-quick-actions-header">
+                  <span>可为插件入口增加常用指令按钮。</span>
+                  <el-button type="primary" size="small" @click="addWebChatQuickAction">添加快捷指令</el-button>
+                </div>
+                <div v-if="currentConfig.web_chat.quick_actions.length > 0" class="web-chat-quick-actions-list">
+                  <div v-for="(action, index) in currentConfig.web_chat.quick_actions" :key="index" class="web-chat-quick-action-row">
+                    <el-input v-model="action.label" placeholder="按钮名称" />
+                    <el-input v-model="action.text" placeholder="指令文本" />
+                    <el-select :model-value="action.action || ''" placeholder="点击行为" @update:model-value="action.action = $event">
+                      <el-option label="直接发送" value="" />
+                      <el-option label="填入输入框" value="fill" />
+                    </el-select>
+                    <el-button type="danger" plain @click="removeWebChatQuickAction(index)">删除</el-button>
+                  </div>
+                </div>
+                <el-empty v-else :image-size="56" description="暂无快捷指令" />
+                <div class="field-tip">直接发送会立即发送指令；填入输入框只填入并聚焦，用户可继续编辑后发送。</div>
+              </div>
+            </el-form-item>
           </el-form>
         </el-tab-pane>
 
@@ -1247,6 +1268,14 @@ const handleCreateDialogClose = () => {
   createForm.value = createEmptyPluginForm()
 }
 
+const addWebChatQuickAction = () => {
+  currentConfig.value.web_chat.quick_actions.push({ label: '', text: '', action: '' })
+}
+
+const removeWebChatQuickAction = (index) => {
+  currentConfig.value.web_chat.quick_actions.splice(index, 1)
+}
+
 const saveConfig = async () => {
   try {
     currentConfig.value.priority = Number(currentConfig.value.priority || 0)
@@ -1336,6 +1365,19 @@ function createWebUIConfig(config = {}) {
   }
 }
 
+function normalizeWebChatQuickActions(quickActions) {
+  if (!Array.isArray(quickActions)) return []
+  return quickActions.flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+    const action = item.action === 'fill' ? 'fill' : ''
+    const rawText = String(item.text ?? '')
+    const text = action === 'fill' ? rawText.replace(/^\s+/, '') : rawText.trim()
+    const label = String(item.label ?? '').trim() || text
+    if (!label || !text.trim()) return []
+    return [{ label, text, ...(action ? { action } : {}) }]
+  })
+}
+
 function createWebChatConfig(config = {}) {
   const keywords = Array.isArray(config.keywords) ? config.keywords : String(config.keywords || '').split(/[\n,，]/)
   return {
@@ -1345,7 +1387,7 @@ function createWebChatConfig(config = {}) {
     placeholder: String(config.placeholder || '').trim(),
     entry_text: String(config.entry_text || '').trim(),
     keywords: [...new Set(keywords.map(keyword => String(keyword || '').trim()).filter(Boolean))],
-    quick_actions: Array.isArray(config.quick_actions) ? config.quick_actions : []
+    quick_actions: normalizeWebChatQuickActions(config.quick_actions)
   }
 }
 
@@ -2186,6 +2228,37 @@ onBeforeUnmount(() => {
   color: #909399;
 }
 
+.web-chat-quick-actions {
+  width: 100%;
+}
+
+.web-chat-quick-actions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  color: #606266;
+  font-size: 13px;
+}
+
+.web-chat-quick-actions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.web-chat-quick-action-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.4fr) minmax(140px, 0.9fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.web-chat-quick-actions :deep(.el-empty) {
+  padding: 12px 0;
+}
+
 .create-config-header {
   display: flex;
   justify-content: space-between;
@@ -2487,10 +2560,15 @@ onBeforeUnmount(() => {
     padding-right: 4px;
   }
 
-  .create-config-header {
+  .create-config-header,
+  .web-chat-quick-actions-header {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .web-chat-quick-action-row {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .create-dialog-body {

@@ -10,7 +10,7 @@
           <el-button size="small" @click="reloadPanel">刷新</el-button>
         </div>
       </template>
-      <iframe :key="iframeKey" class="plugin-frame" :src="panel.entry_url" :title="panel.title"></iframe>
+      <iframe :key="iframeKey" class="plugin-frame" :src="iframeSrc" :title="panel.title"></iframe>
     </el-card>
     <el-empty v-else description="插件面板不存在或未启用" />
   </div>
@@ -24,13 +24,21 @@ import { usePluginWebPanelsStore } from '@/stores/pluginWebPanels'
 const route = useRoute()
 const panelsStore = usePluginWebPanelsStore()
 const iframeKey = ref(0)
+const refreshToken = ref(Date.now())
 
 panelsStore.loadPanels()
 
 const panel = computed(() => panelsStore.findPanel(route.params.pluginId))
+const iframeSrc = computed(() => {
+  const entryURL = panel.value?.entry_url || ''
+  if (!entryURL) return ''
+  const separator = entryURL.includes('?') ? '&' : '?'
+  return `${entryURL}${separator}_refresh=${refreshToken.value}`
+})
 
 function reloadPanel() {
   iframeKey.value += 1
+  refreshToken.value += 1
 }
 </script>
 
