@@ -20,6 +20,8 @@ import (
 	"github.com/allbot/allbot/core/types"
 )
 
+const pluginWebChatQuickActionFill = "fill"
+
 type Manager struct {
 	plugins               map[string]*PluginProcess
 	runningScripts        map[int64]context.CancelFunc
@@ -2083,7 +2085,12 @@ func normalizePluginWebChatConfig(config types.PluginWebChatConfig) types.Plugin
 	quickActions := make([]types.PluginWebChatQuickAction, 0, len(config.QuickActions))
 	for _, action := range config.QuickActions {
 		action.Label = strings.TrimSpace(action.Label)
-		action.Text = strings.TrimSpace(action.Text)
+		if action.Action == pluginWebChatQuickActionFill {
+			action.Text = strings.TrimLeft(action.Text, " \t\r\n")
+		} else {
+			action.Action = ""
+			action.Text = strings.TrimSpace(action.Text)
+		}
 		if action.Label == "" {
 			action.Label = action.Text
 		}

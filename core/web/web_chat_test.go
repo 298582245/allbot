@@ -544,7 +544,7 @@ func TestWebChatPluginsFiltersByRouter(t *testing.T) {
 	cookie, csrf := registerWebChatTestUser(t, server, mailer)
 	pluginDir := t.TempDir()
 	server.pluginManager = plugin.NewManager(pluginDir, nil)
-	writeWebChatTestPlugin(t, pluginDir, "p1", `{"enabled":true,"title":"客服入口","description":"处理订单问题","placeholder":"请输入订单号","entry_text":"订单查询","quick_actions":[{"label":"查订单","text":"订单查询"}],"keywords":["订单"]}`)
+	writeWebChatTestPlugin(t, pluginDir, "p1", `{"enabled":true,"title":"客服入口","description":"处理订单问题","placeholder":"请输入订单号","entry_text":"订单查询","quick_actions":[{"label":"查订单","text":"订单查询 ","action":"fill"}],"keywords":["订单"]}`)
 	loaded, err := server.pluginManager.LoadPlugin(filepath.Join(pluginDir, "p1"))
 	if err != nil {
 		t.Fatalf("LoadPlugin returned error: %v", err)
@@ -560,8 +560,13 @@ func TestWebChatPluginsFiltersByRouter(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("plugins status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if !bytes.Contains(rr.Body.Bytes(), []byte("客服入口")) || !bytes.Contains(rr.Body.Bytes(), []byte("订单查询")) {
-		t.Fatalf("expected web_chat metadata in response: %s", rr.Body.String())
+	var plugins []struct {
+		Title        string                           `json:"title"`
+		QuickActions []types.PluginWebChatQuickAction `json:"quick_actions"`
+	}
+	decodeUnifiedResponseData(t, rr, &plugins)
+	if len(plugins) != 1 || plugins[0].Title != "客服入口" || len(plugins[0].QuickActions) != 1 || plugins[0].QuickActions[0].Text != "订单查询 " || plugins[0].QuickActions[0].Action != "fill" {
+		t.Fatalf("expected web_chat metadata in response: %#v", plugins)
 	}
 }
 

@@ -92,8 +92,9 @@ type PluginWebUIConfig struct {
 }
 
 type PluginWebChatQuickAction struct {
-	Label string `json:"label"`
-	Text  string `json:"text"`
+	Label  string `json:"label"`
+	Text   string `json:"text"`
+	Action string `json:"action,omitempty"`
 }
 
 type PluginWebChatConfig struct {

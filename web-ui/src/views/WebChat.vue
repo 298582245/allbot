@@ -280,7 +280,7 @@
             </button>
             <div ref="quickActionsScrollRef" class="quick-actions-scroll" @scroll="updateQuickScrollState">
               <div ref="quickActionsListRef" class="quick-actions-list">
-                <el-button v-for="action in activeQuickActions" :key="action.label + action.text" size="small" @click="sendQuick(action.text)">{{ action.label }}</el-button>
+                <el-button v-for="action in activeQuickActions" :key="`${action.label}:${action.text}:${action.action || ''}`" size="small" @click="handleQuickAction(action)">{{ action.label }}</el-button>
               </div>
             </div>
             <button v-show="showQuickScrollButtons" class="quick-scroll-button" type="button" aria-label="向右滚动快捷指令" :disabled="quickScrollAtEnd" @click="scrollQuickActions(1)">
@@ -288,7 +288,7 @@
             </button>
           </div>
           <div class="composer-row">
-            <el-input v-model="content" type="textarea" :rows="3" :placeholder="composerPlaceholder" @keydown.ctrl.enter.prevent="sendMessage" />
+            <el-input ref="messageInputRef" v-model="content" type="textarea" :rows="3" :placeholder="composerPlaceholder" @keydown.ctrl.enter.prevent="sendMessage" />
             <el-button type="primary" :loading="sending" class="send-button" @click="sendMessage">发送</el-button>
           </div>
         </footer>
@@ -374,6 +374,7 @@ const codeDialogVisible = ref(false)
 const expandedCodeContent = ref('')
 const expandedCodeLang = ref('')
 const messageListRef = ref(null)
+const messageInputRef = ref(null)
 const quickActionsScrollRef = ref(null)
 const quickActionsListRef = ref(null)
 const showQuickScrollButtons = ref(false)
@@ -437,7 +438,7 @@ onBeforeUnmount(() => {
   quickActionsResizeObserver?.disconnect()
 })
 
-watch(() => [activeSessionId.value, activeQuickActions.value.map((item) => `${item.label}:${item.text}`).join('|'), mobileView.value], resetQuickActionsScroll)
+watch(() => [activeSessionId.value, activeQuickActions.value.map((item) => `${item.label}:${item.text}:${item.action || ''}`).join('|'), mobileView.value], resetQuickActionsScroll)
 
 function setSession(data) {
   const currentInitializationVersion = ++initializationVersion
@@ -851,6 +852,18 @@ async function bindCodeSubmit() {
   } catch (error) {
     ElMessage.error(error.message)
   }
+}
+
+const QUICK_ACTION_FILL = 'fill'
+
+async function handleQuickAction(action) {
+  if (action?.action === QUICK_ACTION_FILL) {
+    content.value = action.text || ''
+    await nextTick()
+    messageInputRef.value?.focus()
+    return
+  }
+  await sendQuick(action?.text || '')
 }
 
 async function sendQuick(value) {
