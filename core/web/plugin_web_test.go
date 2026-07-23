@@ -68,13 +68,34 @@ func TestHandlePluginWebStaticServesEntryAndBlocksTraversal(t *testing.T) {
 			t.Fatalf("asset Cache-Control = %q", assetRecorder.Header().Get("Cache-Control"))
 		}
 
+		refreshEntryRecorder := httptest.NewRecorder()
+		server.handlePluginWebStatic(refreshEntryRecorder, httptest.NewRequest(http.MethodGet, "/plugin-web/shop/__allbot_refresh__/123/", nil))
+		if refreshEntryRecorder.Code != http.StatusOK || !strings.Contains(refreshEntryRecorder.Body.String(), "shop panel") {
+			t.Fatalf("refresh entry response = %d %s", refreshEntryRecorder.Code, refreshEntryRecorder.Body.String())
+		}
+
+		refreshAssetRecorder := httptest.NewRecorder()
+		server.handlePluginWebStatic(refreshAssetRecorder, httptest.NewRequest(http.MethodGet, "/plugin-web/shop/__allbot_refresh__/123/app.js", nil))
+		if refreshAssetRecorder.Code != http.StatusOK || !strings.Contains(refreshAssetRecorder.Body.String(), "plugin app") {
+			t.Fatalf("refresh asset response = %d %s", refreshAssetRecorder.Code, refreshAssetRecorder.Body.String())
+		}
+		if refreshAssetRecorder.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("refresh asset Cache-Control = %q", refreshAssetRecorder.Header().Get("Cache-Control"))
+		}
+
 		headRecorder := httptest.NewRecorder()
-		server.handlePluginWebStatic(headRecorder, httptest.NewRequest(http.MethodHead, "/plugin-web/shop/app.js", nil))
+		server.handlePluginWebStatic(headRecorder, httptest.NewRequest(http.MethodHead, "/plugin-web/shop/__allbot_refresh__/123/app.js", nil))
 		if headRecorder.Code != http.StatusOK || headRecorder.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("HEAD response = %d, Cache-Control = %q", headRecorder.Code, headRecorder.Header().Get("Cache-Control"))
 		}
 		if headRecorder.Body.Len() != 0 {
 			t.Fatalf("HEAD response body = %q", headRecorder.Body.String())
+		}
+
+		invalidRefreshRecorder := httptest.NewRecorder()
+		server.handlePluginWebStatic(invalidRefreshRecorder, httptest.NewRequest(http.MethodGet, "/plugin-web/shop/__allbot_refresh__/invalid/app.js", nil))
+		if invalidRefreshRecorder.Code != http.StatusNotFound {
+			t.Fatalf("expected invalid refresh path 404, got %d", invalidRefreshRecorder.Code)
 		}
 
 		blockedRecorder := httptest.NewRecorder()
@@ -127,6 +148,17 @@ func TestPluginWebPathHelpersRejectUnsafePaths(t *testing.T) {
 	}
 	if got := pluginWebEntryURL("shop plugin", "index.html"); got != "/plugin-web/shop%20plugin/index.html" {
 		t.Fatalf("unexpected entry URL: %s", got)
+	}
+	if got, ok := stripPluginWebRefreshPath("__allbot_refresh__/123/assets/app.js"); !ok || got != "assets/app.js" {
+		t.Fatalf("unexpected refresh resource path: %q, %v", got, ok)
+	}
+	if got, ok := stripPluginWebRefreshPath("__allbot_refresh__/123"); !ok || got != "" {
+		t.Fatalf("unexpected refresh entry path: %q, %v", got, ok)
+	}
+	for _, value := range []string{"__allbot_refresh__/", "__allbot_refresh__/invalid/app.js"} {
+		if got, ok := stripPluginWebRefreshPath(value); ok {
+			t.Fatalf("expected invalid refresh path %q to be rejected, got %q", value, got)
+		}
 	}
 }
 

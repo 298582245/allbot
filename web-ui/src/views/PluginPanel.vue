@@ -32,13 +32,15 @@ const panel = computed(() => panelsStore.findPanel(route.params.pluginId))
 const iframeSrc = computed(() => {
   const entryURL = panel.value?.entry_url || ''
   if (!entryURL) return ''
-  const separator = entryURL.includes('?') ? '&' : '?'
-  return `${entryURL}${separator}_refresh=${refreshToken.value}`
+  const suffixIndex = entryURL.search(/[?#]/)
+  const path = suffixIndex === -1 ? entryURL : entryURL.slice(0, suffixIndex)
+  const directory = path.slice(0, path.lastIndexOf('/') + 1)
+  return `${directory}__allbot_refresh__/${refreshToken.value}/`
 })
 
 function reloadPanel() {
   iframeKey.value += 1
-  refreshToken.value += 1
+  refreshToken.value = Math.max(refreshToken.value + 1, Date.now())
 }
 </script>
 

@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	pluginWebStaticPrefix = "/plugin-web/"
-	pluginWebAPIPrefix    = "/api/plugin-web/"
+	pluginWebStaticPrefix  = "/plugin-web/"
+	pluginWebAPIPrefix     = "/api/plugin-web/"
+	pluginWebRefreshPrefix = "__allbot_refresh__/"
 )
 
 type pluginWebPanel struct {
@@ -97,6 +98,11 @@ func (s *Server) handlePluginWebStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	root, entryAbs, err := pluginWebRoot(pluginPath, pluginItem.WebUI)
 	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	resourcePath, ok = stripPluginWebRefreshPath(resourcePath)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -245,6 +251,25 @@ func splitPluginWebPath(pathValue, prefix string) (string, string, bool) {
 		return pluginID, "", true
 	}
 	return pluginID, parts[1], true
+}
+
+func stripPluginWebRefreshPath(resourcePath string) (string, bool) {
+	if !strings.HasPrefix(resourcePath, pluginWebRefreshPrefix) {
+		return resourcePath, true
+	}
+	parts := strings.SplitN(strings.TrimPrefix(resourcePath, pluginWebRefreshPrefix), "/", 2)
+	if len(parts) == 0 || parts[0] == "" {
+		return "", false
+	}
+	for _, char := range parts[0] {
+		if char < '0' || char > '9' {
+			return "", false
+		}
+	}
+	if len(parts) == 1 {
+		return "", true
+	}
+	return parts[1], true
 }
 
 func pluginWebEntryURL(pluginID, entryFile string) string {
