@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -65,6 +66,19 @@ func TestHandleBackupImportRejectsBadRequests(t *testing.T) {
 				t.Fatalf("expected 400, got %d: %s", recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestHandleBackupOperationConflictReturns409(t *testing.T) {
+	server := NewServer("0", nil, nil, nil, nil)
+	t.Cleanup(server.logManager.Stop)
+	recorder := httptest.NewRecorder()
+	server.handleBackupOperationError(recorder, "创建备份失败", backup.ErrOperationInProgress, http.StatusInternalServerError)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if body, err := io.ReadAll(recorder.Result().Body); err != nil || !bytes.Contains(body, []byte("备份操作正在进行")) {
+		t.Fatalf("冲突响应不正确: %q, %v", string(body), err)
 	}
 }
 

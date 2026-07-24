@@ -58,7 +58,7 @@ func TestRouterEventMessageSkipsUnregisteredUserGuide(t *testing.T) {
 func TestRouterEventMessageSkipsWaitingSessionIntercept(t *testing.T) {
 	db, r := newPluginTriggerStatsRouter(t)
 	registerPluginForStats(t, r, &types.Plugin{ID: "event", Name: "事件插件", Trigger: "^GROUP_MEMBER_ADD$", Enabled: true})
-	ch := r.sessionManager.CreateSession("plugin", "member-openid", "group-openid", 1)
+	ch := r.sessionManager.CreateSession(messageSessionScope(routerEventMessage("GROUP_MEMBER_ADD"), "plugin"), 1)
 	defer func() {
 		select {
 		case <-ch:

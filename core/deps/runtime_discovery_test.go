@@ -80,7 +80,7 @@ func TestLinuxPythonStandaloneCandidatesAndFindAssetShareSelection(t *testing.T)
 		_, _ = w.Write([]byte(`[
 			{"assets":[
 				{"name":"cpython-3.11.13+20250601-x86_64-unknown-linux-gnu-install_only.tar.zst","browser_download_url":"https://github.com/a/zst"},
-				{"name":"cpython-3.11.13+20250601-x86_64-unknown-linux-gnu-install_only.tar.gz","browser_download_url":"https://github.com/a/gz"},
+				{"name":"cpython-3.11.13+20250601-x86_64-unknown-linux-gnu-install_only.tar.gz","browser_download_url":"https://github.com/a/gz","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 				{"name":"cpython-3.11.13+20250601-aarch64-unknown-linux-gnu-install_only.tar.gz","browser_download_url":"https://github.com/a/arm"},
 				{"name":"cpython-3.10.14+20250601-x86_64-unknown-linux-gnu-pgo_full.tar.gz","browser_download_url":"https://github.com/a/full"},
 				{"name":"cpython-3.10.14+20250601-x86_64-unknown-linux-gnu-install_only.tar.zst","browser_download_url":"https://github.com/a/310zst"}
@@ -130,7 +130,7 @@ func TestLinuxManagedPythonExecutableUsesPython3(t *testing.T) {
 	}
 	downloader := NewHTTPRuntimeDownloader(t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`[{"assets":[{"name":"cpython-3.11.13+20250601-x86_64-unknown-linux-gnu-install_only.tar.gz","browser_download_url":"https://github.com/a/gz"}]}]`))
+		_, _ = w.Write([]byte(`[{"assets":[{"name":"cpython-3.11.13+20250601-x86_64-unknown-linux-gnu-install_only.tar.gz","browser_download_url":"https://github.com/a/gz","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}]`))
 	}))
 	defer server.Close()
 	oldURL := pythonStandaloneReleasesURL

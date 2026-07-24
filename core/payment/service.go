@@ -405,22 +405,15 @@ func (s *Service) waitAlipayBill(req WaitPayRequest, settings config.PaymentSett
 	}
 	timeoutSeconds := alipayBillOrderTimeout(settings, req.Timeout)
 	expiredAt := time.Now().Add(time.Duration(timeoutSeconds) * time.Second)
-	payableAmountCents, err := s.nextAlipayBillPayableAmount(amountCents)
+	maxOffsetCents := settings.MaxPendingPayments
+	if maxOffsetCents <= 0 {
+		maxOffsetCents = config.DefaultPaymentSettings().MaxPendingPayments
+	}
+	order, err := s.database.CreateUniqueAmountPaymentOrder(config.ProviderPaymentOrderInput{PluginID: req.PluginID, UnionID: req.UnionID, Platform: req.Platform, AdapterID: req.AdapterID, UserID: req.UserID, GroupID: req.GroupID, Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Metadata: req.Metadata, Remark: req.Remark, ExpiredAt: expiredAt}, int64(maxOffsetCents))
 	if err != nil {
 		return PaymentResult{Status: "failed", Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, Message: err.Error()}, err
 	}
-	metadata := map[string]interface{}{}
-	for key, value := range req.Metadata {
-		metadata[key] = value
-	}
-	metadata["match_mode"] = alipayBillMatchMode
-	metadata["requested_amount_cents"] = amountCents
-	metadata["payable_amount_cents"] = payableAmountCents
-	metadata["amount_offset_cents"] = payableAmountCents - amountCents
-	order, err := s.database.CreateProviderPaymentOrder(config.ProviderPaymentOrderInput{PluginID: req.PluginID, UnionID: req.UnionID, Platform: req.Platform, AdapterID: req.AdapterID, UserID: req.UserID, GroupID: req.GroupID, Subject: req.Subject, AmountCents: payableAmountCents, PointsAmount: pointsAmount, Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Metadata: metadata, Remark: req.Remark, ExpiredAt: expiredAt})
-	if err != nil {
-		return PaymentResult{Status: "failed", Provider: providerAlipayBill, Method: alipayBillMethodCode(method), Subject: req.Subject, AmountCents: amountCents, PointsAmount: pointsAmount, Message: err.Error()}, err
-	}
+	payableAmountCents := order.AmountCents
 	providerOrder, err := provider.CreateOrder(ProviderCreateRequest{OrderNo: order.OrderNo, CashierToken: order.CashierToken, Subject: req.Subject, AmountCents: payableAmountCents, Method: alipayBillMethodCode(method)})
 	if err != nil {
 		_ = s.database.UpdatePaymentOrderStatus(order.OrderNo, "failed", "支付宝账单下单失败", map[string]string{"error": err.Error()})
@@ -562,25 +555,6 @@ func (s *Service) ensureUserPendingPaymentCapacity(unionID string) error {
 		return fmt.Errorf("你已有待支付订单，请先完成支付或发送 q 取消后再试")
 	}
 	return nil
-}
-
-func (s *Service) nextAlipayBillPayableAmount(amountCents int64) (int64, error) {
-	orders, err := s.database.ListPendingProviderPaymentOrders(providerAlipayBill, 1000)
-	if err != nil {
-		return 0, err
-	}
-	used := map[int64]bool{}
-	now := time.Now()
-	for _, order := range orders {
-		if order != nil && order.AmountCents > 0 && order.ExpiredAt.After(now) {
-			used[order.AmountCents] = true
-		}
-	}
-	payableAmountCents := amountCents
-	for used[payableAmountCents] {
-		payableAmountCents++
-	}
-	return payableAmountCents, nil
 }
 
 func (s *Service) ensurePendingPaymentCapacity(settings config.PaymentSettings, unionID string) error {

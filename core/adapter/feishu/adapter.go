@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,8 @@ const (
 	feishuDefaultAPIBaseURL   = "https://open.feishu.cn/open-apis"
 	feishuDefaultTokenURL     = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
 	feishuTokenRefreshLead    = 5 * time.Minute
+	feishuCallbackFreshness   = 5 * time.Minute
+	feishuCallbackBodyLimit   = 1 << 20
 )
 
 type FeishuAdapter struct {
@@ -55,6 +58,10 @@ type FeishuAdapter struct {
 	wsClient                *larkws.Client
 	wsCancel                context.CancelFunc
 	startLongConnectionFunc func() error
+
+	callbackMu   sync.Mutex
+	callbackSeen map[string]time.Time
+	now          func() time.Time
 
 	stopOnce sync.Once
 	stopped  chan struct{}
@@ -151,6 +158,8 @@ func NewFeishuAdapter(appID, appSecret, verificationToken, encryptKey, callbackP
 		apiBaseURL:        strings.TrimRight(apiBaseURL, "/"),
 		tokenURL:          tokenURL,
 		httpClient:        &http.Client{Timeout: 15 * time.Second},
+		callbackSeen:      make(map[string]time.Time),
+		now:               time.Now,
 		stopped:           make(chan struct{}),
 	}
 	adapter.startLongConnectionFunc = adapter.startLongConnection
@@ -377,9 +386,13 @@ func (a *FeishuAdapter) HandleHTTPCallback(relativePath string, w http.ResponseW
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	payload, err := io.ReadAll(r.Body)
+	payload, err := io.ReadAll(io.LimitReader(r.Body, feishuCallbackBodyLimit+1))
 	if err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+	if len(payload) > feishuCallbackBodyLimit {
+		http.Error(w, "Request entity too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 	callback, err := a.parseCallbackPayload(payload)
@@ -399,7 +412,7 @@ func (a *FeishuAdapter) HandleHTTPCallback(relativePath string, w http.ResponseW
 		writeFeishuJSON(w, map[string]string{"challenge": callback.Challenge})
 		return
 	}
-	if callback.Header.EventType == "im.message.receive_v1" {
+	if callback.Header.EventType == "im.message.receive_v1" && a.acceptCallbackEvent(callback) {
 		if msg := a.buildMessage(callback); msg != nil {
 			go a.dispatchMessage(msg)
 		}
@@ -481,6 +494,66 @@ func (a *FeishuAdapter) verifyCallbackToken(callback feishuCallbackPayload) bool
 		}
 	}
 	return false
+}
+
+func (a *FeishuAdapter) acceptCallbackEvent(callback feishuCallbackPayload) bool {
+	eventID := strings.TrimSpace(callback.Header.EventID)
+	messageID := strings.TrimSpace(callback.Event.Message.MessageID)
+	tenantKey := strings.TrimSpace(callback.Header.TenantKey)
+	senderTenantKey := strings.TrimSpace(callback.Event.Sender.TenantKey)
+	userID := firstNonEmpty(callback.Event.Sender.SenderID.OpenID, callback.Event.Sender.SenderID.UserID, callback.Event.Sender.SenderID.UnionID)
+	chatID := strings.TrimSpace(callback.Event.Message.ChatID)
+	chatType := strings.TrimSpace(callback.Event.Message.ChatType)
+	if eventID == "" || messageID == "" || userID == "" || chatID == "" || chatType == "" {
+		return false
+	}
+	if tenantKey != "" && senderTenantKey != "" && senderTenantKey != tenantKey {
+		return false
+	}
+	createdAt, ok := parseFeishuCallbackTime(callback.Header.CreateTime)
+	if !ok {
+		createdAt, ok = parseFeishuCallbackTime(callback.Event.Message.CreateTime)
+	}
+	if !ok {
+		return false
+	}
+	now := a.now()
+	if createdAt.Before(now.Add(-feishuCallbackFreshness)) || createdAt.After(now.Add(feishuCallbackFreshness)) {
+		return false
+	}
+	return a.claimCallbackSeen(now, "event:"+eventID, "message:"+messageID)
+}
+
+func parseFeishuCallbackTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	milliseconds, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || milliseconds <= 0 {
+		return time.Time{}, false
+	}
+	if len(value) <= 10 {
+		return time.Unix(milliseconds, 0), true
+	}
+	return time.UnixMilli(milliseconds), true
+}
+
+func (a *FeishuAdapter) claimCallbackSeen(now time.Time, keys ...string) bool {
+	a.callbackMu.Lock()
+	defer a.callbackMu.Unlock()
+	for existing, expiresAt := range a.callbackSeen {
+		if !expiresAt.After(now) {
+			delete(a.callbackSeen, existing)
+		}
+	}
+	for _, key := range keys {
+		if expiresAt, ok := a.callbackSeen[key]; ok && expiresAt.After(now) {
+			return false
+		}
+	}
+	expiresAt := now.Add(feishuCallbackFreshness)
+	for _, key := range keys {
+		a.callbackSeen[key] = expiresAt
+	}
+	return true
 }
 
 func (a *FeishuAdapter) buildMessage(callback feishuCallbackPayload) *types.Message {

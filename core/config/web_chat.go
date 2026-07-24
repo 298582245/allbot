@@ -39,12 +39,13 @@ type WebChatUser struct {
 }
 
 type WebChatRegisterInput struct {
-	Email       string
-	Code        string
-	Username    string
-	Password    string
-	DisplayName string
-	BindCode    string
+	Email          string
+	Code           string
+	Username       string
+	Password       string
+	DisplayName    string
+	BindCode       string
+	BindAttemptKey string
 }
 
 type WebChatSession struct {
@@ -163,7 +164,8 @@ func (d *Database) RegisterWebChatUser(input WebChatRegisterInput) (*WebChatUser
 	defer tx.Rollback()
 	unionID := newUnionID(WebChatPlatform, userID)
 	if bindCode != "" {
-		source, err := userBindCodeByCodeTx(tx, bindCode)
+		attemptKey := "register\x00" + strings.TrimSpace(input.BindAttemptKey)
+		source, err := d.validateBindCodeTx(tx, attemptKey, bindCode)
 		if err != nil {
 			return nil, err
 		}
@@ -205,12 +207,15 @@ func (d *Database) RegisterWebChatUser(input WebChatRegisterInput) (*WebChatUser
 		return nil, err
 	}
 	if bindCode != "" {
-		if _, err = tx.Exec(`DELETE FROM user_bind_codes WHERE code = ?`, bindCode); err != nil {
+		if err = consumeUserBindCodeTx(tx, bindCode); err != nil {
 			return nil, err
 		}
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
+	}
+	if bindCode != "" {
+		d.clearBindAttempts("register\x00" + strings.TrimSpace(input.BindAttemptKey))
 	}
 	return d.GetWebChatUser(userID)
 }
@@ -506,6 +511,7 @@ func (d *Database) DeleteWebChatSession(token string) error {
 
 func (d *Database) BindWebChatUserByCode(userID, code string) (*UserAccount, *UserAccount, error) {
 	userID, code = strings.TrimSpace(userID), strings.TrimSpace(code)
+	attemptKey := WebChatPlatform + "\x00" + userID
 	if userID == "" || code == "" {
 		return nil, nil, fmt.Errorf("用户和绑定码不能为空")
 	}
@@ -525,7 +531,7 @@ func (d *Database) BindWebChatUserByCode(userID, code string) (*UserAccount, *Us
 	if boundCount > 0 {
 		return nil, nil, fmt.Errorf("当前账号已绑定其他平台，不能重复绑定")
 	}
-	source, err := userBindCodeByCodeTx(tx, code)
+	source, err := d.validateBindCodeTx(tx, attemptKey, code)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -544,11 +550,21 @@ func (d *Database) BindWebChatUserByCode(userID, code string) (*UserAccount, *Us
 		if err != nil {
 			return nil, nil, err
 		}
+		var webPoints, sourcePoints int64
+		if err = tx.QueryRow(`SELECT COALESCE(points, 0) FROM user_points WHERE union_id = ?`, webAccount.UnionID).Scan(&webPoints); err != nil && err != sql.ErrNoRows {
+			return nil, nil, err
+		}
+		if err = tx.QueryRow(`SELECT COALESCE(points, 0) FROM user_points WHERE union_id = ?`, source.UnionID).Scan(&sourcePoints); err != nil && err != sql.ErrNoRows {
+			return nil, nil, err
+		}
+		mergedPoints, err := checkedAddInt64(webPoints, sourcePoints)
+		if err != nil {
+			return nil, nil, fmt.Errorf("积分余额溢出")
+		}
 		if _, err = tx.Exec(`
-			INSERT INTO user_points (union_id, points, created_at, updated_at)
-			VALUES (?, COALESCE((SELECT points FROM user_points WHERE union_id = ?), 0) + COALESCE((SELECT points FROM user_points WHERE union_id = ?), 0), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-			ON CONFLICT(union_id) DO UPDATE SET points = user_points.points + COALESCE((SELECT points FROM user_points WHERE union_id = ?), 0), updated_at = CURRENT_TIMESTAMP
-		`, webAccount.UnionID, webAccount.UnionID, source.UnionID, source.UnionID); err != nil {
+			INSERT INTO user_points (union_id, points, created_at, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+			ON CONFLICT(union_id) DO UPDATE SET points = excluded.points, updated_at = CURRENT_TIMESTAMP
+		`, webAccount.UnionID, mergedPoints); err != nil {
 			return nil, nil, err
 		}
 		if _, err = tx.Exec(`UPDATE user_accounts SET union_id = ?, updated_at = CURRENT_TIMESTAMP WHERE union_id = ?`, webAccount.UnionID, source.UnionID); err != nil {
@@ -561,12 +577,13 @@ func (d *Database) BindWebChatUserByCode(userID, code string) (*UserAccount, *Us
 			return nil, nil, err
 		}
 	}
-	if _, err = tx.Exec(`DELETE FROM user_bind_codes WHERE code = ?`, code); err != nil {
+	if err = consumeUserBindCodeTx(tx, code); err != nil {
 		return nil, nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, nil, err
 	}
+	d.clearBindAttempts(attemptKey)
 	boundWeb, err := d.GetUserAccount(WebChatPlatform, userID)
 	if err != nil {
 		return nil, nil, err
@@ -960,19 +977,6 @@ func uniqueWebChatInternalUsername(tx *sql.Tx, sourcePlatform, sourceUserID, fal
 		}
 	}
 	return fallback
-}
-
-func userBindCodeByCodeTx(tx *sql.Tx, code string) (*UserAccount, error) {
-	var source UserAccount
-	var expiresAt time.Time
-	err := tx.QueryRow(`SELECT 0, platform, user_id, union_id, 0, created_at, expires_at FROM user_bind_codes WHERE code = ? AND expires_at > CURRENT_TIMESTAMP`, strings.TrimSpace(code)).Scan(&source.ID, &source.Platform, &source.UserID, &source.UnionID, &source.Points, &source.CreatedAt, &expiresAt)
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("绑定码不存在或已过期")
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &source, nil
 }
 
 func scanWebChatUser(row interface {

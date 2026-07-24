@@ -52,6 +52,7 @@ type runtimeDownloadSpec struct {
 	Version          string
 	Architecture     string
 	URL              string
+	ExpectedHash     string
 	SHA256URL        string
 	NuGetIndexURL    string
 	ArchiveName      string
@@ -59,7 +60,6 @@ type runtimeDownloadSpec struct {
 	Executable       string
 	TrustedHosts     []string
 	HashTrustedHosts []string
-	AllowMissingHash bool
 }
 
 func NewHTTPRuntimeDownloader(rootDir string) *HTTPRuntimeDownloader {
@@ -116,17 +116,17 @@ func (d *HTTPRuntimeDownloader) EnsureRuntime(runtimeName, version, architecture
 	}
 	reportRuntimeInitProgress(progress, "hash", "正在校验下载文件", 55)
 	expectedHash, err := d.fetchExpectedHash(client, spec)
-	if err != nil && !spec.AllowMissingHash {
+	if err != nil {
 		return RuntimeDownloadResult{}, err
+	}
+	if expectedHash == "" {
+		return RuntimeDownloadResult{}, fmt.Errorf("未获取到可信哈希，停止自动下载")
 	}
 	actualHash, err := hashFile(archivePath, expectedHashAlgorithm(spec))
 	if err != nil {
 		return RuntimeDownloadResult{}, err
 	}
-	if expectedHash == "" && !spec.AllowMissingHash {
-		return RuntimeDownloadResult{}, fmt.Errorf("未获取到可信哈希，停止自动下载")
-	}
-	if expectedHash != "" && !strings.EqualFold(expectedHash, actualHash) {
+	if !strings.EqualFold(expectedHash, actualHash) {
 		return RuntimeDownloadResult{}, fmt.Errorf("下载文件哈希校验失败")
 	}
 
@@ -308,6 +308,9 @@ func copyDownloadWithProgress(writer io.Writer, reader io.Reader, totalBytes int
 }
 
 func (d *HTTPRuntimeDownloader) fetchExpectedHash(client *http.Client, spec runtimeDownloadSpec) (string, error) {
+	if strings.TrimSpace(spec.ExpectedHash) != "" {
+		return strings.TrimSpace(spec.ExpectedHash), nil
+	}
 	if spec.SHA256URL != "" {
 		if err := validateTrustedURL(spec.SHA256URL, spec.HashTrustedHosts); err != nil {
 			return "", err

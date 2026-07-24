@@ -19,6 +19,9 @@ func DefaultUpgradeRunner(request ApplyUpdateRequest) error {
 		return err
 	}
 	runnerPath := filepath.Join(filepath.Dir(request.NewPath), updaterRunnerName())
+	if err := ensurePathWithinRoot(runnerPath, request.UpdateRoot); err != nil {
+		return err
+	}
 	if err := copyFile(currentExe, runnerPath, 0755); err != nil {
 		return fmt.Errorf("准备更新器失败: %w", err)
 	}
@@ -72,7 +75,7 @@ func copyFile(source string, target string, mode os.FileMode) error {
 		return err
 	}
 	defer input.Close()
-	output, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 	if err != nil {
 		return err
 	}

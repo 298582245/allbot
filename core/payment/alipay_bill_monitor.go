@@ -122,8 +122,6 @@ func (m *AlipayBillMonitor) RunOnce(ctx context.Context) error {
 			_ = m.database.SetPaymentProviderState(providerAlipayBill, "last_error", err.Error())
 			continue
 		}
-	}
-	for _, item := range items {
 		if !alipayBillItemIsIncome(item) {
 			continue
 		}
@@ -131,15 +129,7 @@ func (m *AlipayBillMonitor) RunOnce(ctx context.Context) error {
 		if order == nil {
 			continue
 		}
-		saved, err := m.database.FindAlipayBillRecordByProviderOrderNo(item.ProviderOrderNo)
-		if err == nil && saved.MatchedAt != nil {
-			continue
-		}
-		marked, err := m.database.MarkAlipayBillRecordMatched(item.ProviderOrderNo, order.OrderNo)
-		if err != nil || !marked {
-			continue
-		}
-		confirmed, _, err := m.database.ConfirmProviderPayment(config.ProviderPaymentConfirmation{OrderNo: order.OrderNo, Provider: providerAlipayBill, Method: order.Method, AmountCents: item.AmountCents, ProviderOrderNo: item.ProviderOrderNo, Raw: item.Raw, PaidAt: item.PaidAt})
+		confirmed, _, err := m.database.ConfirmAlipayBillPayment(record, config.ProviderPaymentConfirmation{OrderNo: order.OrderNo, Provider: providerAlipayBill, Method: order.Method, AmountCents: item.AmountCents, ProviderOrderNo: item.ProviderOrderNo, Raw: item.Raw, PaidAt: item.PaidAt})
 		if err != nil {
 			_ = m.database.AppendPaymentEvent(order.OrderNo, "provider_rejected", err.Error(), item.Raw)
 			continue

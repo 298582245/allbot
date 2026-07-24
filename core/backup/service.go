@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -27,6 +28,8 @@ const maxZipEntries = 20000
 const maxZipEntrySize uint64 = 256 << 20
 const maxZipTotalSize uint64 = 1024 << 20
 
+var ErrOperationInProgress = fmt.Errorf("备份操作正在进行")
+
 type OSSUploader interface {
 	Upload(ctx context.Context, file BackupFile, settings config.OSSBackupSettings) error
 }
@@ -45,10 +48,10 @@ type Service struct {
 	uploader           OSSUploader
 	now                func() time.Time
 
-	createMu sync.Mutex
-	runnerMu sync.Mutex
-	stop     chan struct{}
-	done     chan struct{}
+	operationMu sync.Mutex
+	runnerMu    sync.Mutex
+	stop        chan struct{}
+	done        chan struct{}
 }
 
 type BackupFile struct {
@@ -117,6 +120,28 @@ type RestoreResult struct {
 	Snapshot        BackupFile `json:"snapshot"`
 	RestartRequired bool       `json:"restart_required"`
 	Warnings        []string   `json:"warnings"`
+}
+
+type restoreComponent struct {
+	name          string
+	sourcePath    string
+	targetPath    string
+	merge         bool
+	targetExisted bool
+	rollbackPath  string
+}
+
+type restorePlan struct {
+	service          *Service
+	stagingDir       string
+	database         string
+	runtimeEnv       *deps.RuntimeEnvironmentBackup
+	components       []restoreComponent
+	snapshot         BackupFile
+	restored         []string
+	warnings         []string
+	committed        []restoreComponent
+	runtimeAttempted bool
 }
 
 func NewService(database *config.Database, pluginDir string) *Service {
@@ -199,6 +224,10 @@ func (s *Service) Create(ctx context.Context, trigger string) (BackupFile, error
 	if s == nil || s.database == nil {
 		return BackupFile{}, fmt.Errorf("备份服务未初始化")
 	}
+	if !s.operationMu.TryLock() {
+		return BackupFile{}, ErrOperationInProgress
+	}
+	defer s.operationMu.Unlock()
 	settings, err := s.database.GetBackupSettings()
 	if err != nil {
 		return BackupFile{}, err
@@ -210,9 +239,6 @@ func (s *Service) createWithSettings(ctx context.Context, trigger string, settin
 	if s == nil || s.database == nil {
 		return BackupFile{}, fmt.Errorf("备份服务未初始化")
 	}
-	s.createMu.Lock()
-	defer s.createMu.Unlock()
-
 	settings = config.NormalizeBackupSettings(settings)
 	if !settings.IncludePlugins && !settings.IncludeData && !settings.IncludeImages && !settings.IncludeLogs && !settings.IncludeRuntimeEnv {
 		return BackupFile{}, fmt.Errorf("至少需要选择插件、数据、图片、日志或运行环境中的一项")
@@ -220,6 +246,9 @@ func (s *Service) createWithSettings(ctx context.Context, trigger string, settin
 	backupDir, err := normalizePath(settings.BackupDir)
 	if err != nil {
 		return BackupFile{}, err
+	}
+	if err := validatePathWithoutLinks(backupDir, true); err != nil {
+		return BackupFile{}, fmt.Errorf("备份目录不安全: %w", err)
 	}
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		return BackupFile{}, err
@@ -286,7 +315,7 @@ func (s *Service) createWithSettings(ctx context.Context, trigger string, settin
 		}
 	}
 	if cleanup {
-		if err := s.Cleanup(settings.Retention); err != nil {
+		if err := s.cleanupLocked(settings.Retention); err != nil {
 			log.Printf("[SYSTEM] 清理旧备份失败: %v", err)
 		}
 	}
@@ -297,6 +326,10 @@ func (s *Service) Import(ctx context.Context, options ImportOptions) (ImportResu
 	if s == nil || s.database == nil {
 		return ImportResult{}, fmt.Errorf("备份服务未初始化")
 	}
+	if !s.operationMu.TryLock() {
+		return ImportResult{}, ErrOperationInProgress
+	}
+	defer s.operationMu.Unlock()
 	if options.Reader == nil {
 		return ImportResult{}, fmt.Errorf("备份文件不能为空")
 	}
@@ -311,6 +344,9 @@ func (s *Service) Import(ctx context.Context, options ImportOptions) (ImportResu
 	backupDir, err := normalizePath(settings.BackupDir)
 	if err != nil {
 		return ImportResult{}, err
+	}
+	if err := validatePathWithoutLinks(backupDir, true); err != nil {
+		return ImportResult{}, fmt.Errorf("备份目录不安全: %w", err)
 	}
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		return ImportResult{}, err
@@ -381,6 +417,10 @@ func (s *Service) Restore(ctx context.Context, name string, options RestoreOptio
 	if s == nil || s.database == nil {
 		return RestoreResult{}, fmt.Errorf("备份服务未初始化")
 	}
+	if !s.operationMu.TryLock() {
+		return RestoreResult{}, ErrOperationInProgress
+	}
+	defer s.operationMu.Unlock()
 	if !options.Confirm {
 		return RestoreResult{}, fmt.Errorf("请先确认恢复会覆盖当前数据")
 	}
@@ -395,28 +435,8 @@ func (s *Service) Restore(ctx context.Context, name string, options RestoreOptio
 	if err != nil {
 		return RestoreResult{}, err
 	}
-	if options.IncludeData && !summary.HasData {
-		return RestoreResult{}, fmt.Errorf("备份包不包含数据库")
-	}
-	if options.IncludePlugins && !summary.HasPlugins {
-		return RestoreResult{}, fmt.Errorf("备份包不包含插件目录")
-	}
-	if options.IncludeOpenAPIs && !summary.HasOpenAPIs {
-		return RestoreResult{}, fmt.Errorf("备份包不包含 OpenAPI 文件")
-	}
-	if options.IncludeImages && !summary.HasImages {
-		return RestoreResult{}, fmt.Errorf("备份包不包含图片文件")
-	}
-	if options.IncludeLogs && !summary.HasLogs {
-		return RestoreResult{}, fmt.Errorf("备份包不包含日志文件")
-	}
-	if options.IncludeRuntimeEnv && !summary.HasRuntimeEnv {
-		return RestoreResult{}, fmt.Errorf("备份包不包含运行环境与依赖")
-	}
-
-	snapshot, err := s.CreateFullSnapshot(ctx, "pre-restore")
-	if err != nil {
-		return RestoreResult{}, fmt.Errorf("创建恢复前快照失败: %w", err)
+	if err := validateRestoreSelection(summary, options); err != nil {
+		return RestoreResult{}, err
 	}
 	settings, err := s.database.GetBackupSettings()
 	if err != nil {
@@ -426,64 +446,207 @@ func (s *Service) Restore(ctx context.Context, name string, options RestoreOptio
 	if err != nil {
 		return RestoreResult{}, err
 	}
+	if err := validatePathWithoutLinks(backupDir, true); err != nil {
+		return RestoreResult{}, fmt.Errorf("备份目录不安全: %w", err)
+	}
 	stagingDir, err := os.MkdirTemp(backupDir, ".allbot-restore-")
 	if err != nil {
 		return RestoreResult{}, err
 	}
-	defer os.RemoveAll(stagingDir)
+	defer removeDirectorySafely(stagingDir)
 	if err := extractBackup(file.Path, stagingDir); err != nil {
 		return RestoreResult{}, err
 	}
 
-	restored := make([]string, 0, 3)
+	plan, err := s.prepareRestorePlan(stagingDir, options)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	defer plan.cleanup()
+	snapshot, err := s.createFullSnapshotLocked(ctx, "pre-restore")
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("创建恢复前快照失败: %w", err)
+	}
+	plan.snapshot = snapshot
+	if err := plan.commit(ctx); err != nil {
+		return RestoreResult{}, err
+	}
+	warnings = append(warnings, plan.warnings...)
+	return RestoreResult{Restored: plan.restored, Snapshot: snapshot, RestartRequired: true, Warnings: warnings}, nil
+}
+
+func validateRestoreSelection(summary BackupSummary, options RestoreOptions) error {
+	checks := []struct {
+		selected bool
+		present  bool
+		message  string
+	}{
+		{options.IncludeData, summary.HasData, "备份包不包含数据库"},
+		{options.IncludePlugins, summary.HasPlugins, "备份包不包含插件目录"},
+		{options.IncludeOpenAPIs, summary.HasOpenAPIs, "备份包不包含 OpenAPI 文件"},
+		{options.IncludeImages, summary.HasImages, "备份包不包含图片文件"},
+		{options.IncludeLogs, summary.HasLogs, "备份包不包含日志文件"},
+		{options.IncludeRuntimeEnv, summary.HasRuntimeEnv, "备份包不包含运行环境与依赖"},
+	}
+	for _, check := range checks {
+		if check.selected && !check.present {
+			return fmt.Errorf("%s", check.message)
+		}
+	}
+	return nil
+}
+
+func (s *Service) prepareRestorePlan(stagingDir string, options RestoreOptions) (*restorePlan, error) {
+	plan := &restorePlan{service: s, stagingDir: stagingDir, restored: make([]string, 0, 6)}
 	if options.IncludeData {
-		dbPath := filepath.Join(stagingDir, "data", "config.db")
-		if err := validateSQLiteDatabase(dbPath); err != nil {
-			return RestoreResult{}, fmt.Errorf("数据库校验失败: %w", err)
+		plan.database = filepath.Join(stagingDir, "data", "config.db")
+		if err := validateSQLiteDatabase(plan.database); err != nil {
+			return nil, fmt.Errorf("数据库校验失败: %w", err)
 		}
-		if err := s.database.ReplaceWith(dbPath); err != nil {
-			return RestoreResult{}, fmt.Errorf("恢复数据库失败: %w", err)
-		}
-		restored = append(restored, "data")
 	}
-	if options.IncludePlugins {
-		if err := replaceDirectory(filepath.Join(stagingDir, "plugins"), s.pluginDir); err != nil {
-			return RestoreResult{}, fmt.Errorf("恢复插件目录失败: %w", err)
+	if options.IncludeRuntimeEnv {
+		if s.runtimeDepsManager == nil {
+			return nil, fmt.Errorf("运行环境依赖管理器未初始化")
 		}
-		restored = append(restored, "plugins")
+		snapshot, err := readRuntimeEnvironmentSnapshot(filepath.Join(stagingDir, "runtime_env"))
+		if err != nil {
+			return nil, fmt.Errorf("运行环境与依赖校验失败: %w", err)
+		}
+		plan.runtimeEnv = &snapshot
 	}
-	if options.IncludeOpenAPIs {
-		if err := replaceDirectory(filepath.Join(stagingDir, "openapis"), s.openAPIDir); err != nil {
-			return RestoreResult{}, fmt.Errorf("恢复 OpenAPI 文件失败: %w", err)
-		}
-		restored = append(restored, "openapis")
+	components := []struct {
+		selected bool
+		name     string
+		source   string
+		target   string
+		merge    bool
+	}{
+		{options.IncludePlugins, "plugins", filepath.Join(stagingDir, "plugins"), s.pluginDir, false},
+		{options.IncludeOpenAPIs, "openapis", filepath.Join(stagingDir, "openapis"), s.openAPIDir, false},
+		{options.IncludeLogs, "logs", filepath.Join(stagingDir, "logs"), s.logDir, true},
 	}
 	if options.IncludeImages {
 		imageDir, err := s.imageStorageDir()
 		if err != nil {
-			return RestoreResult{}, err
+			return nil, err
 		}
-		if err := replaceDirectory(filepath.Join(stagingDir, "images"), imageDir); err != nil {
-			return RestoreResult{}, fmt.Errorf("恢复图片文件失败: %w", err)
-		}
-		restored = append(restored, "images")
+		components = append(components, struct {
+			selected bool
+			name     string
+			source   string
+			target   string
+			merge    bool
+		}{true, "images", filepath.Join(stagingDir, "images"), imageDir, false})
 	}
-	if options.IncludeLogs {
-		if err := mergeDirectory(filepath.Join(stagingDir, "logs"), s.logDir); err != nil {
-			return RestoreResult{}, fmt.Errorf("恢复日志文件失败: %w", err)
+	for _, component := range components {
+		if !component.selected {
+			continue
 		}
-		restored = append(restored, "logs")
-	}
-	if options.IncludeRuntimeEnv {
-		runtimeWarnings, err := s.restoreRuntimeEnvironment(filepath.Join(stagingDir, "runtime_env"))
-		if err != nil {
-			return RestoreResult{}, fmt.Errorf("恢复运行环境与依赖失败: %w", err)
+		if err := validateRestoreDirectory(component.source, component.target); err != nil {
+			return nil, fmt.Errorf("%s 恢复路径校验失败: %w", component.name, err)
 		}
-		warnings = append(warnings, runtimeWarnings...)
-		restored = append(restored, "runtime_env")
+		_, statErr := os.Lstat(component.target)
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("%s 恢复目标检查失败: %w", component.name, statErr)
+		}
+		plan.components = append(plan.components, restoreComponent{name: component.name, sourcePath: component.source, targetPath: component.target, merge: component.merge, targetExisted: statErr == nil})
 	}
-	return RestoreResult{Restored: restored, Snapshot: snapshot, RestartRequired: true, Warnings: warnings}, nil
+	return plan, nil
 }
+
+func (p *restorePlan) commit(ctx context.Context) error {
+	for _, component := range p.components {
+		select {
+		case <-ctx.Done():
+			return p.fail(ctx.Err())
+		default:
+		}
+		if component.targetExisted {
+			component.rollbackPath = filepath.Join(p.stagingDir, ".component-rollback-"+component.name)
+			if err := copyDirectory(component.targetPath, component.rollbackPath); err != nil {
+				return p.fail(fmt.Errorf("创建 %s 回滚副本失败: %w", component.name, err))
+			}
+		}
+		p.committed = append(p.committed, component)
+		var err error
+		if component.merge {
+			err = mergeDirectory(component.sourcePath, component.targetPath)
+		} else {
+			err = replaceDirectory(component.sourcePath, component.targetPath)
+		}
+		if err != nil {
+			return p.fail(fmt.Errorf("恢复 %s 失败: %w", component.name, err))
+		}
+		p.restored = append(p.restored, component.name)
+	}
+	if p.runtimeEnv != nil {
+		p.runtimeAttempted = true
+		warnings, err := p.service.runtimeDepsManager.ImportRuntimeEnvironment(*p.runtimeEnv)
+		if err != nil {
+			return p.fail(fmt.Errorf("恢复运行环境与依赖失败: %w", err))
+		}
+		p.warnings = append(p.warnings, warnings...)
+		p.restored = append(p.restored, "runtime_env")
+	}
+	if p.database != "" {
+		if err := p.service.database.ReplaceWith(p.database); err != nil {
+			return p.fail(fmt.Errorf("恢复数据库失败: %w", err))
+		}
+		p.restored = append(p.restored, "data")
+	}
+	return nil
+}
+
+func (p *restorePlan) fail(cause error) error {
+	rollbackErr := p.rollback()
+	if rollbackErr != nil {
+		return fmt.Errorf("%v；自动回滚失败: %w", cause, rollbackErr)
+	}
+	return cause
+}
+
+func (p *restorePlan) rollback() error {
+	if len(p.committed) == 0 && !p.runtimeAttempted {
+		return nil
+	}
+	var rollbackErrors []string
+	for index := len(p.committed) - 1; index >= 0; index-- {
+		component := p.committed[index]
+		if !component.targetExisted {
+			if err := removeDirectorySafely(component.targetPath); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Sprintf("%s: %v", component.name, err))
+			}
+			continue
+		}
+		if err := replaceDirectory(component.rollbackPath, component.targetPath); err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Sprintf("%s: %v", component.name, err))
+		}
+	}
+	if p.runtimeAttempted {
+		rollbackDir, err := os.MkdirTemp(filepath.Dir(p.stagingDir), ".allbot-rollback-")
+		if err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Sprintf("runtime_env: %v", err))
+		} else {
+			defer removeDirectorySafely(rollbackDir)
+			if err := extractBackup(p.snapshot.Path, rollbackDir); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Sprintf("runtime_env: %v", err))
+			} else {
+				runtimeSnapshot, snapshotErr := readRuntimeEnvironmentSnapshot(filepath.Join(rollbackDir, "runtime_env"))
+				if snapshotErr != nil {
+					rollbackErrors = append(rollbackErrors, fmt.Sprintf("runtime_env: %v", snapshotErr))
+				} else if _, importErr := p.service.runtimeDepsManager.ImportRuntimeEnvironment(runtimeSnapshot); importErr != nil {
+					rollbackErrors = append(rollbackErrors, fmt.Sprintf("runtime_env: %v", importErr))
+				}
+			}
+		}
+	}
+	if len(rollbackErrors) > 0 {
+		return fmt.Errorf("%s", strings.Join(rollbackErrors, "；"))
+	}
+	return nil
+}
+
+func (p *restorePlan) cleanup() {}
 
 func (s *Service) restoreRuntimeEnvironment(sourceDir string) ([]string, error) {
 	if s.runtimeDepsManager == nil {
@@ -566,6 +729,17 @@ func normalizeRuntimeEnvironmentSnapshot(snapshot deps.RuntimeEnvironmentBackup)
 }
 
 func (s *Service) CreateFullSnapshot(ctx context.Context, trigger string) (BackupFile, error) {
+	if s == nil || s.database == nil {
+		return BackupFile{}, fmt.Errorf("备份服务未初始化")
+	}
+	if !s.operationMu.TryLock() {
+		return BackupFile{}, ErrOperationInProgress
+	}
+	defer s.operationMu.Unlock()
+	return s.createFullSnapshotLocked(ctx, trigger)
+}
+
+func (s *Service) createFullSnapshotLocked(ctx context.Context, trigger string) (BackupFile, error) {
 	settings, err := s.database.GetBackupSettings()
 	if err != nil {
 		return BackupFile{}, err
@@ -602,6 +776,14 @@ func (s *Service) Cleanup(retention int) error {
 	if s == nil || s.database == nil || retention <= 0 {
 		return nil
 	}
+	if !s.operationMu.TryLock() {
+		return ErrOperationInProgress
+	}
+	defer s.operationMu.Unlock()
+	return s.cleanupLocked(retention)
+}
+
+func (s *Service) cleanupLocked(retention int) error {
 	settings, err := s.database.GetBackupSettings()
 	if err != nil {
 		return err
@@ -644,18 +826,28 @@ func (s *Service) Resolve(name string) (BackupFile, error) {
 	if err != nil {
 		return BackupFile{}, err
 	}
+	if err := validatePathWithoutLinks(backupDir, false); err != nil {
+		return BackupFile{}, fmt.Errorf("备份目录不安全: %w", err)
+	}
 	path := filepath.Join(backupDir, name)
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		return BackupFile{}, err
 	}
-	if info.IsDir() {
+	if !info.Mode().IsRegular() || isLinkLike(info) {
 		return BackupFile{}, fmt.Errorf("备份文件名无效")
 	}
 	return BackupFile{Name: name, Path: path, Size: info.Size(), CreatedAt: info.ModTime()}, nil
 }
 
 func (s *Service) Delete(name string) error {
+	if s == nil || s.database == nil {
+		return fmt.Errorf("备份服务未初始化")
+	}
+	if !s.operationMu.TryLock() {
+		return ErrOperationInProgress
+	}
+	defer s.operationMu.Unlock()
 	file, err := s.Resolve(name)
 	if err != nil {
 		return err
@@ -991,26 +1183,19 @@ func safeJoin(root, name string) (string, error) {
 }
 
 func replaceDirectory(sourceDir, targetDir string) error {
-	info, err := os.Stat(sourceDir)
-	if err != nil {
+	if err := validateRestoreDirectory(sourceDir, targetDir); err != nil {
 		return err
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("恢复来源不是目录: %s", sourceDir)
 	}
 	targetAbs, err := filepath.Abs(filepath.Clean(targetDir))
 	if err != nil {
 		return err
 	}
-	if targetAbs == string(filepath.Separator) || strings.TrimSpace(targetDir) == "" {
-		return fmt.Errorf("恢复目标目录无效")
-	}
 	if err := os.MkdirAll(filepath.Dir(targetAbs), 0755); err != nil {
 		return err
 	}
-	backupOld := targetAbs + ".restore-old-" + time.Now().Format("20060102150405")
+	backupOld := fmt.Sprintf("%s.restore-old-%d", targetAbs, time.Now().UnixNano())
 	oldExists := false
-	if _, err := os.Stat(targetAbs); err == nil {
+	if _, err := os.Lstat(targetAbs); err == nil {
 		oldExists = true
 		if err := os.Rename(targetAbs, backupOld); err != nil {
 			return err
@@ -1025,25 +1210,20 @@ func replaceDirectory(sourceDir, targetDir string) error {
 		return err
 	}
 	if oldExists {
-		_ = os.RemoveAll(backupOld)
+		if err := removeDirectorySafely(backupOld); err != nil {
+			log.Printf("[SYSTEM] 清理恢复前目录失败，已保留目录等待后续清理: %s: %v", backupOld, err)
+		}
 	}
 	return nil
 }
 
 func mergeDirectory(sourceDir, targetDir string) error {
-	info, err := os.Stat(sourceDir)
-	if err != nil {
+	if err := validateRestoreDirectory(sourceDir, targetDir); err != nil {
 		return err
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("恢复来源不是目录: %s", sourceDir)
 	}
 	targetAbs, err := filepath.Abs(filepath.Clean(targetDir))
 	if err != nil {
 		return err
-	}
-	if targetAbs == string(filepath.Separator) || strings.TrimSpace(targetDir) == "" {
-		return fmt.Errorf("恢复目标目录无效")
 	}
 	if err := os.MkdirAll(targetAbs, 0755); err != nil {
 		return err
@@ -1056,8 +1236,18 @@ func mergeDirectory(sourceDir, targetDir string) error {
 		if walkErr != nil {
 			return walkErr
 		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if isLinkLike(info) {
+			return fmt.Errorf("恢复来源包含符号链接或重解析点: %s", path)
+		}
 		if entry.IsDir() {
 			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("恢复来源包含不支持的文件类型: %s", path)
 		}
 		relPath, err := filepath.Rel(sourceAbs, path)
 		if err != nil {
@@ -1073,6 +1263,39 @@ func mergeDirectory(sourceDir, targetDir string) error {
 		if _, err := os.Stat(targetPath); err == nil {
 			return nil
 		} else if !os.IsNotExist(err) {
+			return err
+		}
+		return copyRegularFile(path, targetPath, entry)
+	})
+}
+
+func copyDirectory(sourceDir, targetDir string) error {
+	if err := validateTreeWithoutLinks(sourceDir); err != nil {
+		return err
+	}
+	if err := removeDirectorySafely(targetDir); err != nil {
+		return err
+	}
+	sourceAbs, err := filepath.Abs(sourceDir)
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(sourceAbs, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relPath, err := filepath.Rel(sourceAbs, path)
+		if err != nil {
+			return err
+		}
+		targetPath, err := safeJoin(targetDir, filepath.ToSlash(relPath))
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(targetPath, 0755)
+		}
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 			return err
 		}
 		return copyRegularFile(path, targetPath, entry)
@@ -1099,6 +1322,98 @@ func copyRegularFile(sourcePath, targetPath string, entry os.DirEntry) error {
 		return copyErr
 	}
 	return closeErr
+}
+
+func validateRestoreDirectory(sourceDir, targetDir string) error {
+	if strings.TrimSpace(targetDir) == "" {
+		return fmt.Errorf("恢复目标目录无效")
+	}
+	info, err := os.Lstat(sourceDir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || isLinkLike(info) {
+		return fmt.Errorf("恢复来源不是普通目录: %s", sourceDir)
+	}
+	if err := validateTreeWithoutLinks(sourceDir); err != nil {
+		return fmt.Errorf("恢复来源包含链接或特殊文件: %w", err)
+	}
+	targetAbs, err := filepath.Abs(filepath.Clean(targetDir))
+	if err != nil {
+		return err
+	}
+	volume := filepath.VolumeName(targetAbs)
+	if targetAbs == volume+string(filepath.Separator) {
+		return fmt.Errorf("恢复目标目录无效")
+	}
+	if err := validatePathWithoutLinks(targetAbs, true); err != nil {
+		return fmt.Errorf("恢复目标包含链接: %w", err)
+	}
+	return nil
+}
+
+func validateTreeWithoutLinks(root string) error {
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if isLinkLike(info) {
+			return fmt.Errorf("路径包含符号链接或重解析点: %s", path)
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("路径包含不支持的文件类型: %s", path)
+		}
+		return nil
+	})
+}
+
+func validatePathWithoutLinks(path string, allowMissing bool) error {
+	absPath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+	volume := filepath.VolumeName(absPath)
+	current := volume + string(filepath.Separator)
+	remainder := strings.TrimPrefix(absPath, current)
+	for _, part := range strings.Split(remainder, string(filepath.Separator)) {
+		if part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if os.IsNotExist(statErr) && allowMissing {
+			return nil
+		}
+		if statErr != nil {
+			return statErr
+		}
+		if isLinkLike(info) {
+			return fmt.Errorf("路径包含符号链接或重解析点: %s", current)
+		}
+	}
+	return nil
+}
+
+func isLinkLike(info os.FileInfo) bool {
+	return info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeIrregular != 0 || hasReparsePoint(info)
+}
+
+func removeDirectorySafely(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if isLinkLike(info) {
+		return os.Remove(path)
+	}
+	return os.RemoveAll(path)
 }
 
 func validateSQLiteDatabase(path string) error {
@@ -1129,15 +1444,18 @@ func addDirIfExists(writer *zip.Writer, sourceDir, zipRoot, excludedDir string) 
 	if strings.TrimSpace(sourceDir) == "" {
 		return nil
 	}
-	info, err := os.Stat(sourceDir)
+	info, err := os.Lstat(sourceDir)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() {
-		return nil
+	if !info.IsDir() || isLinkLike(info) {
+		return fmt.Errorf("备份来源不是普通目录: %s", sourceDir)
+	}
+	if err := validatePathWithoutLinks(sourceDir, false); err != nil {
+		return fmt.Errorf("备份来源包含链接: %w", err)
 	}
 	sourceAbs, err := filepath.Abs(sourceDir)
 	if err != nil {
@@ -1157,8 +1475,18 @@ func addDirIfExists(writer *zip.Writer, sourceDir, zipRoot, excludedDir string) 
 			}
 			return nil
 		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if isLinkLike(info) {
+			return fmt.Errorf("备份来源包含符号链接或重解析点: %s", path)
+		}
 		if entry.IsDir() {
 			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("备份来源包含不支持的文件类型: %s", path)
 		}
 		relPath, err := filepath.Rel(sourceAbs, path)
 		if err != nil {
@@ -1169,12 +1497,12 @@ func addDirIfExists(writer *zip.Writer, sourceDir, zipRoot, excludedDir string) 
 }
 
 func addFile(writer *zip.Writer, sourcePath, zipName string) error {
-	info, err := os.Stat(sourcePath)
+	info, err := os.Lstat(sourcePath)
 	if err != nil {
 		return err
 	}
-	if info.IsDir() {
-		return nil
+	if isLinkLike(info) || !info.Mode().IsRegular() {
+		return fmt.Errorf("备份来源不是普通文件: %s", sourcePath)
 	}
 	header, err := zip.FileInfoHeader(info)
 	if err != nil {
@@ -1207,22 +1535,25 @@ func addBytes(writer *zip.Writer, zipName string, data []byte) error {
 }
 
 func listBackupFiles(backupDir string) ([]BackupFile, error) {
+	if err := validatePathWithoutLinks(backupDir, false); err != nil {
+		return nil, fmt.Errorf("备份目录不安全: %w", err)
+	}
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
 		return nil, err
 	}
 	items := make([]BackupFile, 0)
 	for _, entry := range entries {
-		if entry.IsDir() {
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() || isLinkLike(info) {
 			continue
 		}
 		name := entry.Name()
 		if cleanBackupName(name) == "" {
 			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil, err
 		}
 		items = append(items, BackupFile{Name: name, Path: filepath.Join(backupDir, name), Size: info.Size(), CreatedAt: info.ModTime()})
 	}
@@ -1274,6 +1605,10 @@ func waitOrStop(duration time.Duration, stop <-chan struct{}) bool {
 	case <-stop:
 		return true
 	}
+}
+
+func IsOperationInProgress(err error) bool {
+	return errors.Is(err, ErrOperationInProgress)
 }
 
 func errorString(err error) string {

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
-	"time"
 
 	plugincore "github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/types"
@@ -129,7 +128,7 @@ func TestRepresentativeAdminHandlerUsesUnifiedResponse(t *testing.T) {
 }
 
 func TestAuthMiddlewareReturnsUnifiedUnauthorizedResponse(t *testing.T) {
-	server := &Server{sessions: map[string]time.Time{}}
+	server := &Server{sessions: map[string]adminSession{}}
 	handler := server.authMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("authenticated handler should not be called")
 	}))

@@ -225,6 +225,79 @@ func TestFeishuMessageCallbackDispatchesGroupText(t *testing.T) {
 	}
 }
 
+func TestFeishuMessageCallbackRejectsStaleReplayAndTenantMismatch(t *testing.T) {
+	adapter := NewFeishuAdapter("app", "secret", "token", "", "callback", "", "")
+	messages := make(chan *types.Message, 3)
+	adapter.SetMessageHandler(func(msg *types.Message) { messages <- msg })
+
+	send := func(payload string) {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(payload))
+		adapter.HandleHTTPCallback("callback", response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %q", response.Code, response.Body.String())
+		}
+	}
+
+	stale := feishuMessagePayloadAt("p2p", "oc_private", `{"text":"过期"}`, time.Now().Add(-feishuCallbackFreshness-time.Second))
+	send(stale)
+	select {
+	case <-messages:
+		t.Fatal("过期事件不应派发")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	mismatch := strings.Replace(feishuMessagePayload("p2p", "oc_private", `{"text":"租户错误"}`), `"tenant_key":"tenant"`, `"tenant_key":"other"`, 1)
+	send(mismatch)
+	select {
+	case <-messages:
+		t.Fatal("租户不一致事件不应派发")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	payload := feishuMessagePayload("p2p", "oc_private", `{"text":"首次"}`)
+	send(payload)
+	select {
+	case <-messages:
+	case <-time.After(time.Second):
+		t.Fatal("首次事件未派发")
+	}
+	send(payload)
+	select {
+	case <-messages:
+		t.Fatal("重复事件不应派发")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	sameEvent := strings.Replace(feishuMessagePayload("p2p", "oc_private", `{"text":"事件重复"}`), `"message_id":"om_msg"`, `"message_id":"om_other"`, 1)
+	send(sameEvent)
+	select {
+	case <-messages:
+		t.Fatal("相同 EventID 不应因 MessageID 不同而再次派发")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	sameMessage := strings.Replace(feishuMessagePayload("p2p", "oc_private", `{"text":"消息重复"}`), `"event_id":"evt_1"`, `"event_id":"evt_other"`, 1)
+	send(sameMessage)
+	select {
+	case <-messages:
+		t.Fatal("相同 MessageID 不应因 EventID 不同而再次派发")
+	case <-time.After(30 * time.Millisecond):
+	}
+}
+
+func TestFeishuCallbackRejectsOversizedBody(t *testing.T) {
+	adapter := NewFeishuAdapter("app", "secret", "token", "", "callback", "", "")
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(strings.Repeat("x", feishuCallbackBodyLimit+1)))
+
+	adapter.HandleHTTPCallback("callback", response, request)
+
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d", response.Code)
+	}
+}
+
 func TestFeishuLongConnectionEventDispatchesMessage(t *testing.T) {
 	adapter := NewFeishuAdapter("app", "secret", "", "", "callback", "", "")
 	messages := make(chan *types.Message, 1)
@@ -596,6 +669,11 @@ func newFeishuImageSendTestServer(t *testing.T, expectedImage []byte, checkSend 
 }
 
 func feishuMessagePayload(chatType, chatID, content string) string {
+	return feishuMessagePayloadAt(chatType, chatID, content, time.Now())
+}
+
+func feishuMessagePayloadAt(chatType, chatID, content string, createdAt time.Time) string {
+	createTime := strconv.FormatInt(createdAt.UnixMilli(), 10)
 	payload := map[string]interface{}{
 		"schema": "2.0",
 		"header": map[string]string{
@@ -603,7 +681,7 @@ func feishuMessagePayload(chatType, chatID, content string) string {
 			"event_type":  "im.message.receive_v1",
 			"tenant_key":  "tenant",
 			"token":       "token",
-			"create_time": "1710000000",
+			"create_time": createTime,
 		},
 		"event": map[string]interface{}{
 			"sender": map[string]interface{}{
@@ -612,6 +690,7 @@ func feishuMessagePayload(chatType, chatID, content string) string {
 			},
 			"message": map[string]string{
 				"message_id":   "om_msg",
+				"create_time":  createTime,
 				"chat_id":      chatID,
 				"chat_type":    chatType,
 				"message_type": "text",

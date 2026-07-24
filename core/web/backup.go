@@ -139,7 +139,7 @@ func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	file, err := service.Create(ctx, "manual")
 	if err != nil {
-		s.jsonError(w, "创建备份失败: "+err.Error(), http.StatusInternalServerError)
+		s.handleBackupOperationError(w, "创建备份失败", err, http.StatusInternalServerError)
 		return
 	}
 	if s.logManager != nil {
@@ -172,7 +172,7 @@ func (s *Server) handleImportBackup(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	result, err := service.Import(ctx, backup.ImportOptions{Reader: file, OriginalName: header.Filename, MaxSize: 512 << 20})
 	if err != nil {
-		s.jsonError(w, "导入备份失败: "+err.Error(), http.StatusBadRequest)
+		s.handleBackupOperationError(w, "导入备份失败", err, http.StatusBadRequest)
 		return
 	}
 	if s.logManager != nil {
@@ -203,7 +203,7 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request, nam
 	defer cancel()
 	result, err := service.Restore(ctx, name, options)
 	if err != nil {
-		s.jsonError(w, "恢复备份失败: "+err.Error(), http.StatusBadRequest)
+		s.handleBackupOperationError(w, "恢复备份失败", err, http.StatusBadRequest)
 		return
 	}
 	if s.logManager != nil {
@@ -241,10 +241,18 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request, name
 		return
 	}
 	if err := service.Delete(name); err != nil {
-		s.jsonError(w, "删除备份失败: "+err.Error(), http.StatusBadRequest)
+		s.handleBackupOperationError(w, "删除备份失败", err, http.StatusBadRequest)
 		return
 	}
 	s.jsonResponse(w, map[string]interface{}{"message": "备份已删除"})
+}
+
+func (s *Server) handleBackupOperationError(w http.ResponseWriter, message string, err error, fallbackStatus int) {
+	status := fallbackStatus
+	if backup.IsOperationInProgress(err) {
+		status = http.StatusConflict
+	}
+	s.jsonError(w, message+": "+err.Error(), status)
 }
 
 func (s *Server) requireBackupService(w http.ResponseWriter) (*backup.Service, bool) {

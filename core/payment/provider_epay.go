@@ -315,7 +315,7 @@ func (p *EpayProvider) verifyRSAFields(fields map[string]string) error {
 	if err != nil || absInt64(time.Now().Unix()-timestamp) > 300 {
 		return fmt.Errorf("易支付 RSA 时间戳无效")
 	}
-	ok, err := p.rsaPublicVerify(epaySignContent(fields, true), fields["sign"])
+	ok, err := p.rsaPublicVerify(epaySignContent(fields, false), fields["sign"])
 	if err != nil {
 		return err
 	}
@@ -493,13 +493,24 @@ func stringMapValues(params map[string]string) url.Values {
 }
 
 func decodeJSONMap(body []byte) (map[string]string, error) {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	raw := map[string]interface{}{}
-	if err := decoder.Decode(&raw); err != nil {
+	raw := map[string]json.RawMessage{}
+	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, err
 	}
-	return interfaceMapToStringMap(raw), nil
+	result := make(map[string]string, len(raw))
+	for key, value := range raw {
+		if bytes.Equal(value, []byte("null")) {
+			result[key] = ""
+			continue
+		}
+		var text string
+		if err := json.Unmarshal(value, &text); err == nil {
+			result[key] = text
+			continue
+		}
+		result[key] = string(value)
+	}
+	return result, nil
 }
 
 func interfaceMapToStringMap(raw map[string]interface{}) map[string]string {

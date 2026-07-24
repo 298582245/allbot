@@ -24,6 +24,7 @@ type updateInfoResponse struct {
 	Assets           []updateAssetResponse `json:"assets"`
 	MatchedAsset     updateAssetResponse   `json:"matchedAsset"`
 	ChecksumAsset    updateAssetResponse   `json:"checksumAsset"`
+	SignatureAsset   updateAssetResponse   `json:"signatureAsset"`
 	Error            string                `json:"error"`
 	Message          string                `json:"message"`
 	UpgradeSupported bool                  `json:"upgradeSupported"`
@@ -130,6 +131,7 @@ func toUpdateInfoResponse(result updater.UpdateCheckResult) updateInfoResponse {
 		Assets:           make([]updateAssetResponse, 0, len(result.Assets)),
 		MatchedAsset:     toUpdateAssetResponse(result.MatchedAsset),
 		ChecksumAsset:    toUpdateAssetResponse(result.ChecksumAsset),
+		SignatureAsset:   toUpdateAssetResponse(result.SignatureAsset),
 		Error:            result.Error,
 		Message:          result.Message,
 		UpgradeSupported: result.UpgradeSupported,

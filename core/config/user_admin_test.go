@@ -2,7 +2,9 @@ package config
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"errors"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -22,7 +24,7 @@ func TestUsersMigrationBackfillsAndPreservesLegacyDuplicates(t *testing.T) {
 	if _, err := db.db.Exec(`INSERT INTO user_accounts (platform, user_id, union_id) VALUES ('telegram', 'legacy-2', ?)`, legacy.UnionID); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrateUsersTable(db.db); err != nil {
+	if err := migrateUsersTable(db.db.DB); err != nil {
 		t.Fatalf("migrateUsersTable returned error: %v", err)
 	}
 	accounts, _, err := db.ListUserAccounts(UserQuery{}, legacy.UnionID)
@@ -83,6 +85,28 @@ func TestUserAdminListDetailAndAtomicPointAdjustment(t *testing.T) {
 	}
 }
 
+func TestAdjustUserPointsOverflowLeavesBalanceAndLedgerUnchanged(t *testing.T) {
+	db := newUserAdminTestDatabase(t)
+	account, err := db.EnsureUserAccount("qq", "overflow-admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.Exec(`UPDATE user_points SET points = ? WHERE union_id = ?`, int64(math.MaxInt64), account.UnionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AdjustUserPoints(account.UnionID, 1, "溢出"); err == nil {
+		t.Fatal("积分溢出应失败")
+	}
+	points, err := db.GetUserPoints(account.UnionID)
+	if err != nil || points != math.MaxInt64 {
+		t.Fatalf("余额被修改: points=%d err=%v", points, err)
+	}
+	transactions, total, err := db.ListPointTransactions(PointTransactionQuery{UnionID: account.UnionID, Source: "admin_adjustment"})
+	if err != nil || total != 0 || len(transactions) != 0 {
+		t.Fatalf("溢出不应写入流水: total=%d transactions=%#v err=%v", total, transactions, err)
+	}
+}
+
 func TestSetUserDisabledKeepsWebLocalDisabledIndependent(t *testing.T) {
 	db, webUser := newWebChatPasswordResetTestUser(t)
 	session, err := db.CreateWebChatSession(webUser.UserID, "agent", "127.0.0.1")
@@ -126,6 +150,13 @@ func TestCreateUserBindCodeReusesUnexpiredCode(t *testing.T) {
 	first, err := db.CreateUserBindCode("telegram", "source-user")
 	if err != nil {
 		t.Fatal(err)
+	}
+	rawCode, err := base64.RawURLEncoding.DecodeString(first.Code)
+	if err != nil {
+		t.Fatalf("绑定码不是 URL 安全 Base64: %v", err)
+	}
+	if len(rawCode) < 16 {
+		t.Fatalf("绑定码熵不足: %d bytes", len(rawCode))
 	}
 	second, err := db.CreateUserBindCode("telegram", "source-user")
 	if err != nil {
@@ -201,6 +232,54 @@ func TestCreateUserBindCodeConcurrentCallsReuseCode(t *testing.T) {
 	}
 }
 
+func TestBindUserByCodeLocksRepeatedFailures(t *testing.T) {
+	db := newUserAdminTestDatabase(t)
+	for attempt := 1; attempt <= bindMaxAttempts; attempt++ {
+		_, _, err := db.BindUserByCode("qq", "target", "invalid")
+		if err == nil {
+			t.Fatalf("第 %d 次错误绑定码应失败", attempt)
+		}
+	}
+	if _, _, err := db.BindUserByCode("qq", "target", "invalid"); !errors.Is(err, ErrUserBindLocked) {
+		t.Fatalf("达到阈值后应锁定，实际 %v", err)
+	}
+}
+
+func TestBindUserByCodeConsumesCodeOnce(t *testing.T) {
+	db := newUserAdminTestDatabase(t)
+	code, err := db.CreateUserBindCode("telegram", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.BindUserByCode("qq", "target", code.Code); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.BindUserByCode("discord", "other", code.Code); err == nil {
+		t.Fatal("已消费绑定码不应再次使用")
+	}
+}
+
+func TestLegacyUserBindCodesAreInvalidated(t *testing.T) {
+	db := newUserAdminTestDatabase(t)
+	account, err := db.EnsureUserAccount("telegram", "legacy-source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.Exec(`INSERT INTO user_bind_codes (code, platform, user_id, union_id, expires_at) VALUES ('123456', ?, ?, ?, datetime('now', '+10 minutes'))`, account.Platform, account.UserID, account.UnionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := invalidateLegacyUserBindCodes(db.db.DB); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM user_bind_codes WHERE code = '123456'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("低熵历史绑定码未失效")
+	}
+}
+
 func TestBindUserByCodeRejectsOverlappingPlatformSets(t *testing.T) {
 	db := newUserAdminTestDatabase(t)
 	source, err := db.EnsureUserAccount("telegram", "source-tg")
@@ -221,7 +300,7 @@ func TestBindUserByCodeRejectsOverlappingPlatformSets(t *testing.T) {
 	if _, err := db.db.Exec(`UPDATE user_accounts SET union_id = ? WHERE id = ?`, target.UnionID, secondTarget.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrateUsersTable(db.db); err != nil {
+	if err := migrateUsersTable(db.db.DB); err != nil {
 		t.Fatal(err)
 	}
 	code, err := db.CreateUserBindCode(source.Platform, source.UserID)

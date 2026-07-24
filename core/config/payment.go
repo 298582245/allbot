@@ -604,7 +604,21 @@ func CalculatePointsAmount(amountCents int64, pointsPerRMB int64) (int64, error)
 	if amountCents > maxInt64/pointsPerRMB {
 		return 0, fmt.Errorf("积分金额溢出")
 	}
-	return (amountCents*pointsPerRMB + 99) / 100, nil
+	product := amountCents * pointsPerRMB
+	points := product / 100
+	if product%100 != 0 {
+		points++
+	}
+	return points, nil
+}
+
+func checkedAddInt64(left, right int64) (int64, error) {
+	maxInt64 := int64(^uint64(0) >> 1)
+	minInt64 := -maxInt64 - 1
+	if right > 0 && left > maxInt64-right || right < 0 && left < minInt64-right {
+		return 0, fmt.Errorf("整数加法溢出")
+	}
+	return left + right, nil
 }
 
 func (d *Database) SettlePointsPayment(input PointsPaymentSettlement) (*PointsPaymentSettlementResult, error) {
@@ -730,7 +744,10 @@ func (d *Database) CreditPaymentPoints(orderNo string, description string) (int6
 		}
 		return current, nil
 	}
-	remaining := current + order.PointsAmount
+	remaining, err := checkedAddInt64(current, order.PointsAmount)
+	if err != nil {
+		return 0, fmt.Errorf("积分余额溢出")
+	}
 	if _, err = tx.Exec(`UPDATE user_points SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE union_id = ?`, remaining, order.UnionID); err != nil {
 		return 0, err
 	}
@@ -797,6 +814,102 @@ func (d *Database) CreateProviderPaymentOrder(input ProviderPaymentOrderInput) (
 		return nil, err
 	}
 	return d.GetPaymentOrder(orderNo)
+}
+
+func (d *Database) CreateUniqueAmountPaymentOrder(input ProviderPaymentOrderInput, maxOffsetCents int64) (*PaymentOrder, error) {
+	input.UnionID = strings.TrimSpace(input.UnionID)
+	input.Subject = strings.TrimSpace(input.Subject)
+	input.Provider = strings.TrimSpace(input.Provider)
+	input.Method = strings.TrimSpace(input.Method)
+	if input.UnionID == "" || input.Subject == "" || input.Provider == "" || input.Method == "" {
+		return nil, fmt.Errorf("支付用户、标题、渠道和方式不能为空")
+	}
+	if input.AmountCents <= 0 || input.PointsAmount <= 0 {
+		return nil, fmt.Errorf("订单金额和积分金额必须大于 0")
+	}
+	if maxOffsetCents < 0 {
+		return nil, fmt.Errorf("金额偏移上限不能小于 0")
+	}
+	if input.ExpiredAt.IsZero() {
+		input.ExpiredAt = time.Now().Add(15 * time.Minute)
+	}
+	orderNo, err := GeneratePaymentOrderNo()
+	if err != nil {
+		return nil, err
+	}
+	cashierToken, err := GeneratePaymentAccessToken()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := d.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`
+		DELETE FROM payment_amount_reservations
+		WHERE expires_at <= CURRENT_TIMESTAMP
+			OR NOT EXISTS (
+				SELECT 1
+				FROM payment_orders
+				WHERE payment_orders.order_no = payment_amount_reservations.order_no
+					AND payment_orders.status = 'pending'
+					AND payment_orders.expired_at > CURRENT_TIMESTAMP
+			)
+	`); err != nil {
+		return nil, err
+	}
+	if _, err = tx.Exec(`
+		INSERT OR IGNORE INTO payment_amount_reservations (provider, amount_cents, order_no, expires_at, created_at)
+		SELECT provider, amount_cents, order_no, expired_at, CURRENT_TIMESTAMP
+		FROM payment_orders
+		WHERE provider = ? AND status = 'pending' AND expired_at > CURRENT_TIMESTAMP
+	`, input.Provider); err != nil {
+		return nil, err
+	}
+	for offset := int64(0); offset <= maxOffsetCents; offset++ {
+		amountCents, addErr := checkedAddInt64(input.AmountCents, offset)
+		if addErr != nil {
+			return nil, fmt.Errorf("支付金额溢出")
+		}
+		result, reserveErr := tx.Exec(`INSERT OR IGNORE INTO payment_amount_reservations (provider, amount_cents, order_no, expires_at, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`, input.Provider, amountCents, orderNo, input.ExpiredAt)
+		if reserveErr != nil {
+			return nil, reserveErr
+		}
+		affected, reserveErr := result.RowsAffected()
+		if reserveErr != nil {
+			return nil, reserveErr
+		}
+		if affected == 0 {
+			continue
+		}
+		metadata := map[string]interface{}{}
+		for key, value := range input.Metadata {
+			metadata[key] = value
+		}
+		metadata["match_mode"] = "amount_unique"
+		metadata["requested_amount_cents"] = input.AmountCents
+		metadata["payable_amount_cents"] = amountCents
+		metadata["amount_offset_cents"] = offset
+		metadataText, marshalErr := providerPaymentMetadata(metadata, input.Remark)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		if _, err = tx.Exec(`
+			INSERT INTO payment_orders (order_no, cashier_token, plugin_id, union_id, platform, adapter_id, user_id, group_id, subject, amount_cents, points_amount, provider, method, status, metadata, expired_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		`, orderNo, cashierToken, input.PluginID, input.UnionID, input.Platform, input.AdapterID, input.UserID, input.GroupID, input.Subject, amountCents, input.PointsAmount, input.Provider, input.Method, metadataText, input.ExpiredAt); err != nil {
+			return nil, err
+		}
+		if err = appendPaymentEventTx(tx, orderNo, "created", "订单创建", metadataText); err != nil {
+			return nil, err
+		}
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		return d.GetPaymentOrder(orderNo)
+	}
+	return nil, fmt.Errorf("当前没有可用的唯一支付金额，请稍后重试")
 }
 
 func (d *Database) ExpirePaymentOrder(orderNo, message string) error {
@@ -891,6 +1004,115 @@ func (d *Database) ConfirmProviderPayment(input ProviderPaymentConfirmation) (*P
 	}
 	if affected, _ := result.RowsAffected(); affected == 0 {
 		return nil, false, fmt.Errorf("订单状态已变更")
+	}
+	if _, err = tx.Exec(`DELETE FROM payment_amount_reservations WHERE order_no = ?`, input.OrderNo); err != nil {
+		return nil, false, err
+	}
+	if err = appendPaymentEventTx(tx, input.OrderNo, "paid", "第三方支付成功", input.Raw); err != nil {
+		return nil, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	updated, err := d.GetPaymentOrder(input.OrderNo)
+	return updated, false, err
+}
+
+func (d *Database) ConfirmAlipayBillPayment(record *AlipayBillRecord, input ProviderPaymentConfirmation) (*PaymentOrder, bool, error) {
+	if record == nil {
+		return nil, false, fmt.Errorf("支付宝账单流水不能为空")
+	}
+	record.ProviderOrderNo = strings.TrimSpace(record.ProviderOrderNo)
+	record.Direction = strings.TrimSpace(record.Direction)
+	input.OrderNo = strings.TrimSpace(input.OrderNo)
+	input.Provider = strings.TrimSpace(input.Provider)
+	input.Method = strings.TrimSpace(input.Method)
+	input.ProviderOrderNo = strings.TrimSpace(input.ProviderOrderNo)
+	if record.ProviderOrderNo == "" || input.OrderNo == "" || input.ProviderOrderNo != record.ProviderOrderNo {
+		return nil, false, fmt.Errorf("支付宝账单流水号或订单号无效")
+	}
+	if !strings.EqualFold(input.Provider, "alipay_bill") {
+		return nil, false, fmt.Errorf("订单支付渠道必须为支付宝账单")
+	}
+	if record.AmountCents <= 0 || record.AmountCents != input.AmountCents || record.PaidAt.IsZero() {
+		return nil, false, fmt.Errorf("支付宝账单金额或时间无效")
+	}
+	if input.PaidAt.IsZero() {
+		input.PaidAt = record.PaidAt
+	}
+	if strings.TrimSpace(record.Raw) == "" {
+		record.Raw = input.Raw
+	}
+	tx, err := d.db.Begin()
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`
+		INSERT OR IGNORE INTO payment_alipay_bill_records (provider_order_no, account_log_id, order_no, amount_cents, direction, remark, summary, opposite_account, paid_at, raw, matched_at, created_at)
+		VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)
+	`, record.ProviderOrderNo, strings.TrimSpace(record.AccountLogID), record.AmountCents, record.Direction, strings.TrimSpace(record.Remark), strings.TrimSpace(record.Summary), strings.TrimSpace(record.OppositeAccount), record.PaidAt, record.Raw); err != nil {
+		return nil, false, err
+	}
+	storedRecord, err := scanAlipayBillRecord(tx.QueryRow(`SELECT id, provider_order_no, account_log_id, order_no, amount_cents, direction, remark, summary, opposite_account, paid_at, raw, matched_at, created_at FROM payment_alipay_bill_records WHERE provider_order_no = ?`, record.ProviderOrderNo))
+	if err != nil {
+		return nil, false, err
+	}
+	if storedRecord.AmountCents != input.AmountCents {
+		return nil, false, fmt.Errorf("支付宝账单流水金额不一致")
+	}
+	if !paymentDirectionIsIncome(storedRecord.Direction) {
+		return nil, false, fmt.Errorf("支付宝账单流水不是收入")
+	}
+	input.PaidAt = storedRecord.PaidAt
+	input.Raw = storedRecord.Raw
+	if storedRecord.MatchedAt != nil && storedRecord.OrderNo != input.OrderNo {
+		return nil, false, fmt.Errorf("支付宝账单流水已关联其他订单")
+	}
+	order, err := scanPaymentOrder(tx.QueryRow(paymentOrderSelectSQL()+` WHERE order_no = ?`, input.OrderNo))
+	if err != nil {
+		return nil, false, err
+	}
+	if err = validateProviderPaymentOrderTx(tx, order, input); err != nil {
+		if eventErr := appendProviderPaymentRejectEvent(tx, input.OrderNo, err.Error(), input); eventErr != nil {
+			return nil, false, eventErr
+		}
+		if commitErr := tx.Commit(); commitErr != nil {
+			return nil, false, commitErr
+		}
+		return nil, false, err
+	}
+	if storedRecord.MatchedAt == nil {
+		result, updateErr := tx.Exec(`UPDATE payment_alipay_bill_records SET order_no = ?, matched_at = CURRENT_TIMESTAMP WHERE provider_order_no = ? AND matched_at IS NULL`, input.OrderNo, record.ProviderOrderNo)
+		if updateErr != nil {
+			return nil, false, updateErr
+		}
+		if affected, _ := result.RowsAffected(); affected == 0 {
+			return nil, false, fmt.Errorf("支付宝账单流水认领失败")
+		}
+	}
+	if order.Status == "paid" {
+		if err = tx.Commit(); err != nil {
+			return nil, false, err
+		}
+		return order, true, nil
+	}
+	if order.Status != "pending" {
+		return nil, false, fmt.Errorf("订单状态 %s 不允许确认支付", order.Status)
+	}
+	result, err := tx.Exec(`
+		UPDATE payment_orders
+		SET status = 'paid', provider_order_no = ?, notify_raw = ?, paid_at = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE order_no = ? AND status = 'pending'
+	`, input.ProviderOrderNo, input.Raw, input.PaidAt, input.OrderNo)
+	if err != nil {
+		return nil, false, err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return nil, false, fmt.Errorf("订单状态已变更")
+	}
+	if _, err = tx.Exec(`DELETE FROM payment_amount_reservations WHERE order_no = ?`, input.OrderNo); err != nil {
+		return nil, false, err
 	}
 	if err = appendPaymentEventTx(tx, input.OrderNo, "paid", "第三方支付成功", input.Raw); err != nil {
 		return nil, false, err
@@ -990,6 +1212,9 @@ func (d *Database) DeletePaymentOrder(orderNo string) error {
 		return err
 	}
 	if _, err = tx.Exec(`DELETE FROM payment_events WHERE order_no = ?`, orderNo); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM payment_amount_reservations WHERE order_no = ?`, orderNo); err != nil {
 		return err
 	}
 	result, err := tx.Exec(`DELETE FROM payment_orders WHERE order_no = ?`, orderNo)
@@ -1093,6 +1318,9 @@ func (d *Database) UpdatePaymentOrderStatus(orderNo, status string, message stri
 	if err := validatePaymentOrderStatus(status); err != nil {
 		return err
 	}
+	if status != "failed" && status != "expired" && status != "cancelled" {
+		return fmt.Errorf("支付订单状态不能通过通用接口更新为: %s", status)
+	}
 	payloadText, err := marshalPayload(payload)
 	if err != nil {
 		return err
@@ -1102,7 +1330,7 @@ func (d *Database) UpdatePaymentOrderStatus(orderNo, status string, message stri
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.Exec(`UPDATE payment_orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE order_no = ? AND status <> ?`, status, orderNo, status)
+	result, err := tx.Exec(`UPDATE payment_orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE order_no = ? AND status = 'pending'`, status, orderNo)
 	if err != nil {
 		return err
 	}
@@ -1172,7 +1400,7 @@ func (d *Database) MarkPaymentOrderPaid(orderNo, providerOrderNo string, paidAt 
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.Exec(`UPDATE payment_orders SET status = 'paid', provider_order_no = ?, notify_raw = ?, paid_at = ?, updated_at = CURRENT_TIMESTAMP WHERE order_no = ? AND status <> 'paid'`, providerOrderNo, raw, paidAt, orderNo)
+	result, err := tx.Exec(`UPDATE payment_orders SET status = 'paid', provider_order_no = ?, notify_raw = ?, paid_at = ?, updated_at = CURRENT_TIMESTAMP WHERE order_no = ? AND status = 'pending'`, providerOrderNo, raw, paidAt, orderNo)
 	if err != nil {
 		return err
 	}
@@ -1442,6 +1670,11 @@ func providerPaymentMetadata(metadata map[string]interface{}, remark string) (st
 		payload["remark"] = strings.TrimSpace(remark)
 	}
 	return marshalPayload(payload)
+}
+
+func paymentDirectionIsIncome(value string) bool {
+	direction := strings.ToLower(strings.TrimSpace(value))
+	return direction == "in" || direction == "income" || direction == "收入" || strings.Contains(direction, "收入")
 }
 
 func validateProviderPaymentOrderTx(tx *sql.Tx, order *PaymentOrder, input ProviderPaymentConfirmation) error {

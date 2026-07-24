@@ -102,7 +102,7 @@ func TestAccessCodeLoginRouteDoesNotRedirectToSlash(t *testing.T) {
 
 func TestAccessCodeEnabledAllowsValidSession(t *testing.T) {
 	server := newAccessCodeTestServer(t, true, accessCodeTestValue)
-	token, err := server.createAdminSession()
+	token, _, err := server.createAdminSession()
 	if err != nil {
 		t.Fatalf("createAdminSession returned error: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestAccessCodeEnabledAllowsValidSession(t *testing.T) {
 
 func TestLogoutClearsSessionCookie(t *testing.T) {
 	server := newAccessCodeTestServer(t, true, accessCodeTestValue)
-	token, err := server.createAdminSession()
+	token, _, err := server.createAdminSession()
 	if err != nil {
 		t.Fatalf("createAdminSession returned error: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestAccessCodeConfigPersistsThroughSaveSystemSettings(t *testing.T) {
 func TestAccessCodeEnabledIgnoresExpiredSession(t *testing.T) {
 	server := newAccessCodeTestServer(t, true, accessCodeTestValue)
 	server.sessionMu.Lock()
-	server.sessions["expired-token"] = time.Now().Add(-time.Minute)
+	server.sessions["expired-token"] = adminSession{expiresAt: time.Now().Add(-time.Minute), csrfToken: "expired-csrf"}
 	server.sessionMu.Unlock()
 	request := httptest.NewRequest(http.MethodGet, "/login", nil)
 	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "expired-token", Path: "/"})
@@ -225,6 +225,123 @@ func TestAccessCodeEnabledIgnoresExpiredSession(t *testing.T) {
 	server.handleIndex(response, request)
 
 	assertAccessCodeStatus(t, response, http.StatusNotFound)
+}
+
+func TestAdminCookieWriteRequiresCSRFAndSameOrigin(t *testing.T) {
+	server := newAccessCodeTestServer(t, false, "")
+	token, csrfToken, err := server.createAdminSession()
+	if err != nil {
+		t.Fatalf("createAdminSession returned error: %v", err)
+	}
+	handlerCalled := false
+	handler := server.authMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		handlerCalled = true
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "/api/settings", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || handlerCalled {
+		t.Fatalf("missing CSRF status = %d called = %v, expected 403 false", response.Code, handlerCalled)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/settings", nil)
+	request.Host = "allbot.example"
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	request.Header.Set("Origin", "https://evil.example")
+	request.Header.Set("X-AllBot-CSRF", csrfToken)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || handlerCalled {
+		t.Fatalf("cross-origin status = %d called = %v, expected 403 false", response.Code, handlerCalled)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/settings", nil)
+	request.Host = "allbot.example"
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	request.Header.Set("Referer", "https://allbot.example/settings")
+	request.Header.Set("X-AllBot-CSRF", csrfToken)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !handlerCalled {
+		t.Fatalf("same-origin status = %d called = %v, expected 200 true", response.Code, handlerCalled)
+	}
+}
+
+func TestAdminBearerWriteRemainsCompatible(t *testing.T) {
+	server := newAccessCodeTestServer(t, false, "")
+	token, _, err := server.createAdminSession()
+	if err != nil {
+		t.Fatalf("createAdminSession returned error: %v", err)
+	}
+	called := false
+	handler := server.authMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	request := httptest.NewRequest(http.MethodPost, "/api/settings", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !called {
+		t.Fatalf("status = %d called = %v, expected 200 true", response.Code, called)
+	}
+}
+
+func TestPluginWebAndOpenCallbacksKeepExistingMiddlewareBehavior(t *testing.T) {
+	server := newAccessCodeTestServer(t, false, "")
+	token, _, err := server.createAdminSession()
+	if err != nil {
+		t.Fatalf("createAdminSession returned error: %v", err)
+	}
+	called := 0
+	handler := server.authMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called++ }))
+
+	pluginRequest := httptest.NewRequest(http.MethodPost, "/api/plugin-web/example/action", nil)
+	pluginRequest.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	pluginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(pluginResponse, pluginRequest)
+	if pluginResponse.Code != http.StatusOK {
+		t.Fatalf("plugin Web API status = %d, expected 200", pluginResponse.Code)
+	}
+
+	callbackResponse := httptest.NewRecorder()
+	handler.ServeHTTP(callbackResponse, httptest.NewRequest(http.MethodPost, "/api/open/callback", nil))
+	if callbackResponse.Code != http.StatusOK || called != 2 {
+		t.Fatalf("callback status = %d called = %d, expected 200 and 2", callbackResponse.Code, called)
+	}
+}
+
+func TestSessionCookieSecureOnlyForTLSOrTrustedProxy(t *testing.T) {
+	server := newAccessCodeTestServer(t, false, "")
+
+	untrusted := httptest.NewRequest(http.MethodPost, "/api/login", nil)
+	untrusted.RemoteAddr = "203.0.113.10:1234"
+	untrusted.Header.Set("X-Forwarded-Proto", "https")
+	response := httptest.NewRecorder()
+	server.setSessionCookie(response, untrusted, "token")
+	if accessCodeResponseCookie(t, response, sessionCookieName).Secure {
+		t.Fatal("untrusted proxy must not enable Secure cookie")
+	}
+
+	trusted := httptest.NewRequest(http.MethodPost, "/api/login", nil)
+	trusted.RemoteAddr = "127.0.0.1:1234"
+	trusted.Header.Set("X-Forwarded-Proto", "https")
+	response = httptest.NewRecorder()
+	server.setSessionCookie(response, trusted, "token")
+	if !accessCodeResponseCookie(t, response, sessionCookieName).Secure {
+		t.Fatal("trusted HTTPS proxy should enable Secure cookie")
+	}
+}
+
+func TestSecurityHeadersApplyWithoutWrappingPublicResponses(t *testing.T) {
+	server := newAccessCodeTestServer(t, false, "")
+	handler := server.securityHeadersMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/open/callback", nil))
+	if response.Code != http.StatusNoContent || response.Header().Get("X-Content-Type-Options") != "nosniff" || response.Header().Get("Referrer-Policy") != "same-origin" {
+		t.Fatalf("unexpected secured response: status=%d headers=%v", response.Code, response.Header())
+	}
 }
 
 func TestSettingsPutPreservesPermissionFieldsWhenMissing(t *testing.T) {

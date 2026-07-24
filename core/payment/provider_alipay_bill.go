@@ -154,7 +154,11 @@ func (p *AlipayBillProvider) QueryBills(start, end time.Time) ([]alipayBillItem,
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, string(body), fmt.Errorf("支付宝账单查询失败: HTTP %d", response.StatusCode)
 	}
-	items, err := parseAlipayBillItems(body)
+	businessResponse, err := p.verifyAlipayBillResponse(body)
+	if err != nil {
+		return nil, string(body), err
+	}
+	items, err := parseAlipayBillBusinessResponse(businessResponse)
 	if err != nil {
 		return nil, string(body), err
 	}
@@ -172,7 +176,7 @@ func (p *AlipayBillProvider) buildPaymentURL(req ProviderCreateRequest) (string,
 	}
 	if cashierBaseURL := strings.TrimSpace(p.settings.CashierBaseURL); cashierBaseURL != "" {
 		if strings.TrimSpace(req.CashierToken) == "" {
-			return "", "", fmt.Errorf("鏀粯瀹濇敹閾跺彴 token 涓嶈兘涓虹┖")
+			return "", "", fmt.Errorf("支付宝收银台 token 不能为空")
 		}
 		return buildAlipayCashierOpenURL(cashierBaseURL, req.OrderNo, req.CashierToken), "cashier", nil
 	}
@@ -304,16 +308,64 @@ func alipaySignContent(params map[string]string) string {
 	return strings.Join(parts, "&")
 }
 
-func parseAlipayBillItems(body []byte) ([]alipayBillItem, error) {
-	var root map[string]interface{}
-	decoder := json.NewDecoder(strings.NewReader(string(body)))
-	decoder.UseNumber()
-	if err := decoder.Decode(&root); err != nil {
+var alipayBillResponseKeys = []string{
+	"alipay_data_bill_accountlog_query_response",
+	"alipay_bill_account_log_query_response",
+}
+
+func (p *AlipayBillProvider) verifyAlipayBillResponse(body []byte) (json.RawMessage, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(body, &root); err != nil {
 		return nil, fmt.Errorf("支付宝账单响应无效: %w", err)
 	}
-	response, ok := firstObject(root, "alipay_data_bill_accountlog_query_response", "alipay_bill_account_log_query_response", "response")
-	if !ok {
+	var businessResponse json.RawMessage
+	for _, key := range alipayBillResponseKeys {
+		if value := root[key]; len(value) > 0 && string(value) != "null" {
+			businessResponse = value
+			break
+		}
+	}
+	if len(businessResponse) == 0 {
 		return nil, fmt.Errorf("支付宝账单响应缺少业务数据")
+	}
+	var signature string
+	if err := json.Unmarshal(root["sign"], &signature); err != nil || strings.TrimSpace(signature) == "" {
+		return nil, fmt.Errorf("支付宝账单响应缺少签名")
+	}
+	publicKey, err := parseRSAPublicKey(p.settings.AlipayPublicKey)
+	if err != nil {
+		return nil, err
+	}
+	signatureBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(signature))
+	if err != nil {
+		return nil, fmt.Errorf("支付宝账单响应签名 Base64 无效")
+	}
+	digest := sha256.Sum256(businessResponse)
+	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signatureBytes); err != nil {
+		return nil, fmt.Errorf("支付宝账单响应签名无效")
+	}
+	return businessResponse, nil
+}
+
+func parseAlipayBillItems(body []byte) ([]alipayBillItem, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(body, &root); err != nil {
+		return nil, fmt.Errorf("支付宝账单响应无效: %w", err)
+	}
+	for _, key := range alipayBillResponseKeys {
+		if response := root[key]; len(response) > 0 && string(response) != "null" {
+			return parseAlipayBillBusinessResponse(response)
+		}
+	}
+	return nil, fmt.Errorf("支付宝账单响应缺少业务数据")
+}
+
+func parseAlipayBillBusinessResponse(raw json.RawMessage) ([]alipayBillItem, error) {
+	var response map[string]interface{}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&response); err != nil {
+		return nil, fmt.Errorf("支付宝账单业务响应无效: %w", err)
 	}
 	if code := strings.TrimSpace(valueString(response["code"])); code != "" && code != "10000" {
 		return nil, fmt.Errorf("支付宝账单查询失败: %s", valueString(response["msg"]))
@@ -372,15 +424,6 @@ func parseAlipayTime(value string) time.Time {
 		}
 	}
 	return time.Time{}
-}
-
-func firstObject(root map[string]interface{}, keys ...string) (map[string]interface{}, bool) {
-	for _, key := range keys {
-		if object, ok := root[key].(map[string]interface{}); ok {
-			return object, true
-		}
-	}
-	return nil, false
 }
 
 func firstArray(root map[string]interface{}, keys ...string) []interface{} {

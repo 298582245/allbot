@@ -19,7 +19,7 @@ func TestNewDatabaseRemovesWebPortSettings(t *testing.T) {
 	if err := db.SetSetting("web_port", "3200", "旧端口配置"); err != nil {
 		t.Fatalf("SetSetting web_port returned error: %v", err)
 	}
-	if err := ensureDefaultSystemSettings(db.db); err != nil {
+	if err := ensureDefaultSystemSettings(db.db.DB); err != nil {
 		t.Fatalf("ensureDefaultSystemSettings returned error: %v", err)
 	}
 
@@ -45,7 +45,7 @@ func TestEnsureDefaultSystemSettingsKeepsSavedPaymentSettings(t *testing.T) {
 	if err := db.SavePointsPerRMB(88); err != nil {
 		t.Fatalf("SavePointsPerRMB returned error: %v", err)
 	}
-	if err := ensureDefaultSystemSettings(db.db); err != nil {
+	if err := ensureDefaultSystemSettings(db.db.DB); err != nil {
 		t.Fatalf("ensureDefaultSystemSettings returned error: %v", err)
 	}
 	pointsPerRMB, err := db.GetPointsPerRMB()
@@ -174,7 +174,7 @@ func TestEnsureDefaultSystemSettingsKeepsSavedScriptTaskSettings(t *testing.T) {
 	if err := db.SaveScriptTaskSettings(saved); err != nil {
 		t.Fatalf("SaveScriptTaskSettings returned error: %v", err)
 	}
-	if err := ensureDefaultSystemSettings(db.db); err != nil {
+	if err := ensureDefaultSystemSettings(db.db.DB); err != nil {
 		t.Fatalf("ensureDefaultSystemSettings returned error: %v", err)
 	}
 	settings, err := db.GetScriptTaskSettings()

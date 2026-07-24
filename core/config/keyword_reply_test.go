@@ -84,7 +84,7 @@ func TestBuiltinBotIDKeywordReplySeededIdempotently(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := ensureBuiltinKeywordReplies(db.db); err != nil {
+	if err := ensureBuiltinKeywordReplies(db.db.DB); err != nil {
 		t.Fatalf("second ensureBuiltinKeywordReplies returned error: %v", err)
 	}
 	items, err := db.ListKeywordReplies()

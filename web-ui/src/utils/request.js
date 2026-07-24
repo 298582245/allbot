@@ -31,6 +31,9 @@ request.interceptors.request.use(
     if (authStore.token) {
       config.headers.Authorization = `Bearer ${authStore.token}`
     }
+    if (authStore.csrfToken && !['get', 'head', 'options'].includes(config.method?.toLowerCase())) {
+      config.headers['X-AllBot-CSRF'] = authStore.csrfToken
+    }
     return config
   },
   error => Promise.reject(error)

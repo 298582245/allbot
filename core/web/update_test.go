@@ -2,6 +2,9 @@ package web
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +27,11 @@ func (f fakeReleaseClient) LatestRelease(ctx context.Context) (*updater.ReleaseI
 
 func TestHandleSystemUpdateDetectsNewVersion(t *testing.T) {
 	withVersionValues(t, "v1.0.0", "abc123", "2026-06-03T10:00:00+08:00")
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ALLBOT_UPDATE_ED25519_PUBLIC_KEY", base64.StdEncoding.EncodeToString(publicKey))
 	assetName := currentPlatformAssetName()
 	server := &Server{}
 	server.SetReleaseClient(fakeReleaseClient{release: &updater.ReleaseInfo{
@@ -34,6 +42,7 @@ func TestHandleSystemUpdateDetectsNewVersion(t *testing.T) {
 		Assets: []updater.ReleaseAsset{
 			{Name: assetName, DownloadURL: "https://example.com/allbot", Size: 123},
 			{Name: "checksums-v1.0.1.txt", DownloadURL: "https://example.com/checksums-v1.0.1.txt", Size: 64},
+			{Name: "checksums-v1.0.1.txt.sig", DownloadURL: "https://example.com/checksums-v1.0.1.txt.sig", Size: 88},
 		},
 	}})
 
@@ -51,7 +60,7 @@ func TestHandleSystemUpdateDetectsNewVersion(t *testing.T) {
 	if response.ReleaseName != "v1.0.1" || response.ReleaseBody != "修复问题" || response.ReleaseURL == "" {
 		t.Fatalf("release info = %#v", response)
 	}
-	if len(response.Assets) != 2 || response.Assets[0].DownloadURL != "https://example.com/allbot" || response.Assets[0].Size != 123 {
+	if len(response.Assets) != 3 || response.Assets[0].DownloadURL != "https://example.com/allbot" || response.Assets[0].Size != 123 {
 		t.Fatalf("assets = %#v", response.Assets)
 	}
 	if !response.UpgradeSupported || !strings.Contains(response.UpgradeMessage, "可一键升级") {
@@ -60,11 +69,43 @@ func TestHandleSystemUpdateDetectsNewVersion(t *testing.T) {
 	if response.MatchedAsset.Name != assetName {
 		t.Fatalf("matched asset = %#v", response.MatchedAsset)
 	}
-	if response.ChecksumAsset.Name != "checksums-v1.0.1.txt" {
-		t.Fatalf("checksum asset = %#v", response.ChecksumAsset)
+	if response.ChecksumAsset.Name != "checksums-v1.0.1.txt" || response.SignatureAsset.Name != "checksums-v1.0.1.txt.sig" {
+		t.Fatalf("checksum asset = %#v, signature asset = %#v", response.ChecksumAsset, response.SignatureAsset)
 	}
 	if response.Error != "" || !strings.Contains(response.Message, "发现新版本") {
 		t.Fatalf("error = %q, message = %q", response.Error, response.Message)
+	}
+}
+
+func TestHandleSystemUpdateFailsClosedWhenSignatureOrTrustRootMissing(t *testing.T) {
+	withVersionValues(t, "v1.0.0", "abc123", "build")
+	assetName := currentPlatformAssetName()
+	server := &Server{}
+	server.SetReleaseClient(fakeReleaseClient{release: &updater.ReleaseInfo{
+		Version: "v1.0.1",
+		Name:    "v1.0.1",
+		Assets: []updater.ReleaseAsset{
+			{Name: assetName, DownloadURL: "https://example.com/allbot"},
+			{Name: "checksums-v1.0.1.txt", DownloadURL: "https://example.com/checksums"},
+		},
+	}})
+	response := performSystemUpdateRequest(t, server, http.MethodGet)
+	if response.UpgradeSupported || !strings.Contains(response.UpgradeMessage, "签名文件") {
+		t.Fatalf("missing signature upgrade = %v message = %q", response.UpgradeSupported, response.UpgradeMessage)
+	}
+
+	server.SetReleaseClient(fakeReleaseClient{release: &updater.ReleaseInfo{
+		Version: "v1.0.1",
+		Name:    "v1.0.1",
+		Assets: []updater.ReleaseAsset{
+			{Name: assetName, DownloadURL: "https://example.com/allbot"},
+			{Name: "checksums-v1.0.1.txt", DownloadURL: "https://example.com/checksums"},
+			{Name: "checksums-v1.0.1.txt.sig", DownloadURL: "https://example.com/signature"},
+		},
+	}})
+	response = performSystemUpdateRequest(t, server, http.MethodGet)
+	if response.UpgradeSupported || !strings.Contains(response.UpgradeMessage, "签名公钥") {
+		t.Fatalf("missing trust root upgrade = %v message = %q", response.UpgradeSupported, response.UpgradeMessage)
 	}
 }
 

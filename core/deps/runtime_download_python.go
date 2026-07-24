@@ -1,6 +1,7 @@
 package deps
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -12,8 +13,9 @@ type pythonStandaloneRelease struct {
 }
 
 type pythonStandaloneAsset struct {
-	Name string `json:"name"`
-	URL  string `json:"browser_download_url"`
+	Name   string `json:"name"`
+	URL    string `json:"browser_download_url"`
+	Digest string `json:"digest"`
 }
 
 func (d *HTTPRuntimeDownloader) pythonDownloadSpec(client *http.Client, version, architecture string, options RuntimeDownloadOptions) (runtimeDownloadSpec, error) {
@@ -45,7 +47,6 @@ func (d *HTTPRuntimeDownloader) windowsPythonDownloadSpec(version, architecture 
 		Executable:       filepath.Join(rootDir, "tools", "python.exe"),
 		TrustedHosts:     trustedHosts,
 		HashTrustedHosts: hashTrustedHosts,
-		AllowMissingHash: true,
 	}, nil
 }
 
@@ -54,18 +55,26 @@ func (d *HTTPRuntimeDownloader) linuxPythonDownloadSpec(client *http.Client, ver
 	if err != nil {
 		return runtimeDownloadSpec{}, err
 	}
+	digest := strings.TrimSpace(asset.Digest)
+	algorithm, expectedHash, found := strings.Cut(digest, ":")
+	expectedHash = strings.TrimSpace(expectedHash)
+	if !found || !strings.EqualFold(strings.TrimSpace(algorithm), "sha256") || len(expectedHash) != 64 {
+		return runtimeDownloadSpec{}, fmt.Errorf("Python 预编译资产缺少可信 SHA-256 摘要")
+	}
+	if _, err := hex.DecodeString(expectedHash); err != nil {
+		return runtimeDownloadSpec{}, fmt.Errorf("Python 预编译资产 SHA-256 摘要格式无效")
+	}
 	rootDir := filepath.Join(d.rootDir, "python", fmt.Sprintf("%s-%s", version, architecture))
 	return runtimeDownloadSpec{
-		Runtime:          "python",
-		Version:          version,
-		Architecture:     architecture,
-		URL:              asset.URL,
-		ArchiveName:      asset.Name,
-		RootDir:          rootDir,
-		Executable:       filepath.Join(rootDir, "bin", "python3"),
-		TrustedHosts:     []string{"github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"},
-		HashTrustedHosts: []string{"github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"},
-		AllowMissingHash: true,
+		Runtime:      "python",
+		Version:      version,
+		Architecture: architecture,
+		URL:          asset.URL,
+		ExpectedHash: expectedHash,
+		ArchiveName:  asset.Name,
+		RootDir:      rootDir,
+		Executable:   filepath.Join(rootDir, "bin", "python3"),
+		TrustedHosts: []string{"github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"},
 	}, nil
 }
 

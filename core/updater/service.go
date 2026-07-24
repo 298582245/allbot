@@ -1,7 +1,9 @@
 package updater
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -29,6 +31,7 @@ type UpdateCheckResult struct {
 	Assets           []ReleaseAsset
 	MatchedAsset     ReleaseAsset
 	ChecksumAsset    ReleaseAsset
+	SignatureAsset   ReleaseAsset
 	Error            string
 	Message          string
 	UpgradeSupported bool
@@ -101,22 +104,33 @@ func (s *Service) Check(ctx context.Context) UpdateCheckResult {
 		response.HasUpdate = true
 		asset, found := SelectAssetForCurrentPlatform(release.Assets)
 		checksumAsset, checksumFound := SelectChecksumAsset(release.Assets, response.LatestVersion)
+		signatureAsset, signatureFound := SelectSignatureAsset(release.Assets, checksumAsset)
+		_, publicKeyErr := trustedUpdatePublicKey()
 		if found {
 			response.MatchedAsset = asset
 		}
 		if checksumFound {
 			response.ChecksumAsset = checksumAsset
 		}
-		if found && checksumFound {
+		if signatureFound {
+			response.SignatureAsset = signatureAsset
+		}
+		if found && checksumFound && signatureFound && publicKeyErr == nil {
 			response.UpgradeSupported = true
-			response.UpgradeMessage = fmt.Sprintf("可一键升级到 %s，匹配资产：%s，校验文件：%s。", response.LatestVersion, asset.Name, checksumAsset.Name)
+			response.UpgradeMessage = fmt.Sprintf("可一键升级到 %s，匹配资产：%s，校验文件：%s，签名文件：%s。", response.LatestVersion, asset.Name, checksumAsset.Name, signatureAsset.Name)
 			response.Message = "发现新版本，可一键升级。"
 		} else if !found {
 			response.UpgradeMessage = fmt.Sprintf("发现新版本，但未找到当前平台 %s/%s 的发布资产，请手动下载。", runtime.GOOS, runtime.GOARCH)
 			response.Message = "发现新版本，请前往 Release 手动更新。"
-		} else {
+		} else if !checksumFound {
 			response.UpgradeMessage = fmt.Sprintf("发现新版本，但未找到 checksums-%s.txt 校验文件，请补充后再使用一键升级。", response.LatestVersion)
 			response.Message = "发现新版本，请前往 Release 手动更新。"
+		} else if !signatureFound {
+			response.UpgradeMessage = fmt.Sprintf("发现新版本，但未找到独立签名文件 %s.sig，已拒绝一键升级。", checksumAsset.Name)
+			response.Message = "发现新版本，但升级签名缺失。"
+		} else {
+			response.UpgradeMessage = "发现新版本，但未配置独立更新签名公钥，已拒绝一键升级。"
+			response.Message = "发现新版本，但更新签名信任根不可用。"
 		}
 	} else {
 		response.Message = "当前已是最新版本。"
@@ -152,9 +166,18 @@ func (s *Service) StartUpgrade(ctx context.Context) (UpgradeState, error) {
 		s.setState(state)
 		return state, errors.New(message)
 	}
+	if !check.UpgradeSupported || strings.TrimSpace(check.SignatureAsset.Name) == "" {
+		message := strings.TrimSpace(check.UpgradeMessage)
+		if message == "" {
+			message = "更新签名不可用"
+		}
+		state := UpgradeState{Status: UpgradeStatusFailed, Message: message, Error: message}
+		s.setState(state)
+		return state, errors.New(message)
+	}
 	state := UpgradeState{Status: UpgradeStatusDownloading, Message: "正在下载升级包", Version: check.LatestVersion, AssetName: check.MatchedAsset.Name}
 	s.setState(state)
-	go s.runDownload(ctx, check.CurrentVersion, check.LatestVersion, check.MatchedAsset, check.ChecksumAsset)
+	go s.runDownload(ctx, check.CurrentVersion, check.LatestVersion, check.MatchedAsset, check.ChecksumAsset, check.SignatureAsset)
 	return state, nil
 }
 
@@ -193,7 +216,7 @@ func (s *Service) setState(state UpgradeState) {
 	s.state = state
 }
 
-func (s *Service) runDownload(parent context.Context, currentVersion string, latestVersion string, asset ReleaseAsset, checksumAsset ReleaseAsset) {
+func (s *Service) runDownload(parent context.Context, currentVersion string, latestVersion string, asset ReleaseAsset, checksumAsset ReleaseAsset, signatureAsset ReleaseAsset) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 15*time.Minute)
 	defer cancel()
 	currentPath, err := os.Executable()
@@ -206,23 +229,68 @@ func (s *Service) runDownload(parent context.Context, currentVersion string, lat
 		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "获取工作目录失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
 		return
 	}
-	updateDir := filepath.Join("runtime", "update")
-	newPath := filepath.Join(updateDir, downloadedBinaryName())
+	updateDir, err := filepath.Abs(filepath.Join("runtime", "update"))
+	if err != nil {
+		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "解析更新目录失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
+		return
+	}
+	if err := os.MkdirAll(updateDir, 0700); err != nil {
+		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "创建更新目录失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
+		return
+	}
+	stagingDir, err := os.MkdirTemp(updateDir, "staging-")
+	if err != nil {
+		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "创建私有更新暂存目录失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
+		return
+	}
+	if err := os.Chmod(stagingDir, 0700); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "限制更新暂存目录权限失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
+		return
+	}
+	newPath := filepath.Join(stagingDir, downloadedBinaryName())
 	if err := (Downloader{}).Download(ctx, asset, newPath); err != nil {
+		_ = os.RemoveAll(stagingDir)
 		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "下载升级包失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
 		return
 	}
-	checksumFile, err := DownloadChecksumFile(ctx, checksumAsset)
+	checksumBytes, err := DownloadChecksumBytes(ctx, checksumAsset)
 	if err != nil {
+		_ = os.RemoveAll(stagingDir)
 		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "下载校验文件失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
+		return
+	}
+	publicKey, err := trustedUpdatePublicKey()
+	if err != nil {
+		_ = os.RemoveAll(stagingDir)
+		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "更新签名信任根不可用", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
+		return
+	}
+	signature, err := downloadSmallReleaseAsset(ctx, signatureAsset, 4096)
+	if err != nil {
+		_ = os.RemoveAll(stagingDir)
+		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "下载更新签名失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
+		return
+	}
+	if err := verifyUpdateSignature(publicKey, signature, checksumBytes); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "更新签名验证失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
+		return
+	}
+	checksumFile, err := ParseChecksumFile(bytes.NewReader(checksumBytes))
+	if err != nil {
+		_ = os.RemoveAll(stagingDir)
+		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "解析已验签校验文件失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
 		return
 	}
 	expectedSHA256, ok := checksumFile.ExpectedSHA256(asset.Name)
 	if !ok {
+		_ = os.RemoveAll(stagingDir)
 		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "校验文件缺少当前平台资产", Error: "校验文件缺少 " + asset.Name, Version: latestVersion, AssetName: asset.Name})
 		return
 	}
 	if err := VerifyFileSHA256(newPath, expectedSHA256); err != nil {
+		_ = os.RemoveAll(stagingDir)
 		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "升级包 SHA256 校验失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
 		return
 	}
@@ -235,8 +303,9 @@ func (s *Service) runDownload(parent context.Context, currentVersion string, lat
 	if runner == nil {
 		runner = DefaultUpgradeRunner
 	}
-	request := ApplyUpdateRequest{ParentPID: os.Getpid(), CurrentPath: currentPath, NewPath: newPath, BackupPath: filepath.Join(updateDir, "backup", filepath.Base(currentPath)+".bak"), WorkDir: workDir, Args: os.Args[1:], FromVersion: currentVersion, ToVersion: latestVersion, RestartDelay: "2000", RestartedFlag: "1"}
+	request := ApplyUpdateRequest{ParentPID: os.Getpid(), CurrentPath: currentPath, NewPath: newPath, BackupPath: filepath.Join(updateDir, "backup", filepath.Base(currentPath)+".bak"), UpdateRoot: updateDir, ExpectedSHA256: expectedSHA256, AssetName: asset.Name, ChecksumPayload: base64.StdEncoding.EncodeToString(checksumBytes), UpdateSignature: strings.TrimSpace(string(signature)), WorkDir: workDir, Args: os.Args[1:], FromVersion: currentVersion, ToVersion: latestVersion, RestartDelay: "2000", RestartedFlag: "1"}
 	if err := runner(request); err != nil {
+		_ = os.RemoveAll(stagingDir)
 		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "启动更新器失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name, DownloadedAt: downLoadedAt})
 		return
 	}

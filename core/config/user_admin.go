@@ -235,7 +235,10 @@ func (d *Database) AdjustUserPoints(unionID string, delta int64, description str
 		}
 		return nil, err
 	}
-	balance := current + delta
+	balance, err := checkedAddInt64(current, delta)
+	if err != nil {
+		return nil, fmt.Errorf("积分余额溢出")
+	}
 	if balance < 0 {
 		return nil, fmt.Errorf("积分不足，当前 %d，需要 %d", current, -delta)
 	}

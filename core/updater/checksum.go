@@ -33,26 +33,43 @@ type ChecksumFile struct {
 	Items map[string]string
 }
 
-func DownloadChecksumFile(ctx context.Context, asset ReleaseAsset) (ChecksumFile, error) {
+const maxChecksumFileBytes int64 = 1 << 20
+
+func DownloadChecksumBytes(ctx context.Context, asset ReleaseAsset) ([]byte, error) {
 	url := strings.TrimSpace(asset.DownloadURL)
 	if url == "" {
-		return ChecksumFile{}, fmt.Errorf("checksum 下载地址不能为空")
+		return nil, fmt.Errorf("checksum 下载地址不能为空")
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return ChecksumFile{}, err
+		return nil, err
 	}
 	request.Header.Set("User-Agent", "AllBot-Updater")
 	client := &http.Client{Timeout: 2 * time.Minute}
 	response, err := client.Do(request)
 	if err != nil {
-		return ChecksumFile{}, err
+		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return ChecksumFile{}, fmt.Errorf("checksum 下载状态码 %d", response.StatusCode)
+		return nil, fmt.Errorf("checksum 下载状态码 %d", response.StatusCode)
 	}
-	return ParseChecksumFile(response.Body)
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxChecksumFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxChecksumFileBytes {
+		return nil, fmt.Errorf("checksum 文件超过大小限制")
+	}
+	return data, nil
+}
+
+func DownloadChecksumFile(ctx context.Context, asset ReleaseAsset) (ChecksumFile, error) {
+	data, err := DownloadChecksumBytes(ctx, asset)
+	if err != nil {
+		return ChecksumFile{}, err
+	}
+	return ParseChecksumFile(strings.NewReader(string(data)))
 }
 
 func ParseChecksumFile(reader io.Reader) (ChecksumFile, error) {

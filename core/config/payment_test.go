@@ -2,7 +2,9 @@ package config
 
 import (
 	"database/sql"
+	"math"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -220,6 +222,12 @@ func TestCalculatePointsAmountRoundsUp(t *testing.T) {
 	if _, err := CalculatePointsAmount(0, 100); err == nil {
 		t.Fatal("expected zero amount to fail")
 	}
+	if points, err := CalculatePointsAmount(math.MaxInt64, 1); err != nil || points != (math.MaxInt64/100)+1 {
+		t.Fatalf("max int64 rounding failed: points=%d err=%v", points, err)
+	}
+	if _, err := CalculatePointsAmount(math.MaxInt64, 2); err == nil {
+		t.Fatal("expected multiplication overflow to fail")
+	}
 }
 
 func TestCreatePaymentOrder(t *testing.T) {
@@ -370,6 +378,9 @@ func TestUpdatePaymentOrderStatusRejectsInvalidStatus(t *testing.T) {
 	if err := db.UpdatePaymentOrderStatus("PTEST_BAD_STATUS", "unknown", "", nil); err == nil {
 		t.Fatal("expected unknown status to fail")
 	}
+	if err := db.UpdatePaymentOrderStatus("PTEST_BAD_STATUS", "paid", "", nil); err == nil {
+		t.Fatal("expected generic paid transition to fail")
+	}
 }
 
 func TestUpdatePaymentOrderProviderInfoMissingOrder(t *testing.T) {
@@ -463,6 +474,49 @@ func TestCreateProviderPaymentOrderConfirmAndExpire(t *testing.T) {
 	}
 }
 
+func TestPaymentOrderTerminalStatusCannotBeOverwritten(t *testing.T) {
+	db := newPaymentTestDatabase(t)
+	paid := newPaymentTestOrder("PTEST_TERMINAL_PAID")
+	if _, err := db.CreatePaymentOrder(paid); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkPaymentOrderPaid(paid.OrderNo, "trade-paid", time.Now(), "paid"); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []string{"cancelled", "failed", "expired"} {
+		if err := db.UpdatePaymentOrderStatus(paid.OrderNo, status, "late terminal update", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stored, err := db.GetPaymentOrder(paid.OrderNo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != "paid" || stored.ProviderOrderNo != "trade-paid" {
+		t.Fatalf("paid terminal order was overwritten: %#v", stored)
+	}
+
+	for _, status := range []string{"cancelled", "failed", "expired"} {
+		order := newPaymentTestOrder("PTEST_TERMINAL_" + strings.ToUpper(status))
+		if _, err := db.CreatePaymentOrder(order); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.UpdatePaymentOrderStatus(order.OrderNo, status, "closed", nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.MarkPaymentOrderPaid(order.OrderNo, "late-payment", time.Now(), "late"); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := db.GetPaymentOrder(order.OrderNo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Status != status || stored.ProviderOrderNo != "" {
+			t.Fatalf("%s terminal order was reopened: %#v", status, stored)
+		}
+	}
+}
+
 func TestCreditPaymentPointsCreditsPaidOrderOnce(t *testing.T) {
 	db := newPaymentTestDatabase(t)
 	order, err := db.CreateProviderPaymentOrder(ProviderPaymentOrderInput{UnionID: "union-recharge", Subject: "积分充值", AmountCents: 100, PointsAmount: 100, Provider: "epay", Method: "alipay", ExpiredAt: time.Now().Add(time.Minute)})
@@ -495,6 +549,37 @@ func TestCreditPaymentPointsCreditsPaidOrderOnce(t *testing.T) {
 	}
 }
 
+func TestCreditPaymentPointsRejectsBalanceOverflowAtomically(t *testing.T) {
+	db := newPaymentTestDatabase(t)
+	order, err := db.CreateProviderPaymentOrder(ProviderPaymentOrderInput{UnionID: "union-overflow", Subject: "积分溢出", AmountCents: 100, PointsAmount: 1, Provider: "epay", Method: "alipay", ExpiredAt: time.Now().Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = db.ConfirmProviderPayment(ProviderPaymentConfirmation{OrderNo: order.OrderNo, Provider: "epay", Method: "alipay", AmountCents: 100, ProviderOrderNo: "T-OVERFLOW", Raw: "paid", PaidAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.db.Exec(`INSERT INTO user_points (union_id, points, created_at, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, order.UnionID, int64(math.MaxInt64)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.CreditPaymentPoints(order.OrderNo, "充值积分"); err == nil {
+		t.Fatal("expected balance overflow to fail")
+	}
+	balance, err := db.GetUserPoints(order.UnionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if balance != math.MaxInt64 {
+		t.Fatalf("overflow changed balance: %d", balance)
+	}
+	transactions, total, err := db.ListPointTransactions(PointTransactionQuery{UnionID: order.UnionID, Source: "recharge", SourceID: order.OrderNo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 0 || len(transactions) != 0 {
+		t.Fatalf("overflow wrote recharge transaction: %#v", transactions)
+	}
+}
+
 func TestConfirmProviderPaymentRejectsMismatchAndClosedStatus(t *testing.T) {
 	db := newPaymentTestDatabase(t)
 	order, err := db.CreateProviderPaymentOrder(ProviderPaymentOrderInput{UnionID: "union-mismatch", Subject: "第三方支付", AmountCents: 100, PointsAmount: 100, Provider: "epay", Method: "alipay", ExpiredAt: time.Now().Add(time.Minute)})
@@ -523,6 +608,155 @@ func TestConfirmProviderPaymentRejectsMismatchAndClosedStatus(t *testing.T) {
 	}
 	if order.Status != "expired" {
 		t.Fatalf("unexpected order status: %#v", order)
+	}
+}
+
+func TestUniqueAmountPaymentOrderBackfillsAndAllocatesAtomically(t *testing.T) {
+	db := newPaymentTestDatabase(t)
+	existing, err := db.CreateProviderPaymentOrder(ProviderPaymentOrderInput{UnionID: "union-existing", Subject: "已有支付宝订单", AmountCents: 100, PointsAmount: 100, Provider: "alipay_bill", Method: "alipay_transfer", ExpiredAt: time.Now().Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := db.CreateUniqueAmountPaymentOrder(ProviderPaymentOrderInput{UnionID: "union-unique-1", Subject: "唯一金额一", AmountCents: 100, PointsAmount: 100, Provider: "alipay_bill", Method: "alipay_transfer", ExpiredAt: time.Now().Add(time.Minute)}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AmountCents != 101 {
+		t.Fatalf("legacy pending order was not reserved: existing=%d first=%d", existing.AmountCents, first.AmountCents)
+	}
+
+	const parallel = 2
+	orders := make(chan *PaymentOrder, parallel)
+	errors := make(chan error, parallel)
+	var waitGroup sync.WaitGroup
+	for index := 0; index < parallel; index++ {
+		waitGroup.Add(1)
+		go func(index int) {
+			defer waitGroup.Done()
+			order, createErr := db.CreateUniqueAmountPaymentOrder(ProviderPaymentOrderInput{UnionID: "union-parallel", Subject: "并发唯一金额", AmountCents: 100, PointsAmount: 100, Provider: "alipay_bill", Method: "alipay_transfer", ExpiredAt: time.Now().Add(time.Minute)}, 3)
+			if createErr != nil {
+				errors <- createErr
+				return
+			}
+			orders <- order
+		}(index)
+	}
+	waitGroup.Wait()
+	close(orders)
+	close(errors)
+	for createErr := range errors {
+		t.Fatalf("parallel unique amount creation failed: %v", createErr)
+	}
+	amounts := map[int64]bool{existing.AmountCents: true, first.AmountCents: true}
+	for order := range orders {
+		if amounts[order.AmountCents] {
+			t.Fatalf("duplicate allocated amount: %d", order.AmountCents)
+		}
+		amounts[order.AmountCents] = true
+	}
+	if len(amounts) != 4 {
+		t.Fatalf("expected four unique amounts, got %#v", amounts)
+	}
+}
+
+func TestConfirmAlipayBillPaymentClaimsRecordAtomically(t *testing.T) {
+	db := newPaymentTestDatabase(t)
+	order, err := db.CreateUniqueAmountPaymentOrder(ProviderPaymentOrderInput{UnionID: "union-alipay-claim", Subject: "支付宝确认", AmountCents: 100, PointsAmount: 100, Provider: "alipay_bill", Method: "alipay_transfer", ExpiredAt: time.Now().Add(time.Minute)}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paidAt := time.Now()
+	record := &AlipayBillRecord{ProviderOrderNo: "ABILL-CLAIM", AmountCents: 100, Direction: "IN", PaidAt: paidAt, Raw: "bill-raw"}
+	if _, _, err := db.ConfirmAlipayBillPayment(record, ProviderPaymentConfirmation{OrderNo: order.OrderNo, Provider: "alipay_bill", Method: "wrong_method", AmountCents: 100, ProviderOrderNo: record.ProviderOrderNo, Raw: "bad", PaidAt: paidAt}); err == nil {
+		t.Fatal("expected mismatched method to fail")
+	}
+	storedRecord, err := db.FindAlipayBillRecordByProviderOrderNo(record.ProviderOrderNo)
+	if err != nil || storedRecord.MatchedAt != nil || storedRecord.OrderNo != "" {
+		t.Fatalf("failed confirmation should not claim bill record, got %#v err=%v", storedRecord, err)
+	}
+	confirmed, alreadyPaid, err := db.ConfirmAlipayBillPayment(record, ProviderPaymentConfirmation{OrderNo: order.OrderNo, Provider: "alipay_bill", Method: "alipay_transfer", AmountCents: 100, ProviderOrderNo: record.ProviderOrderNo, Raw: "bill-raw", PaidAt: paidAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alreadyPaid || confirmed.Status != "paid" {
+		t.Fatalf("unexpected confirmed order: already=%v order=%#v", alreadyPaid, confirmed)
+	}
+	storedRecord, err = db.FindAlipayBillRecordByProviderOrderNo(record.ProviderOrderNo)
+	if err != nil || storedRecord.MatchedAt == nil || storedRecord.OrderNo != order.OrderNo {
+		t.Fatalf("bill record was not atomically claimed: %#v err=%v", storedRecord, err)
+	}
+	if _, _, err := db.ConfirmAlipayBillPayment(record, ProviderPaymentConfirmation{OrderNo: order.OrderNo, Provider: "alipay_bill", Method: "alipay_transfer", AmountCents: 100, ProviderOrderNo: record.ProviderOrderNo, Raw: "repeat", PaidAt: paidAt}); err != nil {
+		t.Fatalf("idempotent confirmation failed: %v", err)
+	}
+	other, err := db.CreateProviderPaymentOrder(ProviderPaymentOrderInput{UnionID: "union-other", Subject: "其他订单", AmountCents: 100, PointsAmount: 100, Provider: "alipay_bill", Method: "alipay_transfer", ExpiredAt: time.Now().Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.ConfirmAlipayBillPayment(record, ProviderPaymentConfirmation{OrderNo: other.OrderNo, Provider: "alipay_bill", Method: "alipay_transfer", AmountCents: 100, ProviderOrderNo: record.ProviderOrderNo, Raw: "reuse", PaidAt: paidAt}); err == nil {
+		t.Fatal("expected claimed bill record reuse to fail")
+	}
+}
+
+func TestConfirmAlipayBillPaymentRejectsNonIncomeRecord(t *testing.T) {
+	db := newPaymentTestDatabase(t)
+	order, err := db.CreateUniqueAmountPaymentOrder(ProviderPaymentOrderInput{UnionID: "union-alipay-out", Subject: "支付宝支出流水", AmountCents: 100, PointsAmount: 100, Provider: "alipay_bill", Method: "alipay_transfer", ExpiredAt: time.Now().Add(time.Minute)}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paidAt := time.Now()
+	record := &AlipayBillRecord{ProviderOrderNo: "ABILL-OUT", AmountCents: 100, Direction: "OUT", PaidAt: paidAt, Raw: "bill-raw"}
+	if err = db.SaveAlipayBillRecord(record); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = db.ConfirmAlipayBillPayment(record, ProviderPaymentConfirmation{OrderNo: order.OrderNo, Provider: "alipay_bill", Method: "alipay_transfer", AmountCents: 100, ProviderOrderNo: record.ProviderOrderNo, Raw: record.Raw, PaidAt: paidAt}); err == nil {
+		t.Fatal("expected non-income bill record to fail")
+	}
+	storedRecord, err := db.FindAlipayBillRecordByProviderOrderNo(record.ProviderOrderNo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRecord.MatchedAt != nil || storedRecord.OrderNo != "" {
+		t.Fatalf("non-income record was claimed: %#v", storedRecord)
+	}
+	storedOrder, err := db.GetPaymentOrder(order.OrderNo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedOrder.Status != "pending" || storedOrder.ProviderOrderNo != "" {
+		t.Fatalf("non-income record changed order: %#v", storedOrder)
+	}
+}
+
+func TestConfirmAlipayBillPaymentRollsBackClaimForClosedOrder(t *testing.T) {
+	db := newPaymentTestDatabase(t)
+	order, err := db.CreateUniqueAmountPaymentOrder(ProviderPaymentOrderInput{UnionID: "union-alipay-closed", Subject: "支付宝关闭订单", AmountCents: 100, PointsAmount: 100, Provider: "alipay_bill", Method: "alipay_transfer", ExpiredAt: time.Now().Add(time.Minute)}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.UpdatePaymentOrderStatus(order.OrderNo, "cancelled", "用户取消", nil); err != nil {
+		t.Fatal(err)
+	}
+	paidAt := time.Now()
+	record := &AlipayBillRecord{ProviderOrderNo: "ABILL-CLOSED", AmountCents: 100, Direction: "IN", PaidAt: paidAt, Raw: "bill-raw"}
+	if err = db.SaveAlipayBillRecord(record); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = db.ConfirmAlipayBillPayment(record, ProviderPaymentConfirmation{OrderNo: order.OrderNo, Provider: "alipay_bill", Method: "alipay_transfer", AmountCents: 100, ProviderOrderNo: record.ProviderOrderNo, Raw: record.Raw, PaidAt: paidAt}); err == nil {
+		t.Fatal("expected closed order confirmation to fail")
+	}
+	storedRecord, err := db.FindAlipayBillRecordByProviderOrderNo(record.ProviderOrderNo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRecord.MatchedAt != nil || storedRecord.OrderNo != "" {
+		t.Fatalf("failed confirmation did not roll back bill claim: %#v", storedRecord)
+	}
+	storedOrder, err := db.GetPaymentOrder(order.OrderNo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedOrder.Status != "cancelled" || storedOrder.ProviderOrderNo != "" {
+		t.Fatalf("closed order was changed: %#v", storedOrder)
 	}
 }
 

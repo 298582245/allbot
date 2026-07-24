@@ -16,10 +16,93 @@ import (
 )
 
 type Database struct {
-	db         *sql.DB
-	path       string
-	pointsMu   sync.Mutex
-	bindCodeMu sync.Mutex
+	db           *guardedDB
+	path         string
+	pointsMu     sync.Mutex
+	bindCodeMu   sync.Mutex
+	bindRateMu   sync.Mutex
+	bindAttempts map[string]bindAttempt
+}
+
+type guardedDB struct {
+	DB          *sql.DB
+	lifecycleMu *sync.RWMutex
+	activeMu    sync.Mutex
+	activeWG    sync.WaitGroup
+	quiescing   bool
+}
+
+type guardedRow struct {
+	row       *sql.Row
+	unlock    func()
+	unlockOne sync.Once
+}
+
+func (r *guardedRow) Scan(dest ...interface{}) error {
+	defer r.unlockOne.Do(r.unlock)
+	return r.row.Scan(dest...)
+}
+
+func (db *guardedDB) beginOperation() func() {
+	for {
+		db.lifecycleMu.RLock()
+		db.activeMu.Lock()
+		if !db.quiescing {
+			db.activeWG.Add(1)
+			db.activeMu.Unlock()
+			db.lifecycleMu.RUnlock()
+			return db.activeWG.Done
+		}
+		db.activeMu.Unlock()
+		db.lifecycleMu.RUnlock()
+	}
+}
+
+func (db *guardedDB) Exec(query string, args ...interface{}) (sql.Result, error) {
+	done := db.beginOperation()
+	defer done()
+	return db.DB.Exec(query, args...)
+}
+
+func (db *guardedDB) Query(query string, args ...interface{}) (*sql.Rows, error) {
+	done := db.beginOperation()
+	defer done()
+	return db.DB.Query(query, args...)
+}
+
+func (db *guardedDB) QueryRow(query string, args ...interface{}) *guardedRow {
+	done := db.beginOperation()
+	return &guardedRow{row: db.DB.QueryRow(query, args...), unlock: done}
+}
+
+func (db *guardedDB) Begin() (*sql.Tx, error) {
+	done := db.beginOperation()
+	defer done()
+	return db.DB.Begin()
+}
+
+func (db *guardedDB) beginQuiesce() {
+	db.lifecycleMu.Lock()
+	db.activeMu.Lock()
+	db.quiescing = true
+	db.activeMu.Unlock()
+	db.activeWG.Wait()
+}
+
+func (db *guardedDB) endQuiesce() {
+	db.activeMu.Lock()
+	db.quiescing = false
+	db.activeMu.Unlock()
+	db.lifecycleMu.Unlock()
+}
+
+func (db *guardedDB) Close() error {
+	db.beginQuiesce()
+	defer db.endQuiesce()
+	if db.DB == nil {
+		return nil
+	}
+	return db.DB.Close()
 }
 
 func NewDatabase(dbPath string) (*Database, error) {
@@ -46,7 +129,8 @@ func NewDatabase(dbPath string) (*Database, error) {
 		return nil, fmt.Errorf("创建表失败: %w", err)
 	}
 
-	return &Database{db: db, path: storedPath}, nil
+	lifecycleMu := &sync.RWMutex{}
+	return &Database{db: &guardedDB{DB: db, lifecycleMu: lifecycleMu}, path: storedPath, bindAttempts: make(map[string]bindAttempt)}, nil
 }
 
 func (d *Database) Path() string {
@@ -57,33 +141,79 @@ func (d *Database) Path() string {
 }
 
 func (d *Database) ReplaceWith(sourcePath string) error {
-	if d == nil || d.db == nil {
+	if d == nil {
+		return fmt.Errorf("数据库未初始化")
+	}
+	if d.db == nil {
+		return fmt.Errorf("数据库未初始化")
+	}
+	d.db.beginQuiesce()
+	defer d.db.endQuiesce()
+	if d.db.DB == nil {
 		return fmt.Errorf("数据库未初始化")
 	}
 	if d.path == "" || d.path == ":memory:" {
 		return fmt.Errorf("当前数据库路径不支持恢复")
 	}
-	if err := d.db.Close(); err != nil {
+	candidate, err := openPreparedDatabase(sourcePath)
+	if err != nil {
+		return fmt.Errorf("预校验恢复数据库失败: %w", err)
+	}
+	if err := candidate.Close(); err != nil {
+		return fmt.Errorf("关闭预校验数据库失败: %w", err)
+	}
+	rollbackPath := d.path + ".restore-rollback"
+	if err := d.snapshotTo(rollbackPath); err != nil {
+		return fmt.Errorf("创建数据库回滚快照失败: %w", err)
+	}
+	defer os.Remove(rollbackPath)
+
+	oldDB := d.db.DB
+	if err := oldDB.Close(); err != nil {
 		return err
 	}
 	if err := copyFile(sourcePath, d.path); err != nil {
-		return err
+		if rollbackErr := copyFile(rollbackPath, d.path); rollbackErr != nil {
+			return fmt.Errorf("替换数据库文件失败: %v；回滚数据库失败: %w", err, rollbackErr)
+		}
+		reopened, reopenErr := openPreparedDatabase(d.path)
+		if reopenErr != nil {
+			return fmt.Errorf("替换数据库文件失败: %v；重新打开原数据库失败: %w", err, reopenErr)
+		}
+		d.db.DB = reopened
+		return fmt.Errorf("替换数据库文件失败: %w", err)
 	}
-	db, err := sql.Open("sqlite", d.path)
+	restored, err := openPreparedDatabase(d.path)
+	if err == nil {
+		d.db.DB = restored
+		return nil
+	}
+	if rollbackErr := copyFile(rollbackPath, d.path); rollbackErr != nil {
+		return fmt.Errorf("打开恢复后的数据库失败: %v；回滚数据库失败: %w", err, rollbackErr)
+	}
+	reopened, reopenErr := openPreparedDatabase(d.path)
+	if reopenErr != nil {
+		return fmt.Errorf("打开恢复后的数据库失败: %v；重新打开原数据库失败: %w", err, reopenErr)
+	}
+	d.db.DB = reopened
+	return fmt.Errorf("打开恢复后的数据库失败: %w", err)
+}
+
+func openPreparedDatabase(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
-		return fmt.Errorf("打开恢复后的数据库失败: %w", err)
+		return nil, fmt.Errorf("打开数据库失败: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;`); err != nil {
 		_ = db.Close()
-		return fmt.Errorf("初始化恢复后的数据库参数失败: %w", err)
+		return nil, fmt.Errorf("初始化数据库参数失败: %w", err)
 	}
 	if err := createTables(db); err != nil {
 		_ = db.Close()
-		return fmt.Errorf("迁移恢复后的数据库失败: %w", err)
+		return nil, fmt.Errorf("迁移数据库失败: %w", err)
 	}
-	d.db = db
-	return nil
+	return db, nil
 }
 
 func copyFile(sourcePath, targetPath string) error {
@@ -356,6 +486,17 @@ func createTables(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_payment_orders_status ON payment_orders(status);
 	CREATE INDEX IF NOT EXISTS idx_payment_orders_provider_order_no ON payment_orders(provider, provider_order_no);
 	CREATE INDEX IF NOT EXISTS idx_payment_orders_created_at ON payment_orders(created_at);
+
+	CREATE TABLE IF NOT EXISTS payment_amount_reservations (
+		provider TEXT NOT NULL,
+		amount_cents INTEGER NOT NULL,
+		order_no TEXT NOT NULL UNIQUE,
+		expires_at DATETIME NOT NULL,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (provider, amount_cents)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_payment_amount_reservations_expires_at ON payment_amount_reservations(expires_at);
 
 	CREATE TABLE IF NOT EXISTS payment_alipay_bill_records (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -634,8 +775,14 @@ func createTables(db *sql.DB) error {
 	if err := migratePaymentOrdersTable(db); err != nil {
 		return err
 	}
+	if err := migratePaymentAmountReservations(db); err != nil {
+		return err
+	}
 
 	if err := migrateUsersTable(db); err != nil {
+		return err
+	}
+	if err := invalidateLegacyUserBindCodes(db); err != nil {
 		return err
 	}
 	if err := backfillUserPoints(db); err != nil {
@@ -648,6 +795,11 @@ func createTables(db *sql.DB) error {
 		return err
 	}
 	return ensureBuiltinKeywordReplies(db)
+}
+
+func invalidateLegacyUserBindCodes(db *sql.DB) error {
+	_, err := db.Exec(`DELETE FROM user_bind_codes WHERE length(code) < 22`)
+	return err
 }
 
 func backfillUserPoints(db *sql.DB) error {
@@ -903,6 +1055,16 @@ func migratePaymentOrdersTable(db *sql.DB) error {
 		}
 	}
 	_, err = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_orders_cashier_token ON payment_orders(cashier_token) WHERE TRIM(cashier_token) <> ''`)
+	return err
+}
+
+func migratePaymentAmountReservations(db *sql.DB) error {
+	_, err := db.Exec(`
+		INSERT OR IGNORE INTO payment_amount_reservations (provider, amount_cents, order_no, expires_at, created_at)
+		SELECT provider, amount_cents, order_no, expired_at, CURRENT_TIMESTAMP
+		FROM payment_orders
+		WHERE provider = 'alipay_bill' AND status = 'pending' AND expired_at > CURRENT_TIMESTAMP
+	`)
 	return err
 }
 

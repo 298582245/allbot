@@ -155,6 +155,36 @@ func TestEpayV2CreateNotifyAndQuery(t *testing.T) {
 	}
 }
 
+func TestEpayV2NestedDataIsCoveredBySignature(t *testing.T) {
+	platformKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKey := privateKeyPEM(platformKey)
+	provider := &EpayProvider{settings: config.EpaySettings{PlatformPublicKey: publicKeyPEM(&platformKey.PublicKey)}}
+	originalData := `{"status":"1","money":"2.34","out_trade_no":"PTEST_V2","trade_no":"T200","type":"wxpay"}`
+	signed := signedValues(t, privateKey, map[string]string{"code": "0", "timestamp": nowText(), "data": originalData})
+	fields := valuesToStringMap(signed)
+	if err := provider.verifyRSAFields(fields); err != nil {
+		t.Fatalf("valid nested data signature failed: %v", err)
+	}
+	mutations := []string{
+		strings.Replace(originalData, `"status":"1"`, `"status":"0"`, 1),
+		strings.Replace(originalData, `"money":"2.34"`, `"money":"9.99"`, 1),
+		strings.Replace(originalData, `"out_trade_no":"PTEST_V2"`, `"out_trade_no":"POTHER"`, 1),
+	}
+	for _, mutatedData := range mutations {
+		mutated := map[string]string{}
+		for key, value := range fields {
+			mutated[key] = value
+		}
+		mutated["data"] = mutatedData
+		if err := provider.verifyRSAFields(mutated); err == nil {
+			t.Fatalf("tampered nested data should fail signature: %s", mutatedData)
+		}
+	}
+}
+
 func jsonHTTPResponse(body string) *http.Response {
 	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
 }
@@ -182,7 +212,7 @@ func signedValues(t *testing.T, privateKey string, fields map[string]string) url
 		params[key] = value
 	}
 	signer := &EpayProvider{settings: config.EpaySettings{MerchantPrivateKey: privateKey}}
-	sign, err := signer.rsaPrivateSign(epaySignContent(params, true))
+	sign, err := signer.rsaPrivateSign(epaySignContent(params, false))
 	if err != nil {
 		t.Fatal(err)
 	}

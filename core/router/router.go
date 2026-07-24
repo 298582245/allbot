@@ -190,7 +190,7 @@ func (r *Router) SetKeywordReplyManager(manager *KeywordReplyManager) {
 		if r.sessionManager == nil || msg == nil {
 			return ""
 		}
-		ch := r.sessionManager.CreateSession("builtin:keyword-reply", msg.UserID, msg.GroupID, timeout)
+		ch := r.sessionManager.CreateSession(messageSessionScope(msg, "builtin:keyword-reply"), timeout)
 		content, ok := <-ch
 		if !ok {
 			return ""
@@ -201,7 +201,7 @@ func (r *Router) SetKeywordReplyManager(manager *KeywordReplyManager) {
 		if r.sessionManager == nil || msg == nil {
 			return ""
 		}
-		ch, cancel := r.sessionManager.CreateCancellableSession("builtin:keyword-reply", msg.UserID, msg.GroupID, timeout)
+		ch, cancel := r.sessionManager.CreateCancellableSession(messageSessionScope(msg, "builtin:keyword-reply"), timeout)
 		defer cancel()
 		select {
 		case content, ok := <-ch:
@@ -219,13 +219,12 @@ func (r *Router) GetSessionManager() *session.Manager {
 	return r.sessionManager
 }
 
-func (r *Router) HasWaitingSessionForPlugin(userID, groupID, pluginID string) bool {
+func (r *Router) HasWaitingSessionForPlugin(msg *types.Message, pluginID string) bool {
 	pluginID = strings.TrimSpace(pluginID)
-	if r.sessionManager == nil || pluginID == "" {
+	if r.sessionManager == nil || msg == nil || pluginID == "" {
 		return false
 	}
-	session := r.sessionManager.GetSession(userID, groupID)
-	return session != nil && session.PluginID == pluginID
+	return r.sessionManager.GetSession(messageSessionScope(msg, pluginID)) != nil
 }
 
 func (r *Router) RegisterPlugin(plugin *types.Plugin) error {
@@ -270,7 +269,7 @@ func (r *Router) HandleMessage(msg *types.Message) {
 	if !isEvent && r.rejectDisabledUser(msg, database) {
 		return
 	}
-	if !isEvent && msg.Metadata["fake"] != "true" && r.sessionManager.HandleMessage(msg.UserID, msg.GroupID, msg.Content) {
+	if !isEvent && msg.Metadata["fake"] != "true" && r.sessionManager.HandleMessage(messageSessionScope(msg, ""), msg.Content) {
 		log.Printf("%s Message intercepted by waiting session", listenLogPrefix(msg))
 		return
 	}
@@ -337,8 +336,7 @@ func (r *Router) HandleMessageForPlugin(msg *types.Message, pluginID string) err
 		return fmt.Errorf("账号已被封禁，请联系管理员")
 	}
 	msg.Metadata["web_chat_plugin_id"] = pluginID
-	sessionGroupID := messageSessionGroupID(msg)
-	if msg.Metadata["fake"] != "true" && r.sessionManager != nil && r.sessionManager.HandleMessageForPlugin(msg.UserID, sessionGroupID, pluginID, msg.Content) {
+	if msg.Metadata["fake"] != "true" && r.sessionManager != nil && r.sessionManager.HandleMessageForPlugin(messageSessionScope(msg, ""), pluginID, msg.Content) {
 		log.Printf("%s Message intercepted by waiting session", listenLogPrefix(msg))
 		return nil
 	}
@@ -484,6 +482,23 @@ func messageSessionGroupID(msg *types.Message) string {
 		}
 	}
 	return msg.GroupID
+}
+
+func messageSessionScope(msg *types.Message, namespace string) session.Scope {
+	if msg == nil {
+		return session.Scope{Namespace: strings.TrimSpace(namespace)}
+	}
+	adapterID := strings.TrimSpace(msg.AdapterID)
+	if adapterID == "" && msg.Metadata != nil {
+		adapterID = strings.TrimSpace(msg.Metadata["adapter_id"])
+	}
+	return session.Scope{
+		Platform:  msg.Platform,
+		AdapterID: adapterID,
+		UserID:    msg.UserID,
+		GroupID:   messageSessionGroupID(msg),
+		Namespace: namespace,
+	}
 }
 
 func (r *Router) messageUnionID(msg *types.Message) string {
@@ -680,7 +695,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 	}
 
 	listenFunc := func(timeout int) string {
-		ch := r.sessionManager.CreateSession(plugin.ID, msg.UserID, messageSessionGroupID(msg), timeout)
+		ch := r.sessionManager.CreateSession(messageSessionScope(msg, plugin.ID), timeout)
 		content, ok := <-ch
 		if !ok {
 			return ""
@@ -688,7 +703,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		return content
 	}
 	listenUntilFunc := func(timeout int, done <-chan struct{}) string {
-		ch, cancel := r.sessionManager.CreateCancellableSession(plugin.ID, msg.UserID, messageSessionGroupID(msg), timeout)
+		ch, cancel := r.sessionManager.CreateCancellableSession(messageSessionScope(msg, plugin.ID), timeout)
 		defer cancel()
 		select {
 		case content, ok := <-ch:

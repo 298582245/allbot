@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -251,6 +252,179 @@ func TestRestoreBackupRejectsBadOptionsAndBadDatabase(t *testing.T) {
 	}
 }
 
+func TestBackupOperationsRejectConcurrentMutation(t *testing.T) {
+	workspace := t.TempDir()
+	database, service := newBackupTestService(t, workspace)
+	defer database.Close()
+
+	service.operationMu.Lock()
+	defer service.operationMu.Unlock()
+	if _, err := service.Create(context.Background(), "manual"); !errors.Is(err, ErrOperationInProgress) {
+		t.Fatalf("并发创建应返回操作冲突，实际错误: %v", err)
+	}
+	if _, err := service.Import(context.Background(), ImportOptions{Reader: bytes.NewReader([]byte("bad"))}); !errors.Is(err, ErrOperationInProgress) {
+		t.Fatalf("并发导入应返回操作冲突，实际错误: %v", err)
+	}
+	if _, err := service.Restore(context.Background(), "missing.zip", RestoreOptions{IncludeData: true, Confirm: true}); !errors.Is(err, ErrOperationInProgress) {
+		t.Fatalf("并发恢复应返回操作冲突，实际错误: %v", err)
+	}
+	if err := service.Delete("missing.zip"); !errors.Is(err, ErrOperationInProgress) {
+		t.Fatalf("并发删除应返回操作冲突，实际错误: %v", err)
+	}
+	if err := service.Cleanup(1); !errors.Is(err, ErrOperationInProgress) {
+		t.Fatalf("并发清理应返回操作冲突，实际错误: %v", err)
+	}
+}
+
+func TestCreateBackupRejectsSymlinkSource(t *testing.T) {
+	workspace := t.TempDir()
+	database, service := newBackupTestService(t, workspace)
+	defer database.Close()
+	outside := filepath.Join(workspace, "outside.txt")
+	mustWriteFile(t, outside, "outside")
+	link := filepath.Join(workspace, "plugins", "link.txt")
+	if err := os.MkdirAll(filepath.Dir(link), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("当前环境不支持符号链接测试: %v", err)
+	}
+	if _, err := service.Create(context.Background(), "manual"); err == nil {
+		t.Fatal("备份来源中的符号链接应被拒绝")
+	}
+}
+
+func TestRestorePrevalidationDoesNotModifyEarlierComponents(t *testing.T) {
+	workspace := t.TempDir()
+	database, service := newBackupTestService(t, workspace)
+	defer database.Close()
+	pluginDir := filepath.Join(workspace, "plugins")
+	mustWriteFile(t, filepath.Join(pluginDir, "current.txt"), "current")
+	backupData := buildTestBackupZip(t, map[string][]byte{
+		"manifest.json":             manifestJSON(t),
+		"plugins/restored.txt":      []byte("restored"),
+		"runtime_env/manifest.json": []byte("invalid"),
+	})
+	imported, err := service.Import(context.Background(), ImportOptions{Reader: bytes.NewReader(backupData), OriginalName: "bad-runtime.zip"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Restore(context.Background(), imported.File.Name, RestoreOptions{IncludePlugins: true, IncludeRuntimeEnv: true, Confirm: true}); err == nil {
+		t.Fatal("非法运行环境应在提交前拒绝")
+	}
+	if string(mustReadFile(t, filepath.Join(pluginDir, "current.txt"))) != "current" {
+		t.Fatal("预校验失败不应修改插件目录")
+	}
+	if _, err := os.Stat(filepath.Join(pluginDir, "restored.txt")); !os.IsNotExist(err) {
+		t.Fatalf("预校验失败不应写入恢复内容，实际错误: %v", err)
+	}
+}
+
+func TestRestoreRollbackRemovesNewTargetDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	database, service := newBackupTestService(t, workspace)
+	defer database.Close()
+	pluginDir := filepath.Join(workspace, "plugins")
+	if err := os.RemoveAll(pluginDir); err != nil {
+		t.Fatal(err)
+	}
+	runtimeManager := &fakeRuntimeEnvironmentManager{
+		snapshot:   deps.RuntimeEnvironmentBackup{Profiles: []deps.RuntimeProfile{{ID: "node-old", Runtime: "nodejs"}}, PythonDependencies: map[string]map[string]string{}, NodeDependencies: map[string]map[string]string{}},
+		failImport: true,
+	}
+	service.SetRuntimeDepsManager(runtimeManager)
+	backupData := buildTestBackupZip(t, map[string][]byte{
+		"manifest.json":             manifestJSON(t),
+		"plugins/restored.txt":      []byte("plugin-restored"),
+		"runtime_env/manifest.json": []byte(`{"profiles":[{"id":"node-new","runtime":"nodejs"}],"python_dependencies":{},"node_dependencies":{}}`),
+	})
+	imported, err := service.Import(context.Background(), ImportOptions{Reader: bytes.NewReader(backupData), OriginalName: "new-target.zip"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Restore(context.Background(), imported.File.Name, RestoreOptions{IncludePlugins: true, IncludeRuntimeEnv: true, Confirm: true}); err == nil {
+		t.Fatal("运行环境恢复失败时应返回错误")
+	}
+	if _, err := os.Lstat(pluginDir); !os.IsNotExist(err) {
+		t.Fatalf("恢复前不存在的插件目录应在回滚后删除，实际错误: %v", err)
+	}
+}
+
+func TestRestoreRollsBackComponentsInReverseOrder(t *testing.T) {
+	workspace := t.TempDir()
+	database, service := newBackupTestService(t, workspace)
+	defer database.Close()
+	pluginDir := filepath.Join(workspace, "plugins")
+	openAPIDir := filepath.Join(workspace, "openapis")
+	mustWriteFile(t, filepath.Join(pluginDir, "original.txt"), "plugin-original")
+	mustWriteFile(t, filepath.Join(openAPIDir, "original.txt"), "openapi-original")
+	runtimeManager := &fakeRuntimeEnvironmentManager{
+		snapshot:   deps.RuntimeEnvironmentBackup{Profiles: []deps.RuntimeProfile{{ID: "node-old", Runtime: "nodejs"}}, PythonDependencies: map[string]map[string]string{}, NodeDependencies: map[string]map[string]string{}},
+		failImport: true,
+	}
+	service.SetRuntimeDepsManager(runtimeManager)
+	backupData := buildTestBackupZip(t, map[string][]byte{
+		"manifest.json":             manifestJSON(t),
+		"plugins/restored.txt":      []byte("plugin-restored"),
+		"openapis/restored.txt":     []byte("openapi-restored"),
+		"runtime_env/manifest.json": []byte(`{"profiles":[{"id":"node-new","runtime":"nodejs"}],"python_dependencies":{},"node_dependencies":{}}`),
+	})
+	imported, err := service.Import(context.Background(), ImportOptions{Reader: bytes.NewReader(backupData), OriginalName: "rollback.zip"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Restore(context.Background(), imported.File.Name, RestoreOptions{IncludePlugins: true, IncludeOpenAPIs: true, IncludeRuntimeEnv: true, Confirm: true})
+	if err == nil {
+		t.Fatal("运行环境恢复失败时应返回错误")
+	}
+	if string(mustReadFile(t, filepath.Join(pluginDir, "original.txt"))) != "plugin-original" {
+		t.Fatal("插件目录未回滚")
+	}
+	if string(mustReadFile(t, filepath.Join(openAPIDir, "original.txt"))) != "openapi-original" {
+		t.Fatal("OpenAPI 目录未回滚")
+	}
+	if _, err := os.Stat(filepath.Join(pluginDir, "restored.txt")); !os.IsNotExist(err) {
+		t.Fatalf("插件恢复内容应被回滚，实际错误: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(openAPIDir, "restored.txt")); !os.IsNotExist(err) {
+		t.Fatalf("OpenAPI 恢复内容应被回滚，实际错误: %v", err)
+	}
+	if runtimeManager.importCount != 2 || len(runtimeManager.imported.Profiles) != 1 || runtimeManager.imported.Profiles[0].ID != "node-old" {
+		t.Fatalf("运行环境应使用恢复前快照回滚: %+v, count=%d", runtimeManager.imported, runtimeManager.importCount)
+	}
+}
+
+func TestRestoreRollbackPreservesEmptyDirectories(t *testing.T) {
+	workspace := t.TempDir()
+	database, service := newBackupTestService(t, workspace)
+	defer database.Close()
+	pluginDir := filepath.Join(workspace, "plugins")
+	if err := os.MkdirAll(filepath.Join(pluginDir, "empty", "nested"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runtimeManager := &fakeRuntimeEnvironmentManager{
+		snapshot:   deps.RuntimeEnvironmentBackup{Profiles: []deps.RuntimeProfile{{ID: "node-old", Runtime: "nodejs"}}, PythonDependencies: map[string]map[string]string{}, NodeDependencies: map[string]map[string]string{}},
+		failImport: true,
+	}
+	service.SetRuntimeDepsManager(runtimeManager)
+	backupData := buildTestBackupZip(t, map[string][]byte{
+		"manifest.json":             manifestJSON(t),
+		"plugins/restored.txt":      []byte("plugin-restored"),
+		"runtime_env/manifest.json": []byte(`{"profiles":[{"id":"node-new","runtime":"nodejs"}],"python_dependencies":{},"node_dependencies":{}`),
+	})
+	imported, err := service.Import(context.Background(), ImportOptions{Reader: bytes.NewReader(backupData), OriginalName: "empty-directory-rollback.zip"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Restore(context.Background(), imported.File.Name, RestoreOptions{IncludePlugins: true, IncludeRuntimeEnv: true, Confirm: true})
+	if err == nil {
+		t.Fatal("运行环境恢复失败时应返回错误")
+	}
+	if _, err := os.Stat(filepath.Join(pluginDir, "empty", "nested")); err != nil {
+		t.Fatalf("回滚应保留原有空目录: %v", err)
+	}
+}
+
 func TestCleanupKeepsNewestBackups(t *testing.T) {
 	workspace := t.TempDir()
 	database, err := config.NewDatabase(filepath.Join(workspace, "config.db"))
@@ -394,8 +568,10 @@ func zipEntries(t *testing.T, path string) map[string]bool {
 }
 
 type fakeRuntimeEnvironmentManager struct {
-	snapshot deps.RuntimeEnvironmentBackup
-	imported deps.RuntimeEnvironmentBackup
+	snapshot    deps.RuntimeEnvironmentBackup
+	imported    deps.RuntimeEnvironmentBackup
+	importCount int
+	failImport  bool
 }
 
 func (m *fakeRuntimeEnvironmentManager) ExportRuntimeEnvironment() (deps.RuntimeEnvironmentBackup, error) {
@@ -403,6 +579,10 @@ func (m *fakeRuntimeEnvironmentManager) ExportRuntimeEnvironment() (deps.Runtime
 }
 
 func (m *fakeRuntimeEnvironmentManager) ImportRuntimeEnvironment(snapshot deps.RuntimeEnvironmentBackup) ([]string, error) {
+	m.importCount++
 	m.imported = snapshot
+	if m.failImport && m.importCount == 1 {
+		return nil, errors.New("fake runtime import failure")
+	}
 	return []string{"fake runtime warning"}, nil
 }

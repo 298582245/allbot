@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -93,6 +94,19 @@ func TestVerifyWebChatEmailLoginRejectsRegisterCode(t *testing.T) {
 	db, user := newWebChatPasswordResetTestUser(t)
 	if _, err := db.VerifyWebChatEmailLogin(user.Email, "123456"); err == nil {
 		t.Fatal("expected register code to fail email login")
+	}
+}
+
+func TestBindWebChatUserByCodeLocksRepeatedFailures(t *testing.T) {
+	db, user := newWebChatPasswordResetTestUser(t)
+	for attempt := 1; attempt <= bindMaxAttempts; attempt++ {
+		_, _, err := db.BindWebChatUserByCode(user.UserID, "invalid")
+		if err == nil {
+			t.Fatalf("第 %d 次错误绑定码应失败", attempt)
+		}
+	}
+	if _, _, err := db.BindWebChatUserByCode(user.UserID, "invalid"); !errors.Is(err, ErrUserBindLocked) {
+		t.Fatalf("达到阈值后应锁定，实际 %v", err)
 	}
 }
 

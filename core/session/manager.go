@@ -1,124 +1,131 @@
 package session
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
 
+// Scope 标识等待会话所属的平台、适配器、用户、会话目标和命名空间。
+type Scope struct {
+	Platform  string
+	AdapterID string
+	UserID    string
+	GroupID   string
+	Namespace string
+}
+
 // WaitingSession 等待会话
 type WaitingSession struct {
+	Scope    Scope
 	PluginID string
-	UserID   string
-	GroupID  string
 	Timeout  time.Time
 	Channel  chan string
 }
 
 // Manager 会话管理器
 type Manager struct {
-	sessions map[string]*WaitingSession // key: "userID:groupID"
+	sessions map[string]*WaitingSession
 	mu       sync.RWMutex
 }
 
 // NewManager 创建会话管理器
 func NewManager() *Manager {
-	return &Manager{
-		sessions: make(map[string]*WaitingSession),
-	}
+	return &Manager{sessions: make(map[string]*WaitingSession)}
 }
 
 // CreateSession 创建等待会话
-func (m *Manager) CreateSession(pluginID, userID, groupID string, timeout int) <-chan string {
-	ch, _ := m.CreateCancellableSession(pluginID, userID, groupID, timeout)
+func (m *Manager) CreateSession(scope Scope, timeout int) <-chan string {
+	ch, _ := m.CreateCancellableSession(scope, timeout)
 	return ch
 }
 
 // CreateCancellableSession 创建可主动取消的等待会话
-func (m *Manager) CreateCancellableSession(pluginID, userID, groupID string, timeout int) (<-chan string, func()) {
-	key := m.makeKey(userID, groupID)
+func (m *Manager) CreateCancellableSession(scope Scope, timeout int) (<-chan string, func()) {
+	scope = normalizeScope(scope)
+	key := makeKey(scope)
+	baseKey := makeBaseKey(scope)
 
 	ch := make(chan string, 1)
-	session := &WaitingSession{
-		PluginID: pluginID,
-		UserID:   userID,
-		GroupID:  groupID,
+	waiting := &WaitingSession{
+		Scope:    scope,
+		PluginID: scope.Namespace,
 		Timeout:  time.Now().Add(time.Duration(timeout) * time.Second),
 		Channel:  ch,
 	}
 
 	m.mu.Lock()
-	// 如果已有等待会话，关闭旧的
-	if old, exists := m.sessions[key]; exists {
-		close(old.Channel)
+	// 同一完整来源同时只保留一个等待者，防止普通消息在多个命名空间间产生歧义。
+	for existingKey, existing := range m.sessions {
+		if makeBaseKey(existing.Scope) == baseKey {
+			close(existing.Channel)
+			delete(m.sessions, existingKey)
+		}
 	}
-	m.sessions[key] = session
+	m.sessions[key] = waiting
 	m.mu.Unlock()
 
 	cancel := func() {
 		m.mu.Lock()
-		if s, exists := m.sessions[key]; exists && s == session {
+		if existing, ok := m.sessions[key]; ok && existing == waiting {
 			close(ch)
 			delete(m.sessions, key)
 		}
 		m.mu.Unlock()
 	}
 
-	// 超时自动清理
 	go func() {
-		time.Sleep(time.Duration(timeout) * time.Second)
+		timer := time.NewTimer(time.Duration(timeout) * time.Second)
+		defer timer.Stop()
+		<-timer.C
 		cancel()
 	}()
 
 	return ch, cancel
 }
 
-// HandleMessage 处理消息，如果有等待会话则拦截
-func (m *Manager) HandleMessage(userID, groupID, content string) bool {
-	return m.handleMessage(userID, groupID, "", content)
+// HandleMessage 处理消息，如果同一来源存在等待会话则拦截。
+func (m *Manager) HandleMessage(scope Scope, content string) bool {
+	return m.handleMessage(scope, "", content)
 }
 
-// HandleMessageForPlugin 只允许当前插件会话消费等待输入。
-func (m *Manager) HandleMessageForPlugin(userID, groupID, pluginID, content string) bool {
-	return m.handleMessage(userID, groupID, pluginID, content)
+// HandleMessageForPlugin 只允许指定插件命名空间消费等待输入。
+func (m *Manager) HandleMessageForPlugin(scope Scope, pluginID, content string) bool {
+	return m.handleMessage(scope, strings.TrimSpace(pluginID), content)
 }
 
-func (m *Manager) handleMessage(userID, groupID, pluginID, content string) bool {
-	key := m.makeKey(userID, groupID)
+func (m *Manager) handleMessage(scope Scope, namespace, content string) bool {
+	scope = normalizeScope(scope)
+	baseKey := makeBaseKey(scope)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	session, exists := m.sessions[key]
-	if !exists {
-		return false // 没有等待会话
+	for key, waiting := range m.sessions {
+		if makeBaseKey(waiting.Scope) != baseKey {
+			continue
+		}
+		if namespace != "" && waiting.Scope.Namespace != namespace {
+			return false
+		}
+		delete(m.sessions, key)
+		select {
+		case waiting.Channel <- content:
+			close(waiting.Channel)
+			return true
+		default:
+			close(waiting.Channel)
+			return false
+		}
 	}
-	if pluginID != "" && session.PluginID != pluginID {
-		return false
-	}
-	delete(m.sessions, key) // 立即删除，防止重复触发
-
-	// 在锁内发送，避免取消协程同时关闭通道导致 panic。
-	select {
-	case session.Channel <- content:
-		return true // 消息已被拦截
-	default:
-		return false
-	}
+	return false
 }
 
-// makeKey 生成会话键
-func (m *Manager) makeKey(userID, groupID string) string {
-	if groupID == "" {
-		return userID // 私聊
-	}
-	return userID + ":" + groupID // 群聊
-}
-
-// GetSession 获取等待会话（用于调试）
-func (m *Manager) GetSession(userID, groupID string) *WaitingSession {
-	key := m.makeKey(userID, groupID)
+// GetSession 获取指定完整作用域的等待会话。
+func (m *Manager) GetSession(scope Scope) *WaitingSession {
+	scope = normalizeScope(scope)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.sessions[key]
+	return m.sessions[makeKey(scope)]
 }
 
 // CleanExpired 清理过期会话
@@ -127,10 +134,27 @@ func (m *Manager) CleanExpired() {
 	defer m.mu.Unlock()
 
 	now := time.Now()
-	for key, session := range m.sessions {
-		if now.After(session.Timeout) {
-			close(session.Channel)
+	for key, waiting := range m.sessions {
+		if now.After(waiting.Timeout) {
+			close(waiting.Channel)
 			delete(m.sessions, key)
 		}
 	}
+}
+
+func normalizeScope(scope Scope) Scope {
+	scope.Platform = strings.TrimSpace(scope.Platform)
+	scope.AdapterID = strings.TrimSpace(scope.AdapterID)
+	scope.UserID = strings.TrimSpace(scope.UserID)
+	scope.GroupID = strings.TrimSpace(scope.GroupID)
+	scope.Namespace = strings.TrimSpace(scope.Namespace)
+	return scope
+}
+
+func makeBaseKey(scope Scope) string {
+	return strings.Join([]string{scope.Platform, scope.AdapterID, scope.UserID, scope.GroupID}, "\x00")
+}
+
+func makeKey(scope Scope) string {
+	return makeBaseKey(scope) + "\x00" + scope.Namespace
 }

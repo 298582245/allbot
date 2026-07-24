@@ -27,6 +27,7 @@ import (
 	"github.com/allbot/allbot/core/imagehost"
 	"github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/router"
+	"github.com/allbot/allbot/core/session"
 	"github.com/allbot/allbot/core/updater"
 	"github.com/allbot/allbot/core/utils"
 )
@@ -57,6 +58,11 @@ const (
 	runtimePersistIntervalSeconds  int64 = 30
 )
 
+type adminSession struct {
+	expiresAt time.Time
+	csrfToken string
+}
+
 type Server struct {
 	port                         string
 	pluginManager                *plugin.Manager
@@ -82,7 +88,7 @@ type Server struct {
 	runtimeLoaded                bool
 	lastPersistedRuntimeSeconds  int64
 	sessionMu                    sync.RWMutex
-	sessions                     map[string]time.Time
+	sessions                     map[string]adminSession
 	loginLimiterMu               sync.Mutex
 	loginLimiter                 *adminLoginLimiter
 	pluginExecutionMu            sync.Mutex
@@ -117,7 +123,7 @@ type Server struct {
 
 func NewServer(port string, pluginManager *plugin.Manager, router *router.Router, adapterManager *config.AdapterManager, webFS fs.FS) *Server {
 	updateService := updater.NewService(updater.NewGitHubClient(), updater.DefaultUpgradeRunner)
-	server := &Server{port: port, pluginManager: pluginManager, router: router, adapterManager: adapterManager, logManager: NewLogManager(500), startTime: time.Now(), webFS: webFS, webAssetMode: WebAssetModeEmbedded, externalWebDir: "web", updateService: updateService, releaseClient: updater.NewGitHubClient(), upgradeRunner: updater.DefaultUpgradeRunner, upgradeState: updater.UpgradeState{Status: updater.UpgradeStatusIdle, Message: "暂无升级任务"}, runtimeInitJobs: newRuntimeProfileInitJobStore(), sessions: map[string]time.Time{}}
+	server := &Server{port: port, pluginManager: pluginManager, router: router, adapterManager: adapterManager, logManager: NewLogManager(500), startTime: time.Now(), webFS: webFS, webAssetMode: WebAssetModeEmbedded, externalWebDir: "web", updateService: updateService, releaseClient: updater.NewGitHubClient(), upgradeRunner: updater.DefaultUpgradeRunner, upgradeState: updater.UpgradeState{Status: updater.UpgradeStatusIdle, Message: "暂无升级任务"}, runtimeInitJobs: newRuntimeProfileInitJobStore(), sessions: map[string]adminSession{}}
 	server.initializeOpenAPIAccess()
 	server.openAPIStats = newOpenAPIStatsRecorder(server.runtimeDatabase(), server.openAPIRetentionDays)
 	return server
@@ -236,7 +242,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/login/", s.handleAccessCodeEntry)
 	mux.HandleFunc("/", s.handleIndex)
 
-	server := &http.Server{Addr: ":" + s.port, Handler: s.corsMiddleware(s.authMiddleware(mux)), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 5 * time.Minute, IdleTimeout: 2 * time.Minute}
+	server := &http.Server{Addr: ":" + s.port, Handler: s.securityHeadersMiddleware(s.corsMiddleware(s.authMiddleware(mux))), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 5 * time.Minute, IdleTimeout: 2 * time.Minute}
 	s.serverMu.Lock()
 	s.httpServer = server
 	s.serverMu.Unlock()
@@ -372,13 +378,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.loginLimiterForRequest().clear(loginKey)
-	token, err := s.createAdminSession()
+	token, csrfToken, err := s.createAdminSession()
 	if err != nil {
 		s.jsonError(w, "创建登录会话失败", http.StatusInternalServerError)
 		return
 	}
-	s.setSessionCookie(w, token)
-	s.jsonResponse(w, map[string]interface{}{"token": token, "user": map[string]string{"username": req.Username}})
+	s.setSessionCookie(w, r, token)
+	s.jsonResponse(w, map[string]interface{}{"token": token, "csrfToken": csrfToken, "user": map[string]string{"username": req.Username}})
 }
 
 func (s *Server) currentAdminUsername() (string, error) {
@@ -916,16 +922,25 @@ func (s *Server) handlePluginListen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		PluginID string `json:"plugin_id"`
-		UserID   string `json:"user_id"`
-		GroupID  string `json:"group_id"`
-		Timeout  int    `json:"timeout"`
+		PluginID  string `json:"plugin_id"`
+		Platform  string `json:"platform"`
+		AdapterID string `json:"adapter_id"`
+		UserID    string `json:"user_id"`
+		GroupID   string `json:"group_id"`
+		Timeout   int    `json:"timeout"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.jsonError(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
-	ch := s.router.GetSessionManager().CreateSession(req.PluginID, req.UserID, req.GroupID, req.Timeout)
+	if strings.TrimSpace(req.PluginID) == "" || strings.TrimSpace(req.Platform) == "" || strings.TrimSpace(req.AdapterID) == "" || strings.TrimSpace(req.UserID) == "" || req.Timeout <= 0 {
+		s.jsonError(w, "plugin_id、platform、adapter_id、user_id 和有效 timeout 不能为空", http.StatusBadRequest)
+		return
+	}
+	ch := s.router.GetSessionManager().CreateSession(session.Scope{
+		Platform: req.Platform, AdapterID: req.AdapterID, UserID: req.UserID,
+		GroupID: req.GroupID, Namespace: req.PluginID,
+	}, req.Timeout)
 	content := ""
 	select {
 	case msg, ok := <-ch:
@@ -1585,7 +1600,7 @@ func (s *Server) handleAccessCodeEntry(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.setAccessPassCookie(w, code)
+	s.setAccessPassCookie(w, r, code)
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
@@ -1596,7 +1611,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		delete(s.sessions, token)
 		s.sessionMu.Unlock()
 	}
-	s.clearSessionCookie(w)
+	s.clearSessionCookie(w, r)
 	s.jsonResponse(w, map[string]bool{"success": true})
 }
 
@@ -1618,35 +1633,38 @@ const (
 	accessPassCookieName = "allbot_access"
 )
 
-func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   s.requestUsesHTTPS(r),
 		MaxAge:   int((24 * time.Hour).Seconds()),
 	})
 }
 
-func (s *Server) clearSessionCookie(w http.ResponseWriter) {
+func (s *Server) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   s.requestUsesHTTPS(r),
 		MaxAge:   -1,
 	})
 }
 
-func (s *Server) setAccessPassCookie(w http.ResponseWriter, code string) {
+func (s *Server) setAccessPassCookie(w http.ResponseWriter, r *http.Request, code string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     accessPassCookieName,
 		Value:    accessCodeHash(code),
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   s.requestUsesHTTPS(r),
 		MaxAge:   int((30 * 24 * time.Hour).Seconds()),
 	})
 }
@@ -1683,28 +1701,44 @@ func (s *Server) requestHasAccessPass(r *http.Request, code string) bool {
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/login" || r.URL.Path == "/api/logout" || strings.HasPrefix(r.URL.Path, "/api/open/") {
+		if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/login" || strings.HasPrefix(r.URL.Path, "/api/open/") {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if !s.validAdminToken(r.Header.Get("Authorization")) && !s.requestHasValidSession(r) {
+		if s.validAdminToken(r.Header.Get("Authorization")) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		session, ok := s.requestAdminSession(r)
+		if !ok {
 			s.jsonError(w, "Unauthorized", http.StatusUnauthorized)
 			return
+		}
+		if isUnsafeHTTPMethod(r.Method) && !strings.HasPrefix(r.URL.Path, pluginWebAPIPrefix) {
+			if !s.validAdminOrigin(r) || subtle.ConstantTimeCompare([]byte(strings.TrimSpace(r.Header.Get("X-AllBot-CSRF"))), []byte(session.csrfToken)) != 1 {
+				s.jsonError(w, "CSRF 校验失败", http.StatusForbidden)
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-func (s *Server) createAdminSession() (string, error) {
-	buffer := make([]byte, 32)
-	if _, err := rand.Read(buffer); err != nil {
-		return "", err
+func (s *Server) createAdminSession() (string, string, error) {
+	tokenBuffer := make([]byte, 32)
+	if _, err := rand.Read(tokenBuffer); err != nil {
+		return "", "", err
 	}
-	token := hex.EncodeToString(buffer)
+	csrfBuffer := make([]byte, 32)
+	if _, err := rand.Read(csrfBuffer); err != nil {
+		return "", "", err
+	}
+	token := hex.EncodeToString(tokenBuffer)
+	csrfToken := hex.EncodeToString(csrfBuffer)
 	s.sessionMu.Lock()
-	s.sessions[token] = time.Now().Add(24 * time.Hour)
+	s.sessions[token] = adminSession{expiresAt: time.Now().Add(24 * time.Hour), csrfToken: csrfToken}
 	s.sessionMu.Unlock()
-	return token, nil
+	return token, csrfToken, nil
 }
 
 func (s *Server) validAdminToken(header string) bool {
@@ -1712,29 +1746,82 @@ func (s *Server) validAdminToken(header string) bool {
 	if strings.HasPrefix(strings.ToLower(token), "bearer ") {
 		token = strings.TrimSpace(token[7:])
 	}
+	_, ok := s.adminSession(token)
+	return ok
+}
+
+func (s *Server) requestAdminSession(r *http.Request) (adminSession, bool) {
+	return s.adminSession(s.requestSessionToken(r))
+}
+
+func (s *Server) adminSession(token string) (adminSession, bool) {
 	if token == "" {
-		return false
+		return adminSession{}, false
 	}
 	now := time.Now()
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
-	for sessionToken, expiresAt := range s.sessions {
-		if now.After(expiresAt) {
+	for sessionToken, session := range s.sessions {
+		if now.After(session.expiresAt) {
 			delete(s.sessions, sessionToken)
 			continue
 		}
 		if subtle.ConstantTimeCompare([]byte(token), []byte(sessionToken)) == 1 {
-			return true
+			return session, true
 		}
 	}
-	return false
+	return adminSession{}, false
+}
+
+func isUnsafeHTTPMethod(method string) bool {
+	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
+}
+
+func (s *Server) validAdminOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		origin = strings.TrimSpace(r.Header.Get("Referer"))
+	}
+	if origin == "" {
+		return false
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, r.Host)
+}
+
+func (s *Server) requestUsesHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	remote := parseOpenAPIAddress(r.RemoteAddr)
+	if !remote.IsValid() || !s.currentOpenAPIAccess().trustedProxies.contains(remote) {
+		return false
+	}
+	forwardedProto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
+	return strings.EqualFold(forwardedProto, "https")
+}
+
+func (s *Server) securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "same-origin")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		if !strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, pluginWebStaticPrefix) {
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; font-src 'self' data:; connect-src 'self' ws: wss:; frame-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Open-Token")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Open-Token, X-AllBot-CSRF")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return

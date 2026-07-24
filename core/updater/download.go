@@ -23,7 +23,12 @@ func (d Downloader) Download(ctx context.Context, asset ReleaseAsset, targetPath
 	if strings.TrimSpace(targetPath) == "" {
 		return fmt.Errorf("目标文件不能为空")
 	}
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0700); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(targetPath); err == nil {
+		return fmt.Errorf("目标文件已存在: %s", info.Name())
+	} else if !os.IsNotExist(err) {
 		return err
 	}
 
@@ -46,13 +51,18 @@ func (d Downloader) Download(ctx context.Context, asset ReleaseAsset, targetPath
 		return fmt.Errorf("下载状态码 %d", response.StatusCode)
 	}
 
-	tempPath := targetPath + ".download"
-	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	tempFile, err := os.CreateTemp(filepath.Dir(targetPath), ".download-*")
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(file, response.Body)
-	closeErr := file.Close()
+	tempPath := tempFile.Name()
+	if err := tempFile.Chmod(0700); err != nil {
+		_ = tempFile.Close()
+		_ = os.Remove(tempPath)
+		return err
+	}
+	_, copyErr := io.Copy(tempFile, response.Body)
+	closeErr := tempFile.Close()
 	if copyErr != nil {
 		_ = os.Remove(tempPath)
 		return copyErr

@@ -1,14 +1,20 @@
 package payment
 
 import (
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/allbot/allbot/core/config"
 )
@@ -99,12 +105,14 @@ func TestAlipayBillSignContentSortsAndSkipsSign(t *testing.T) {
 
 func TestAlipayBillQueryOrderMatchesAmount(t *testing.T) {
 	var requestQuery string
+	settings, responseSigner := testAlipayBillSettingsWithSigner("")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestQuery = r.URL.RawQuery
-		_, _ = w.Write([]byte(`{"alipay_data_bill_accountlog_query_response":{"code":"10000","detail_list":[{"trade_no":"ABILL1","trans_amount":"1.00","balance_type":"收入","memo":"OTHER","summary":"支付宝转账","trans_dt":"2026-07-06 12:00:00"}]}}`))
+		_, _ = w.Write([]byte(signedAlipayBillResponse(t, responseSigner, `{"code":"10000","detail_list":[{"trade_no":"ABILL1","trans_amount":"1.00","balance_type":"收入","memo":"OTHER","summary":"支付宝转账","trans_dt":"2026-07-06 12:00:00"}]}`)))
 	}))
 	defer server.Close()
-	provider, err := NewAlipayBillProvider(testAlipayBillSettings(server.URL), server.Client())
+	settings.GatewayURL = server.URL
+	provider, err := NewAlipayBillProvider(settings, server.Client())
 	if err != nil {
 		t.Fatalf("NewAlipayBillProvider returned error: %v", err)
 	}
@@ -127,6 +135,36 @@ func TestAlipayBillQueryOrderMatchesAmount(t *testing.T) {
 	}
 }
 
+func TestAlipayBillQueryRejectsUnsignedInvalidAndTamperedResponses(t *testing.T) {
+	settings, responseSigner := testAlipayBillSettingsWithSigner("")
+	businessResponse := `{"code":"10000","detail_list":[{"trade_no":"ABILL_SECURE","trans_amount":"1.00","balance_type":"收入","trans_dt":"2026-07-06 12:00:00"}]}`
+	validResponse := signedAlipayBillResponse(t, responseSigner, businessResponse)
+	cases := []struct {
+		name     string
+		response string
+	}{
+		{name: "unsigned", response: fmt.Sprintf(`{"alipay_data_bill_accountlog_query_response":%s}`, businessResponse)},
+		{name: "invalid signature", response: fmt.Sprintf(`{"alipay_data_bill_accountlog_query_response":%s,"sign":"invalid"}`, businessResponse)},
+		{name: "tampered amount", response: strings.Replace(validResponse, `"trans_amount":"1.00"`, `"trans_amount":"9.99"`, 1)},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(testCase.response))
+			}))
+			defer server.Close()
+			settings.GatewayURL = server.URL
+			provider, err := NewAlipayBillProvider(settings, server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := provider.QueryBills(time.Now().Add(-time.Minute), time.Now()); err == nil {
+				t.Fatalf("expected %s response to fail", testCase.name)
+			}
+		})
+	}
+}
+
 func TestParseAlipayBillItems(t *testing.T) {
 	items, err := parseAlipayBillItems([]byte(`{"alipay_data_bill_accountlog_query_response":{"code":"10000","detail_list":{"account_log_item":[{"trade_no":"ABILL2","trans_amount":"2.50","balance_type":"收入","memo":"PTEST_PARSE","summary":"到账","trans_dt":"2026-07-06 12:01:02"}]}}}`))
 	if err != nil {
@@ -138,8 +176,37 @@ func TestParseAlipayBillItems(t *testing.T) {
 }
 
 func testAlipayBillSettings(gatewayURL string) config.AlipayBillSettings {
-	privateKey, publicKey := testRSAKeys()
-	return config.AlipayBillSettings{Enabled: true, GatewayURL: gatewayURL, AppID: "app-1", PrivateKey: privateKey, AlipayPublicKey: publicKey, TransferUserID: "2088000000000000", TransferUserName: "测试", QueryMinutesBack: 30, CheckIntervalSeconds: 15, OrderTimeoutSeconds: 300, BillPageSize: 100, MatchMode: "amount_unique"}
+	settings, _ := testAlipayBillSettingsWithSigner(gatewayURL)
+	return settings
+}
+
+func testAlipayBillSettingsWithSigner(gatewayURL string) (config.AlipayBillSettings, string) {
+	requestPrivateKey, _ := testRSAKeys()
+	responsePrivateKey, responsePublicKey := testRSAKeys()
+	settings := config.AlipayBillSettings{Enabled: true, GatewayURL: gatewayURL, AppID: "app-1", PrivateKey: requestPrivateKey, AlipayPublicKey: responsePublicKey, TransferUserID: "2088000000000000", TransferUserName: "测试", QueryMinutesBack: 30, CheckIntervalSeconds: 15, OrderTimeoutSeconds: 300, BillPageSize: 100, MatchMode: "amount_unique"}
+	return settings, responsePrivateKey
+}
+
+func signedAlipayBillResponse(t *testing.T, privateKeyText, businessResponse string) string {
+	t.Helper()
+	privateKey, err := parseRSAPrivateKey(privateKeyText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(businessResponse))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var business json.RawMessage = []byte(businessResponse)
+	body, err := json.Marshal(map[string]interface{}{
+		"alipay_data_bill_accountlog_query_response": business,
+		"sign": base64.StdEncoding.EncodeToString(signature),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
 }
 
 func testRSAKeys() (string, string) {

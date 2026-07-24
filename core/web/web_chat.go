@@ -192,7 +192,7 @@ func (s *Server) handleWebChatRegister(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	user, err := database.RegisterWebChatUser(config.WebChatRegisterInput{Email: req.Email, Code: req.Code, Username: req.Username, Password: req.Password, DisplayName: req.DisplayName, BindCode: req.BindCode})
+	user, err := database.RegisterWebChatUser(config.WebChatRegisterInput{Email: req.Email, Code: req.Code, Username: req.Username, Password: req.Password, DisplayName: req.DisplayName, BindCode: req.BindCode, BindAttemptKey: s.webChatClientIP(r)})
 	if err != nil {
 		s.jsonError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -647,7 +647,7 @@ func (s *Server) handleWebChatSendMessage(w http.ResponseWriter, r *http.Request
 	if s.router != nil {
 		if pluginID == "" {
 			s.router.HandleMessage(msg)
-		} else if s.router.HasWaitingSessionForPlugin(msg.UserID, sessionGroupID, pluginID) {
+		} else if s.router.HasWaitingSessionForPlugin(msg, pluginID) {
 			if err := s.router.HandleMessageForPlugin(msg, pluginID); err != nil {
 				log.Printf("[SYSTEM] Web chat plugin dispatch failed: %v", err)
 				s.sendWebChatPluginDispatchError(adp, msg, pluginID, err)

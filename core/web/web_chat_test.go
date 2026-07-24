@@ -575,7 +575,7 @@ func TestWebChatPrivateMessagesUseNormalRouter(t *testing.T) {
 	cookie, csrf := registerWebChatTestUser(t, server, mailer)
 	userID := webChatTestUserID(t, server, cookie)
 	registerWebChatRouterPluginWithTrigger(t, server, "p1", "^hello$", nil)
-	ch := server.router.GetSessionManager().CreateSession("builtin", userID, "", 30)
+	ch := server.router.GetSessionManager().CreateSession(session.Scope{Platform: config.WebChatPlatform, AdapterID: server.runningWebAdapterID(), UserID: userID, Namespace: "builtin"}, 30)
 
 	rr := httptest.NewRecorder()
 	req := jsonRequest("/api/open/web-chat/messages", map[string]string{"type": "text", "content": "myid"}, csrf)
@@ -773,7 +773,7 @@ func TestWebChatDoesNotSuggestWhenCurrentPluginHasWaitingSession(t *testing.T) {
 	userID := webChatTestUserID(t, server, cookie)
 	registerWebChatRouterPluginWithTrigger(t, server, "p1", "^current$", nil)
 	registerWebChatRouterPluginWithTrigger(t, server, "p2", "^other$", nil)
-	ch := server.router.GetSessionManager().CreateSession("p1", userID, webChatPluginGroupID("p1"), 30)
+	ch := server.router.GetSessionManager().CreateSession(session.Scope{Platform: config.WebChatPlatform, AdapterID: server.runningWebAdapterID(), UserID: userID, GroupID: webChatPluginGroupID("p1"), Namespace: "p1"}, 30)
 
 	rr := httptest.NewRecorder()
 	req := jsonRequest("/api/open/web-chat/messages", map[string]string{"plugin_id": "p1", "type": "text", "content": "other"}, csrf)
@@ -800,8 +800,8 @@ func TestWebChatPluginWaitingSessionsAreIsolatedByGroupID(t *testing.T) {
 	userID := webChatTestUserID(t, server, cookie)
 	registerWebChatRouterPluginWithTrigger(t, server, "p1", "^p1$", nil)
 	registerWebChatRouterPluginWithTrigger(t, server, "p2", "^p2$", nil)
-	ch1 := server.router.GetSessionManager().CreateSession("p1", userID, webChatPluginGroupID("p1"), 30)
-	ch2 := server.router.GetSessionManager().CreateSession("p2", userID, webChatPluginGroupID("p2"), 30)
+	ch1 := server.router.GetSessionManager().CreateSession(session.Scope{Platform: config.WebChatPlatform, AdapterID: server.runningWebAdapterID(), UserID: userID, GroupID: webChatPluginGroupID("p1"), Namespace: "p1"}, 30)
+	ch2 := server.router.GetSessionManager().CreateSession(session.Scope{Platform: config.WebChatPlatform, AdapterID: server.runningWebAdapterID(), UserID: userID, GroupID: webChatPluginGroupID("p2"), Namespace: "p2"}, 30)
 
 	rr := httptest.NewRecorder()
 	req := jsonRequest("/api/open/web-chat/messages", map[string]string{"plugin_id": "p2", "type": "text", "content": "reply p2"}, csrf)

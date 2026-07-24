@@ -12,7 +12,7 @@ import (
 )
 
 func TestAlipayBillMonitorConfirmsMatchingPendingOrder(t *testing.T) {
-	db, server := newAlipayBillMonitorTestDatabase(t, `{"alipay_data_bill_accountlog_query_response":{"code":"10000","detail_list":[{"trade_no":"ABILL_MONITOR","trans_amount":"1.00","balance_type":"收入","memo":"ORDER_PLACEHOLDER","summary":"转账","trans_dt":"TIME_PLACEHOLDER"}]}}`)
+	db, server := newAlipayBillMonitorTestDatabase(t, `{"code":"10000","detail_list":[{"trade_no":"ABILL_MONITOR","trans_amount":"1.00","balance_type":"收入","memo":"ORDER_PLACEHOLDER","summary":"转账","trans_dt":"TIME_PLACEHOLDER"}]}`)
 	order := createAlipayBillMonitorOrder(t, db, 100, time.Now().Add(time.Minute))
 	server.response = strings.ReplaceAll(server.response, "ORDER_PLACEHOLDER", order.OrderNo)
 	server.response = strings.ReplaceAll(server.response, "TIME_PLACEHOLDER", time.Now().Format("2006-01-02 15:04:05"))
@@ -34,7 +34,7 @@ func TestAlipayBillMonitorConfirmsMatchingPendingOrder(t *testing.T) {
 }
 
 func TestAlipayBillMonitorRejectsMismatchAndAmbiguousAmount(t *testing.T) {
-	db, server := newAlipayBillMonitorTestDatabase(t, `{"alipay_data_bill_accountlog_query_response":{"code":"10000","detail_list":[{"trade_no":"ABILL_BAD_AMOUNT","trans_amount":"2.00","balance_type":"收入","memo":"ORDER_PLACEHOLDER","summary":"转账","trans_dt":"TIME_PLACEHOLDER"},{"trade_no":"ABILL_AMBIGUOUS","trans_amount":"1.00","balance_type":"收入","memo":"OTHER","summary":"转账","trans_dt":"TIME_PLACEHOLDER"}]}}`)
+	db, server := newAlipayBillMonitorTestDatabase(t, `{"code":"10000","detail_list":[{"trade_no":"ABILL_BAD_AMOUNT","trans_amount":"2.00","balance_type":"收入","memo":"ORDER_PLACEHOLDER","summary":"转账","trans_dt":"TIME_PLACEHOLDER"},{"trade_no":"ABILL_AMBIGUOUS","trans_amount":"1.00","balance_type":"收入","memo":"OTHER","summary":"转账","trans_dt":"TIME_PLACEHOLDER"}]}`)
 	first := createAlipayBillMonitorOrder(t, db, 100, time.Now().Add(time.Minute))
 	second := createAlipayBillMonitorOrder(t, db, 100, time.Now().Add(time.Minute))
 	server.response = strings.ReplaceAll(server.response, "ORDER_PLACEHOLDER", first.OrderNo)
@@ -55,7 +55,7 @@ func TestAlipayBillMonitorRejectsMismatchAndAmbiguousAmount(t *testing.T) {
 }
 
 func TestAlipayBillMonitorExpiresOldOrder(t *testing.T) {
-	db, _ := newAlipayBillMonitorTestDatabase(t, `{"alipay_data_bill_accountlog_query_response":{"code":"10000","detail_list":[]}}`)
+	db, _ := newAlipayBillMonitorTestDatabase(t, `{"code":"10000","detail_list":[]}`)
 	order := createAlipayBillMonitorOrder(t, db, 100, time.Now().Add(-time.Minute))
 	if err := NewAlipayBillMonitor(db).RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce returned error: %v", err)
@@ -69,13 +69,17 @@ func TestAlipayBillMonitorExpiresOldOrder(t *testing.T) {
 	}
 }
 
-type alipayBillMonitorServer struct{ response string }
+type alipayBillMonitorServer struct {
+	response string
+	signer   string
+}
 
 func newAlipayBillMonitorTestDatabase(t *testing.T, response string) (*config.Database, *alipayBillMonitorServer) {
 	t.Helper()
-	state := &alipayBillMonitorServer{response: response}
+	alipaySettings, responseSigner := testAlipayBillSettingsWithSigner("")
+	state := &alipayBillMonitorServer{response: response, signer: responseSigner}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(state.response))
+		_, _ = w.Write([]byte(signedAlipayBillResponse(t, state.signer, state.response)))
 	}))
 	t.Cleanup(server.Close)
 	db, err := config.NewDatabase(":memory:")
@@ -85,7 +89,8 @@ func newAlipayBillMonitorTestDatabase(t *testing.T, response string) (*config.Da
 	t.Cleanup(func() { _ = db.Close() })
 	settings := config.DefaultPaymentSettings()
 	settings.ThirdPartyEnabled = true
-	settings.AlipayBill = testAlipayBillSettings(server.URL)
+	alipaySettings.GatewayURL = server.URL
+	settings.AlipayBill = alipaySettings
 	settings.Methods = []config.PaymentMethodSetting{{Code: "alipay_transfer", Label: "支付宝转账", Provider: "alipay_bill", Enabled: true}}
 	if err := db.SavePaymentSettings(&settings); err != nil {
 		t.Fatalf("SavePaymentSettings returned error: %v", err)

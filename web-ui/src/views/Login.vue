@@ -99,7 +99,7 @@ const handleLogin = async () => {
 
     try {
       const res = await login(form)
-      authStore.setAuth(res.token, form.username)
+      authStore.setAuth(res.token, form.username, res.csrfToken)
       ElMessage.success('登录成功')
       router.push('/')
     } catch (error) {

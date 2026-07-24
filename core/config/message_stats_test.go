@@ -2,6 +2,7 @@ package config
 
 import (
 	"database/sql"
+	"sync"
 	"testing"
 	"time"
 
@@ -208,7 +209,8 @@ func TestMigrateMessageStatsTableRebuildsLegacySchema(t *testing.T) {
 	if !messageStatsPrimaryKeyIncludesType(sqlDB) {
 		t.Fatal("message_type was not included in primary key")
 	}
-	db := &Database{db: sqlDB}
+	lifecycleMu := &sync.RWMutex{}
+	db := &Database{db: &guardedDB{DB: sqlDB, lifecycleMu: lifecycleMu}}
 	trend, err := db.GetMessageTotalTrend("day", "2026-06-16", "2026-06-16")
 	if err != nil {
 		t.Fatalf("GetMessageTotalTrend returned error: %v", err)

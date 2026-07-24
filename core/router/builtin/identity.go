@@ -158,7 +158,7 @@ func bindUser(ctx *Context) string {
 	}
 	code := strings.TrimSpace(strings.TrimPrefix(ctx.Message.Content, "绑定"))
 	if code == "" {
-		return "请输入绑定码，例如：绑定 123456"
+		return "请输入绑定码，例如：绑定 AbCdEfGhIjKlMnOpQrStUv"
 	}
 	account, source, err := ctx.Database.BindUserByCode(ctx.Message.Platform, ctx.Message.UserID, code)
 	if err != nil {

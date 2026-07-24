@@ -405,15 +405,20 @@ func (s *Server) handlePaymentOrderQuery(w http.ResponseWriter, r *http.Request)
 		if paidAt.IsZero() {
 			paidAt = time.Now()
 		}
-		confirmed, _, confirmErr := db.ConfirmProviderPayment(config.ProviderPaymentConfirmation{OrderNo: order.OrderNo, Provider: order.Provider, Method: method, AmountCents: amount, ProviderOrderNo: queryResult.ProviderOrderNo, Raw: queryResult.Raw, PaidAt: paidAt})
+		confirmation := config.ProviderPaymentConfirmation{OrderNo: order.OrderNo, Provider: order.Provider, Method: method, AmountCents: amount, ProviderOrderNo: queryResult.ProviderOrderNo, Raw: queryResult.Raw, PaidAt: paidAt}
+		var confirmed *config.PaymentOrder
+		var confirmErr error
+		if strings.EqualFold(order.Provider, "alipay_bill") {
+			record := &config.AlipayBillRecord{ProviderOrderNo: queryResult.ProviderOrderNo, AmountCents: amount, Direction: "IN", PaidAt: paidAt, Raw: queryResult.Raw}
+			confirmed, _, confirmErr = db.ConfirmAlipayBillPayment(record, confirmation)
+		} else {
+			confirmed, _, confirmErr = db.ConfirmProviderPayment(confirmation)
+		}
 		if confirmErr != nil {
 			s.jsonError(w, "确认支付失败: "+confirmErr.Error(), http.StatusBadRequest)
 			return
 		}
 		order = confirmed
-		if strings.EqualFold(order.Provider, "alipay_bill") {
-			_, _ = db.MarkAlipayBillRecordMatched(queryResult.ProviderOrderNo, order.OrderNo)
-		}
 		payment.DefaultWaitHub.Resolve(order.OrderNo, payment.PaymentResult{Status: "paid", OrderNo: order.OrderNo, Provider: order.Provider, Method: order.Method, Subject: order.Subject, AmountCents: order.AmountCents, PointsAmount: order.PointsAmount, PayURL: order.PayURL, QRCode: order.QRCode, ProviderOrderNo: order.ProviderOrderNo, Message: "支付成功"})
 	}
 	s.jsonResponse(w, map[string]interface{}{"order": order, "query": queryResult})

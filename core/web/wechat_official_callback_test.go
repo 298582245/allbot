@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	_ "github.com/allbot/allbot/core/adapter/_loader"
 	"github.com/allbot/allbot/core/config"
@@ -42,7 +43,8 @@ func TestWechatOfficialCallbackReturnsNotFoundForMissingAdapter(t *testing.T) {
 func TestWechatOfficialCallbackDelegatesToRunningAdapter(t *testing.T) {
 	server := newWechatOfficialCallbackTestServer(t)
 	adapterID := saveRunningWechatOfficialAdapter(t, server.adapterManager, "callback")
-	query := "timestamp=123&nonce=nonce&echostr=ok&signature=" + testWechatOfficialCallbackSignature("token", "123", "nonce")
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	query := "timestamp=" + timestamp + "&nonce=nonce&echostr=ok&signature=" + testWechatOfficialCallbackSignature("token", timestamp, "nonce")
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/open/adapters/wechat-official/"+adapterID+"/callback?"+query, nil)
 
@@ -56,7 +58,8 @@ func TestWechatOfficialCallbackDelegatesToRunningAdapter(t *testing.T) {
 func TestWechatOfficialCallbackOpenPathBypassesAdminAuth(t *testing.T) {
 	server := newWechatOfficialCallbackTestServer(t)
 	adapterID := saveRunningWechatOfficialAdapter(t, server.adapterManager, "callback")
-	query := "timestamp=123&nonce=nonce&echostr=ok&signature=" + testWechatOfficialCallbackSignature("token", "123", "nonce")
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	query := "timestamp=" + timestamp + "&nonce=nonce&echostr=ok&signature=" + testWechatOfficialCallbackSignature("token", timestamp, "nonce")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/open/adapters/wechat-official/", server.handleWechatOfficialAdapterCallback)
 	handler := server.authMiddleware(mux)
@@ -103,6 +106,7 @@ func saveRunningWechatOfficialAdapter(t *testing.T, manager *config.AdapterManag
 	t.Helper()
 	err := manager.SaveAdapterConfig(0, "wechat_official", "", "", true, map[string]interface{}{
 		"app_id":        "app",
+		"original_id":   "gh_app",
 		"app_secret":    "secret",
 		"token":         "token",
 		"callback_path": callbackPath,

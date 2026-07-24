@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,17 +26,20 @@ type UserInfo = contract.UserInfo
 type GroupInfo = contract.GroupInfo
 
 const (
-	platformName                   = "wechat_official"
-	wechatOfficialDefaultPath      = "callback"
-	wechatOfficialDefaultAPIBase   = "https://api.weixin.qq.com"
-	wechatOfficialDefaultTokenURL  = "https://api.weixin.qq.com/cgi-bin/token"
-	wechatOfficialTokenRefreshLead = 5 * time.Minute
+	platformName                    = "wechat_official"
+	wechatOfficialDefaultPath       = "callback"
+	wechatOfficialDefaultAPIBase    = "https://api.weixin.qq.com"
+	wechatOfficialDefaultTokenURL   = "https://api.weixin.qq.com/cgi-bin/token"
+	wechatOfficialTokenRefreshLead  = 5 * time.Minute
+	wechatOfficialCallbackFreshness = 5 * time.Minute
+	wechatOfficialCallbackBodyLimit = 1 << 20
 )
 
 var wechatOfficialPassiveReplyWait = 2 * time.Second
 
 type WeChatOfficialAdapter struct {
 	appID        string
+	originalID   string
 	appSecret    string
 	token        string
 	callbackPath string
@@ -51,6 +55,10 @@ type WeChatOfficialAdapter struct {
 
 	passiveReplyMu sync.Mutex
 	passiveReplies map[string]chan wechatOfficialPassiveReply
+
+	callbackMu   sync.Mutex
+	callbackSeen map[string]time.Time
+	now          func() time.Time
 
 	stopOnce sync.Once
 	stopped  chan struct{}
@@ -95,7 +103,7 @@ type wechatOfficialPassiveReply struct {
 }
 
 // NewWeChatOfficialAdapter 创建微信公众号适配器。
-func NewWeChatOfficialAdapter(appID, appSecret, token, callbackPath, apiBaseURL, tokenURL string) *WeChatOfficialAdapter {
+func NewWeChatOfficialAdapter(appID, originalID, appSecret, token, callbackPath, apiBaseURL, tokenURL string) *WeChatOfficialAdapter {
 	callbackPath = normalizeCallbackPath(callbackPath)
 	apiBaseURL = strings.TrimSpace(apiBaseURL)
 	if apiBaseURL == "" {
@@ -107,6 +115,7 @@ func NewWeChatOfficialAdapter(appID, appSecret, token, callbackPath, apiBaseURL,
 	}
 	return &WeChatOfficialAdapter{
 		appID:          strings.TrimSpace(appID),
+		originalID:     strings.TrimSpace(originalID),
 		appSecret:      strings.TrimSpace(appSecret),
 		token:          strings.TrimSpace(token),
 		callbackPath:   callbackPath,
@@ -114,6 +123,8 @@ func NewWeChatOfficialAdapter(appID, appSecret, token, callbackPath, apiBaseURL,
 		tokenURL:       tokenURL,
 		httpClient:     &http.Client{Timeout: 15 * time.Second},
 		passiveReplies: make(map[string]chan wechatOfficialPassiveReply),
+		callbackSeen:   make(map[string]time.Time),
+		now:            time.Now,
 		stopped:        make(chan struct{}),
 	}
 }
@@ -275,7 +286,7 @@ func (a *WeChatOfficialAdapter) HandleHTTPCallback(relativePath string, w http.R
 
 func (a *WeChatOfficialAdapter) handleVerifyCallback(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	if !a.verifySignature(query.Get("signature"), query.Get("timestamp"), query.Get("nonce")) {
+	if !a.verifyFreshSignature(query.Get("signature"), query.Get("timestamp"), query.Get("nonce"), "verify") {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -285,13 +296,17 @@ func (a *WeChatOfficialAdapter) handleVerifyCallback(w http.ResponseWriter, r *h
 
 func (a *WeChatOfficialAdapter) handleMessageCallback(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	if !a.verifySignature(query.Get("signature"), query.Get("timestamp"), query.Get("nonce")) {
+	if !a.verifyFreshSignature(query.Get("signature"), query.Get("timestamp"), query.Get("nonce"), "message") {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
-	payload, err := io.ReadAll(r.Body)
+	payload, err := io.ReadAll(io.LimitReader(r.Body, wechatOfficialCallbackBodyLimit+1))
 	if err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+	if len(payload) > wechatOfficialCallbackBodyLimit {
+		http.Error(w, "Request entity too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 	msg, err := a.parseMessageXML(payload)
@@ -300,6 +315,10 @@ func (a *WeChatOfficialAdapter) handleMessageCallback(w http.ResponseWriter, r *
 		return
 	}
 	if msg == nil {
+		writeWeChatOfficialSuccess(w)
+		return
+	}
+	if !a.acceptCallbackMessage(msg) {
 		writeWeChatOfficialSuccess(w)
 		return
 	}
@@ -326,6 +345,60 @@ func (a *WeChatOfficialAdapter) verifySignature(signature, timestamp, nonce stri
 	sum := sha1.Sum([]byte(strings.Join(values, "")))
 	expected := hex.EncodeToString(sum[:])
 	return subtle.ConstantTimeCompare([]byte(expected), []byte(strings.ToLower(signature))) == 1
+}
+
+func (a *WeChatOfficialAdapter) verifyFreshSignature(signature, timestamp, nonce, purpose string) bool {
+	if !a.verifySignature(signature, timestamp, nonce) {
+		return false
+	}
+	unixSeconds, err := strconv.ParseInt(strings.TrimSpace(timestamp), 10, 64)
+	if err != nil {
+		return false
+	}
+	now := a.now()
+	signedAt := time.Unix(unixSeconds, 0)
+	if signedAt.Before(now.Add(-wechatOfficialCallbackFreshness)) || signedAt.After(now.Add(wechatOfficialCallbackFreshness)) {
+		return false
+	}
+	return a.markCallbackSeen("signature:"+purpose+":"+strings.TrimSpace(timestamp)+":"+strings.TrimSpace(nonce), now)
+}
+
+func (a *WeChatOfficialAdapter) acceptCallbackMessage(msg *types.Message) bool {
+	if msg == nil || strings.TrimSpace(msg.ID) == "" || strings.TrimSpace(msg.UserID) == "" || msg.Metadata == nil {
+		return false
+	}
+	if target := strings.TrimSpace(msg.Metadata["wechat_to_user_name"]); a.originalID != "" && target != a.originalID {
+		return false
+	}
+	createTime, err := strconv.ParseInt(strings.TrimSpace(msg.Metadata["wechat_create_time"]), 10, 64)
+	if err != nil {
+		return false
+	}
+	now := a.now()
+	createdAt := time.Unix(createTime, 0)
+	if createdAt.Before(now.Add(-wechatOfficialCallbackFreshness)) || createdAt.After(now.Add(wechatOfficialCallbackFreshness)) {
+		return false
+	}
+	return a.markCallbackSeen("message:"+msg.ID, now)
+}
+
+func (a *WeChatOfficialAdapter) markCallbackSeen(key string, now time.Time) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	a.callbackMu.Lock()
+	defer a.callbackMu.Unlock()
+	for existing, expiresAt := range a.callbackSeen {
+		if !expiresAt.After(now) {
+			delete(a.callbackSeen, existing)
+		}
+	}
+	if expiresAt, ok := a.callbackSeen[key]; ok && expiresAt.After(now) {
+		return false
+	}
+	a.callbackSeen[key] = now.Add(wechatOfficialCallbackFreshness)
+	return true
 }
 
 func (a *WeChatOfficialAdapter) parseMessageXML(payload []byte) (*types.Message, error) {

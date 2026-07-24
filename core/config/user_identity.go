@@ -3,13 +3,27 @@ package config
 import (
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
+	"errors"
 	"fmt"
-	"math/big"
 	"strings"
 	"time"
 )
 
-const bindCodeTTL = 10 * time.Minute
+const (
+	bindCodeTTL         = 10 * time.Minute
+	bindMaxAttempts     = 5
+	bindAttemptWindow   = 10 * time.Minute
+	bindAttemptLockTime = 15 * time.Minute
+)
+
+var ErrUserBindLocked = errors.New("绑定尝试过于频繁，请稍后再试")
+
+type bindAttempt struct {
+	Count       int
+	WindowStart time.Time
+	LockedUntil time.Time
+}
 
 func (d *Database) GetUserAccount(platform, userID string) (*UserAccount, error) {
 	platform, userID = normalizeUserKey(platform, userID)
@@ -126,7 +140,7 @@ func (d *Database) CreateUserBindCode(platform, userID string) (*UserBindCode, e
 	if err != sql.ErrNoRows {
 		return nil, err
 	}
-	code, err := randomDigits(6)
+	code, err := randomBindToken()
 	if err != nil {
 		return nil, err
 	}
@@ -144,21 +158,21 @@ func (d *Database) BindUserByCode(platform, userID, code string) (*UserAccount, 
 	if platform == "" || userID == "" || code == "" {
 		return nil, nil, fmt.Errorf("平台、用户 ID 和绑定码不能为空")
 	}
+	attemptKey := platform + "\x00" + userID
+	if err := d.checkBindAttempt(attemptKey); err != nil {
+		return nil, nil, err
+	}
 	tx, err := d.db.Begin()
 	if err != nil {
 		return nil, nil, err
 	}
 	defer tx.Rollback()
 
-	var source UserAccount
-	var expiresAt time.Time
-	err = tx.QueryRow(`SELECT 0, platform, user_id, union_id, 0, created_at, expires_at FROM user_bind_codes WHERE code = ? AND expires_at > CURRENT_TIMESTAMP`, code).Scan(&source.ID, &source.Platform, &source.UserID, &source.UnionID, &source.Points, &source.CreatedAt, &expiresAt)
-	if err == sql.ErrNoRows {
-		return nil, nil, fmt.Errorf("绑定码不存在或已过期")
-	}
+	sourceAccount, err := d.validateBindCodeTx(tx, attemptKey, code)
 	if err != nil {
 		return nil, nil, err
 	}
+	source := *sourceAccount
 	if source.Platform == platform {
 		return nil, nil, fmt.Errorf("同平台账号不能互相绑定")
 	}
@@ -192,11 +206,21 @@ func (d *Database) BindUserByCode(platform, userID, code string) (*UserAccount, 
 		if err != nil {
 			return nil, nil, err
 		}
+		var sourcePoints, targetPoints int64
+		if err = tx.QueryRow(`SELECT COALESCE(points, 0) FROM user_points WHERE union_id = ?`, source.UnionID).Scan(&sourcePoints); err != nil && err != sql.ErrNoRows {
+			return nil, nil, err
+		}
+		if err = tx.QueryRow(`SELECT COALESCE(points, 0) FROM user_points WHERE union_id = ?`, target.UnionID).Scan(&targetPoints); err != nil && err != sql.ErrNoRows {
+			return nil, nil, err
+		}
+		mergedPoints, err := checkedAddInt64(sourcePoints, targetPoints)
+		if err != nil {
+			return nil, nil, fmt.Errorf("积分余额溢出")
+		}
 		if _, err = tx.Exec(`
-			INSERT INTO user_points (union_id, points, created_at, updated_at)
-			VALUES (?, COALESCE((SELECT points FROM user_points WHERE union_id = ?), 0) + COALESCE((SELECT points FROM user_points WHERE union_id = ?), 0), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-			ON CONFLICT(union_id) DO UPDATE SET points = user_points.points + COALESCE((SELECT points FROM user_points WHERE union_id = ?), 0), updated_at = CURRENT_TIMESTAMP
-		`, source.UnionID, source.UnionID, target.UnionID, target.UnionID); err != nil {
+			INSERT INTO user_points (union_id, points, created_at, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+			ON CONFLICT(union_id) DO UPDATE SET points = excluded.points, updated_at = CURRENT_TIMESTAMP
+		`, source.UnionID, mergedPoints); err != nil {
 			return nil, nil, err
 		}
 		if _, err = tx.Exec(`DELETE FROM user_points WHERE union_id = ?`, target.UnionID); err != nil {
@@ -210,21 +234,22 @@ func (d *Database) BindUserByCode(platform, userID, code string) (*UserAccount, 
 		}
 		target.UnionID = source.UnionID
 	}
-	if _, err = tx.Exec(`DELETE FROM user_bind_codes WHERE code = ?`, code); err != nil {
+	if err = consumeUserBindCodeTx(tx, code); err != nil {
 		return nil, nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, nil, err
 	}
+	d.clearBindAttempts(attemptKey)
 	boundTarget, err := d.GetUserAccount(platform, userID)
 	if err != nil {
 		return nil, nil, err
 	}
-	sourceAccount, err := d.GetUserAccount(source.Platform, source.UserID)
+	boundSource, err := d.GetUserAccount(source.Platform, source.UserID)
 	if err != nil {
 		return nil, nil, err
 	}
-	return boundTarget, sourceAccount, nil
+	return boundTarget, boundSource, nil
 }
 
 func (d *Database) DeleteExpiredUserBindCodes() error {
@@ -291,10 +316,13 @@ func (d *Database) changeUserPointsLocked(unionID string, delta int64) (int64, e
 	if err = tx.QueryRow(`SELECT points FROM user_points WHERE union_id = ?`, unionID).Scan(&current); err != nil {
 		return 0, err
 	}
-	if delta < 0 && current < -delta {
+	remaining, err := checkedAddInt64(current, delta)
+	if err != nil {
+		return current, fmt.Errorf("积分余额溢出")
+	}
+	if remaining < 0 {
 		return current, fmt.Errorf("积分不足，当前 %d，需要 %d", current, -delta)
 	}
-	remaining := current + delta
 	if _, err = tx.Exec(`UPDATE user_points SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE union_id = ?`, remaining, unionID); err != nil {
 		return current, err
 	}
@@ -338,14 +366,83 @@ func sanitizeIdentityPart(value string) string {
 	return builder.String()
 }
 
-func randomDigits(length int) (string, error) {
-	var builder strings.Builder
-	for builder.Len() < length {
-		value, err := rand.Int(rand.Reader, big.NewInt(10))
-		if err != nil {
-			return "", err
-		}
-		builder.WriteByte(byte('0' + value.Int64()))
+func randomBindToken() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
 	}
-	return builder.String(), nil
+	return base64.RawURLEncoding.EncodeToString(value), nil
+}
+
+func (d *Database) validateBindCodeTx(tx *sql.Tx, attemptKey, code string) (*UserAccount, error) {
+	if err := d.checkBindAttempt(attemptKey); err != nil {
+		return nil, err
+	}
+	var source UserAccount
+	var expiresAt time.Time
+	err := tx.QueryRow(`SELECT 0, platform, user_id, union_id, 0, created_at, expires_at FROM user_bind_codes WHERE code = ? AND expires_at > CURRENT_TIMESTAMP`, strings.TrimSpace(code)).Scan(&source.ID, &source.Platform, &source.UserID, &source.UnionID, &source.Points, &source.CreatedAt, &expiresAt)
+	if err == sql.ErrNoRows {
+		d.recordBindFailure(attemptKey)
+		return nil, fmt.Errorf("绑定码不存在或已过期")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &source, nil
+}
+
+func consumeUserBindCodeTx(tx *sql.Tx, code string) error {
+	result, err := tx.Exec(`DELETE FROM user_bind_codes WHERE code = ? AND expires_at > CURRENT_TIMESTAMP`, strings.TrimSpace(code))
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return fmt.Errorf("绑定码不存在、已过期或已使用")
+	}
+	return nil
+}
+
+func (d *Database) checkBindAttempt(key string) error {
+	now := time.Now()
+	d.bindRateMu.Lock()
+	defer d.bindRateMu.Unlock()
+	if d.bindAttempts == nil {
+		d.bindAttempts = make(map[string]bindAttempt)
+	}
+	attempt := d.bindAttempts[key]
+	if attempt.LockedUntil.After(now) {
+		return ErrUserBindLocked
+	}
+	if !attempt.WindowStart.IsZero() && now.Sub(attempt.WindowStart) >= bindAttemptWindow {
+		delete(d.bindAttempts, key)
+	}
+	return nil
+}
+
+func (d *Database) recordBindFailure(key string) {
+	now := time.Now()
+	d.bindRateMu.Lock()
+	defer d.bindRateMu.Unlock()
+	if d.bindAttempts == nil {
+		d.bindAttempts = make(map[string]bindAttempt)
+	}
+	attempt := d.bindAttempts[key]
+	if attempt.WindowStart.IsZero() || now.Sub(attempt.WindowStart) >= bindAttemptWindow {
+		attempt = bindAttempt{WindowStart: now}
+	}
+	attempt.Count++
+	if attempt.Count >= bindMaxAttempts {
+		attempt.LockedUntil = now.Add(bindAttemptLockTime)
+	}
+	d.bindAttempts[key] = attempt
+}
+
+func (d *Database) clearBindAttempts(key string) {
+	d.bindRateMu.Lock()
+	delete(d.bindAttempts, key)
+	d.bindRateMu.Unlock()
 }

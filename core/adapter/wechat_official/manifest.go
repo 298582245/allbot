@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	AppID        string `json:"app_id"`
+	OriginalID   string `json:"original_id"`
 	AppSecret    string `json:"app_secret"`
 	Token        string `json:"token"`
 	CallbackPath string `json:"callback_path,omitempty"`
@@ -25,6 +26,7 @@ func init() {
 		Description: "微信公众号明文模式回调与客服消息适配器",
 		ConfigSchema: []registry.ConfigField{
 			{Key: "app_id", Label: "AppID", Type: "text", Required: true, Help: "微信公众号 AppID"},
+			{Key: "original_id", Label: "原始 ID", Type: "text", Required: false, Help: "建议填写公众号设置中的原始 ID；配置后将强制校验回调目标"},
 			{Key: "app_secret", Label: "AppSecret", Type: "password", Required: true, Help: "微信公众号 AppSecret"},
 			{Key: "token", Label: "服务器 Token", Type: "password", Required: true, Help: "微信公众号后台服务器配置中的 Token"},
 			{Key: "callback_path", Label: "回调路径", Type: "text", Required: false, Placeholder: wechatOfficialDefaultPath, Help: "回调 URL 最后一段路径，默认 callback"},
@@ -52,6 +54,7 @@ func parseConfigForRegistry(raw string) (interface{}, error) {
 		return nil, err
 	}
 	config.AppID = strings.TrimSpace(config.AppID)
+	config.OriginalID = strings.TrimSpace(config.OriginalID)
 	config.AppSecret = strings.TrimSpace(config.AppSecret)
 	config.Token = strings.TrimSpace(config.Token)
 	config.CallbackPath = normalizeCallbackPath(config.CallbackPath)
@@ -76,6 +79,7 @@ func newAdapterFromRegistry(parsed interface{}) (contract.Adapter, error) {
 	}
 	return NewWeChatOfficialAdapter(
 		config.AppID,
+		config.OriginalID,
 		config.AppSecret,
 		config.Token,
 		config.CallbackPath,
