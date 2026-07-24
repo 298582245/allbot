@@ -87,6 +87,18 @@ jobs:
           cd dist
           sha256sum allbot-${TAG}-* > "checksums-${TAG}.txt"
 
+      - name: Sign checksums
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          ALLBOT_UPDATE_ED25519_PRIVATE_KEY: ${{ secrets.ALLBOT_UPDATE_ED25519_PRIVATE_KEY }}
+        run: |
+          if [ -z "${ALLBOT_UPDATE_ED25519_PRIVATE_KEY}" ]; then
+            echo "缺少 ALLBOT_UPDATE_ED25519_PRIVATE_KEY 私密变量，无法为更新包签名" >&2
+            exit 1
+          fi
+          go run ./tools/updatesign sign -in "dist/checksums-${TAG}.txt" -out "dist/checksums-${TAG}.txt.sig"
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -98,3 +110,4 @@ jobs:
             dist/allbot-${{ steps.meta.outputs.tag }}-linux-amd64
             dist/allbot-${{ steps.meta.outputs.tag }}-linux-arm64
             dist/checksums-${{ steps.meta.outputs.tag }}.txt
+            dist/checksums-${{ steps.meta.outputs.tag }}.txt.sig
