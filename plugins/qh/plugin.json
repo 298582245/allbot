@@ -38,7 +38,7 @@
       "key": "task_script",
       "label": "任务脚本路径",
       "type": "text",
-      "default": "scripts/task.js",
+      "default": "scripts/qh.js",
       "description": "插件目录下脚本的相对路径"
     },
     {
