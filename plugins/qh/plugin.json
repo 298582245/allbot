@@ -11,7 +11,7 @@
     "wechat"],
   "trigger": "^(<@!?\\d+>\\s*)?茄皇",
   "enabled": true,
-  "priority": 0,
+  "priority": 10,
   "user_config_schema": [
     {
       "key": "auth_price_per_month",
