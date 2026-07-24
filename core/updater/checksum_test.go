@@ -76,10 +76,16 @@ func TestVerifyUpdateSignatureRejectsInvalidFormatAndSignature(t *testing.T) {
 }
 
 func TestTrustedUpdatePublicKeyFailsClosed(t *testing.T) {
+	// 环境变量为空时回退到内嵌官方公钥，普通用户无需配置即可验签。
 	t.Setenv(updatePublicKeyEnv, "")
-	if _, err := trustedUpdatePublicKey(); err == nil {
-		t.Fatal("expected missing public key to fail")
+	key, err := trustedUpdatePublicKey()
+	if err != nil {
+		t.Fatalf("空环境变量应回退到内嵌公钥，却失败: %v", err)
 	}
+	if len(key) != ed25519.PublicKeySize {
+		t.Fatalf("内嵌公钥长度 = %d，期望 %d", len(key), ed25519.PublicKeySize)
+	}
+	// 显式配置了非法公钥时仍必须失败关闭，不得回退。
 	t.Setenv(updatePublicKeyEnv, base64.StdEncoding.EncodeToString([]byte("short")))
 	if _, err := trustedUpdatePublicKey(); err == nil {
 		t.Fatal("expected invalid public key to fail")

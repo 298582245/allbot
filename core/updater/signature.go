@@ -14,6 +14,11 @@ import (
 
 const updatePublicKeyEnv = "ALLBOT_UPDATE_ED25519_PUBLIC_KEY"
 
+// defaultUpdatePublicKey 为官方发布的内嵌更新签名公钥（base64），
+// 使普通用户无需任何环境变量即可完成升级验签。公钥属于公开信息，
+// 内嵌无安全风险；自建者可通过 ALLBOT_UPDATE_ED25519_PUBLIC_KEY 覆盖为自己的公钥。
+const defaultUpdatePublicKey = "6jGa1YFHNcF6+DVNaos9FmBOBr15xQcr6ZCTIev6QuM="
+
 func SelectSignatureAsset(assets []ReleaseAsset, checksumAsset ReleaseAsset) (ReleaseAsset, bool) {
 	expected := strings.TrimSpace(checksumAsset.Name) + ".sig"
 	if expected == ".sig" {
@@ -28,7 +33,11 @@ func SelectSignatureAsset(assets []ReleaseAsset, checksumAsset ReleaseAsset) (Re
 }
 
 func trustedUpdatePublicKey() (ed25519.PublicKey, error) {
+	// 优先使用环境变量覆盖（供自建者使用自己的密钥），为空时回退到内嵌官方公钥。
 	encoded := strings.TrimSpace(os.Getenv(updatePublicKeyEnv))
+	if encoded == "" {
+		encoded = strings.TrimSpace(defaultUpdatePublicKey)
+	}
 	if encoded == "" {
 		return nil, fmt.Errorf("未配置独立更新签名公钥 %s", updatePublicKeyEnv)
 	}
