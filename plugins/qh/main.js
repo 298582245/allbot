@@ -206,7 +206,7 @@ createAccountQLPlugin({
   ql: {
     runtime: 'nodejs',
     runtimeConfig: 'script_runtime',
-    script: 'scripts/task.js',
+    script: 'scripts/qh.js',
     scriptConfig: 'task_script',
     timeoutConfig: 'run_wait_timeout',
     waitScheduled: true,
@@ -215,6 +215,6 @@ createAccountQLPlugin({
   },
   schedules: {
     run: { taskKey: 'qh-default-run', name: '茄皇自动运行', cronConfig: 'cron', cron: '0 6 * * *', content: '茄皇一键运行' },
-    ckCheck: { taskKey: 'qh-ck-check', name: '茄皇 CK 检测', cronConfig: 'ck_check_cron', cron: '25 9 * * *', content: '茄皇CK检测' }
+    //ckCheck: { taskKey: 'qh-ck-check', name: '茄皇 CK 检测', cronConfig: 'ck_check_cron', cron: '25 9 * * *', content: '茄皇CK检测' }
   }
 });
