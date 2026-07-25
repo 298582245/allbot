@@ -94,6 +94,8 @@ func TestHandleSystemUpdateFailsClosedWhenSignatureOrTrustRootMissing(t *testing
 		t.Fatalf("missing signature upgrade = %v message = %q", response.UpgradeSupported, response.UpgradeMessage)
 	}
 
+	// 显式配置非法公钥时，即使资产齐全也必须因信任根不可用而失败关闭。
+	t.Setenv("ALLBOT_UPDATE_ED25519_PUBLIC_KEY", "not-a-valid-key")
 	server.SetReleaseClient(fakeReleaseClient{release: &updater.ReleaseInfo{
 		Version: "v1.0.1",
 		Name:    "v1.0.1",
