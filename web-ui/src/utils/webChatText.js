@@ -1,4 +1,4 @@
-const webURLPattern = /https?:\/\/[\w\-]+(\.[\w\-]+)+[/#?]?.*?(?=[\s<>"']|$)/g
+const webURLPattern = /(?:https?:\/\/[\w-]+(?:\.[\w-]+)+|(?<![\w@.-])[\w-]+(?:\.[\w-]+)*\.(?:com\.cn|net\.cn|org\.cn|gov\.cn|edu\.cn|com|cn|net|org|gov|edu|io|ai|app|dev|xyz|top|vip|club|info|biz|me|cc|tv|co|site|online|shop|cloud|tech))(?::\d{1,5})?(?:[/#?][^\s<>"'，。！？；：、（）【】《》]*)?/gi
 
 export function formatTextLinks(value) {
   return linkifyText(String(value || ''), escapeHTML)
@@ -147,5 +147,6 @@ function matchURLAt(source, index) {
 }
 
 function createLink(href, text) {
-  return `<a href="${escapeAttribute(href)}" target="_blank" rel="noopener noreferrer">${escapeHTML(text)}</a>`
+  const target = /^https?:\/\//i.test(href) ? href : `https://${href}`
+  return `<a href="${escapeAttribute(target)}" target="_blank" rel="noopener noreferrer">${escapeHTML(text)}</a>`
 }

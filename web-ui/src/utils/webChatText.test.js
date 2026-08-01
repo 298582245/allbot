@@ -11,12 +11,31 @@ test('formatTextLinks converts every complete URL', () => {
   assert.equal(actual, `入口 <a href="https://example.com/path?a=1&amp;b=2" target="_blank" rel="noopener noreferrer">https://example.com/path?a=1&amp;b=2</a>\n备用 <a href="http://sub.example.org/#section" target="_blank" rel="noopener noreferrer">http://sub.example.org/#section</a>`)
 })
 
-test('formatTextLinks stops only at configured delimiters', () => {
-  const actual = formatTextLinks(`https://example.com/a,b。c <https://second.example.com/q> "https://third.example.com"`)
+test('formatTextLinks stops at configured delimiters', () => {
+  const actual = formatTextLinks(`https://example.com/a,b。后续 <https://second.example.com/q> "https://third.example.com"`)
 
-  assert.match(actual, /href="https:\/\/example\.com\/a,b。c"/)
+  assert.match(actual, /href="https:\/\/example\.com\/a,b"/)
+  assert.match(actual, /<\/a>。后续/)
   assert.match(actual, /&lt;<a href="https:\/\/second\.example\.com\/q"[^>]*>https:\/\/second\.example\.com\/q<\/a>&gt;/)
   assert.match(actual, /&quot;<a href="https:\/\/third\.example\.com"[^>]*>https:\/\/third\.example\.com<\/a>&quot;/)
+})
+
+test('formatTextLinks stops before Chinese punctuation after URL', () => {
+  const actual = formatTextLinks('中转余额1＄(福利)，使用地址：https://i.wqwlkj.cn/，有问题联系qq298582245')
+
+  assert.equal(actual, '中转余额1＄(福利)，使用地址：<a href="https://i.wqwlkj.cn/" target="_blank" rel="noopener noreferrer">https://i.wqwlkj.cn/</a>，有问题联系qq298582245')
+})
+
+test('formatTextLinks stops HTTP URL at a recognized domain suffix', () => {
+  const actual = formatTextLinks('https://i.wqwlkj.cn有问题联系qq298582245')
+
+  assert.equal(actual, '<a href="https://i.wqwlkj.cn" target="_blank" rel="noopener noreferrer">https://i.wqwlkj.cn</a>有问题联系qq298582245')
+})
+
+test('formatTextLinks recognizes bare domains with common suffixes', () => {
+  const actual = formatTextLinks('入口i.wqwlkj.cn，备用 example.com/path?a=1，邮箱 user@example.com')
+
+  assert.equal(actual, '入口<a href="https://i.wqwlkj.cn" target="_blank" rel="noopener noreferrer">i.wqwlkj.cn</a>，备用 <a href="https://example.com/path?a=1" target="_blank" rel="noopener noreferrer">example.com/path?a=1</a>，邮箱 user@example.com')
 })
 
 test('formatTextLinks escapes non-link HTML', () => {
