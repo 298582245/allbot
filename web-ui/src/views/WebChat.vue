@@ -256,19 +256,19 @@
                       </div>
                       <el-button size="small" type="primary" @click.stop="switchToPlugin(part.action?.plugin_id || part.plugin.id)">{{ part.action?.label || '切换到此插件' }}</el-button>
                     </div>
-                    <p v-else>{{ part.text || part.markdown || part.url }}</p>
+                    <p v-else v-html="formatTextLinks(part.text || part.markdown || part.url)"></p>
                   </template>
                 </template>
-                <p v-else>{{ msg.content }}</p>
+                <p v-else v-html="formatTextLinks(msg.content)"></p>
               </div>
               <div v-else-if="msg.message_type === 'buttons'" class="button-message">
-                <p v-if="msg.content">{{ msg.content }}</p>
+                <p v-if="msg.content" v-html="formatTextLinks(msg.content)"></p>
                 <div v-for="(row, rowIndex) in parseButtons(msg.rich_json)" :key="rowIndex" class="button-row">
                   <el-button v-for="button in row" :key="button.value || button.text" size="small" @click="sendQuick(button.value || button.text)">{{ button.text }}</el-button>
                 </div>
-                <p v-if="!msg.content && parseButtons(msg.rich_json).length === 0">{{ msg.content || msg.rich_json }}</p>
+                <p v-if="!msg.content && parseButtons(msg.rich_json).length === 0" v-html="formatTextLinks(msg.content || msg.rich_json)"></p>
               </div>
-              <p v-else>{{ msg.content || msg.image_url }}</p>
+              <p v-else v-html="formatTextLinks(msg.content || msg.image_url)"></p>
             </div>
           </article>
         </div>
@@ -333,6 +333,7 @@ import {
   sendWebChatMessage,
   sendWebChatPlatformCode
 } from '@/api'
+import { escapeAttribute, escapeHTML, formatMarkdownInline, formatTextLinks } from '@/utils/webChatText'
 
 const privateSessionId = '__private__'
 const privateQuickActions = [
@@ -1161,48 +1162,6 @@ function renderMarkdown(value) {
   return html.join('')
 }
 
-function formatMarkdownInline(value) {
-  return formatMarkdownLinks(escapeHTML(value))
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-}
-
-function formatMarkdownLinks(value) {
-  return value.replace(/\[([^\]]+)\]\(([^\s)]+)\)/g, (match, text, href) => {
-    const decodedHref = decodeHTML(href)
-    if (!safeLinkURL(decodedHref)) return match
-    return `<a href="${escapeAttribute(decodedHref)}" target="_blank" rel="noopener noreferrer">${text}</a>`
-  })
-}
-
-function safeLinkURL(value) {
-  const url = String(value || '').trim().toLowerCase()
-  return url.startsWith('http://') || url.startsWith('https://') || url.startsWith('/api/open/images/')
-}
-
-function escapeHTML(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-function escapeAttribute(value) {
-  return escapeHTML(value).replace(/`/g, '&#96;')
-}
-
-function decodeHTML(value) {
-  return String(value || '')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-}
-
 function safeImageURL(value) {
   const url = (value || '').trim()
   return url.startsWith('http://') || url.startsWith('https://') || url.startsWith('/api/open/images/')
@@ -1284,7 +1243,8 @@ function scrollMessageListToBottom() {
 .markdown-block :deep(h2) { font-size: 20px; }
 .markdown-block :deep(h3) { font-size: 17px; }
 .markdown-block :deep(ul) { padding-left: 20px; }
-.markdown-block :deep(a) { color: #2563eb; text-decoration: underline; word-break: break-all; }
+.bubble :deep(a) { color: #2563eb; text-decoration: underline; word-break: break-all; }
+.message.in .bubble :deep(a) { color: #fff; }
 .markdown-block :deep(code) { padding: 2px 5px; border-radius: 5px; background: rgba(15,23,42,.12); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .markdown-block :deep(.markdown-code) { position: relative; margin: 0 0 8px; padding: 36px 12px 12px; overflow-x: auto; border-radius: 10px; background: rgba(15,23,42,.88); color: #e5e7eb; white-space: pre; }
 .markdown-block :deep(.markdown-code code) { padding: 0; background: transparent; color: inherit; }
