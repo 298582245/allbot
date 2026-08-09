@@ -35,6 +35,26 @@ func TestHandlePluginsSortsPinnedBeforeUnpinned(t *testing.T) {
 	})
 }
 
+func TestHandlePluginsIgnoresInternalImportDirectory(t *testing.T) {
+	withTempWorkdir(t, func() {
+		server := testServer(t)
+		writePinnedTestPluginConfig(t, "visible", false)
+		if err := os.MkdirAll(filepath.Join("plugins", ".import-staging", "import-old", "payload"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		recorder := httptest.NewRecorder()
+		server.handlePlugins(recorder, httptest.NewRequest(http.MethodGet, "/api/plugins", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+		var plugins []map[string]interface{}
+		decodeUnifiedResponseData(t, recorder, &plugins)
+		if len(plugins) != 1 || plugins[0]["id"] != "visible" {
+			t.Fatalf("internal directory should not appear in plugin list: %#v", plugins)
+		}
+	})
+}
+
 func TestHandlePluginActionPinsAndUnpins(t *testing.T) {
 	withTempWorkdir(t, func() {
 		server := testServer(t)

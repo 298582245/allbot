@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/allbot/allbot/core/archiveutil"
+	plugin "github.com/allbot/allbot/core/plugin"
 )
 
 const (
@@ -62,7 +63,12 @@ func (s *Server) handlePluginImport(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, "创建导入暂存目录失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer os.RemoveAll(staging)
+	stagingRoot := filepath.Dir(staging)
+	defer func() {
+		_ = os.RemoveAll(staging)
+		// 没有并发导入任务时一并移除内部暂存父目录，避免长期留下空目录。
+		_ = os.Remove(stagingRoot)
+	}()
 	payload := filepath.Join(staging, "payload")
 	if err := os.MkdirAll(payload, 0755); err != nil {
 		s.jsonError(w, "创建导入目录失败: "+err.Error(), http.StatusInternalServerError)
@@ -89,12 +95,12 @@ func (s *Server) handlePluginImport(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	derivedName := filepath.Base(filepath.ToSlash(sourceName))
+	if sourceType == "archive" {
+		derivedName = strings.TrimSuffix(derivedName, filepath.Ext(derivedName))
+	}
 	pluginID := sanitizePluginID(r.FormValue("plugin_id"))
 	if pluginID == "" {
-		derivedName := filepath.Base(filepath.ToSlash(sourceName))
-		if sourceType == "archive" {
-			derivedName = strings.TrimSuffix(derivedName, filepath.Ext(derivedName))
-		}
 		pluginID = sanitizePluginID(derivedName)
 	}
 	if pluginID == "" {
@@ -111,12 +117,20 @@ func (s *Server) handlePluginImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var config struct {
+		ID      string `json:"id"`
 		Runtime string `json:"runtime"`
 		Entry   string `json:"entry"`
 	}
 	if err := json.Unmarshal(configData, &config); err != nil {
 		s.jsonError(w, "plugin.json 无法解析: "+err.Error(), http.StatusUnprocessableEntity)
 		return
+	}
+	if manifestID := strings.TrimSpace(config.ID); manifestID != "" {
+		normalizedManifestID := sanitizePluginID(manifestID)
+		if normalizedManifestID == "" || normalizedManifestID != pluginID {
+			s.jsonError(w, fmt.Sprintf("plugin.json 中的 id %q 与导入插件 ID %q 不一致", manifestID, pluginID), http.StatusUnprocessableEntity)
+			return
+		}
 	}
 	runtime := strings.ToLower(strings.TrimSpace(config.Runtime))
 	if runtime == "node" {
@@ -149,13 +163,13 @@ func (s *Server) handlePluginImport(w http.ResponseWriter, r *http.Request) {
 	lock.Lock()
 	defer lock.Unlock()
 	finalPath := s.pluginManager.PluginPath(pluginID)
-	if _, err := os.Lstat(finalPath); err == nil || s.pluginManager.GetPlugin(pluginID) != nil || s.router.GetPlugin(pluginID) != nil {
-		if err != nil && !os.IsNotExist(err) { /* 内存状态冲突仍按 409 处理 */
-		}
-		s.jsonError(w, "插件 ID 已存在", http.StatusConflict)
+	identityExists, err := importedPluginIdentityExists(pluginDir, pluginID)
+	if err != nil {
+		s.jsonError(w, "检查插件唯一性失败: "+err.Error(), http.StatusInternalServerError)
 		return
-	} else if !os.IsNotExist(err) {
-		s.jsonError(w, "检查插件目录失败: "+err.Error(), http.StatusInternalServerError)
+	}
+	if identityExists || s.pluginManager.GetPlugin(pluginID) != nil || s.router.GetPlugin(pluginID) != nil {
+		s.jsonError(w, "插件 ID 已存在", http.StatusConflict)
 		return
 	}
 	if err := os.Rename(pluginRoot, finalPath); err != nil {
@@ -345,4 +359,33 @@ func validateImportedPluginID(value string) error {
 		return fmt.Errorf("插件 ID 无效")
 	}
 	return nil
+}
+
+func importedPluginIdentityExists(pluginDir, pluginID string) (bool, error) {
+	entries, err := os.ReadDir(pluginDir)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || plugin.IsInternalPluginDirectory(entry.Name()) {
+			continue
+		}
+		if strings.EqualFold(entry.Name(), pluginID) {
+			return true, nil
+		}
+		data, err := os.ReadFile(filepath.Join(pluginDir, entry.Name(), "plugin.json"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return false, err
+		}
+		var config struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(data, &config) == nil && strings.EqualFold(sanitizePluginID(config.ID), pluginID) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

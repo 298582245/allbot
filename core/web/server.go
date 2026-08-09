@@ -405,18 +405,19 @@ func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	entries, err := os.ReadDir("plugins")
+	pluginDir := s.pluginManager.PluginDir()
+	entries, err := os.ReadDir(pluginDir)
 	if err != nil {
 		s.jsonError(w, "读取插件目录失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	result := make([]map[string]interface{}, 0)
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || plugin.IsInternalPluginDirectory(entry.Name()) {
 			continue
 		}
 		pluginID := entry.Name()
-		configData, err := os.ReadFile(filepath.Join("plugins", pluginID, "plugin.json"))
+		configData, err := os.ReadFile(filepath.Join(pluginDir, pluginID, "plugin.json"))
 		if err != nil {
 			result = append(result, pluginError(pluginID, "配置文件不存在或读取失败"))
 			continue

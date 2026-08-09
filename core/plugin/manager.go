@@ -265,6 +265,11 @@ func (m *Manager) PluginDir() string {
 	return m.pluginDir
 }
 
+// IsInternalPluginDirectory 判断目录是否为插件系统内部工作目录。
+func IsInternalPluginDirectory(name string) bool {
+	return strings.HasPrefix(strings.TrimSpace(name), ".")
+}
+
 func (m *Manager) SetDatabase(database *config.Database) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -318,7 +323,7 @@ func (m *Manager) LoadAllPlugins() ([]*types.Plugin, error) {
 
 	plugins := make([]*types.Plugin, 0)
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || IsInternalPluginDirectory(entry.Name()) {
 			continue
 		}
 		pluginPath := filepath.Join(m.pluginDir, entry.Name())

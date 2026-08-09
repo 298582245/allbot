@@ -48,6 +48,21 @@ func TestNormalizeImportPathRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestHandlePluginImportRejectsManifestIDMismatch(t *testing.T) {
+	withTempWorkdir(t, func() {
+		server := testServer(t)
+		files := map[string]string{
+			"demo/plugin.json": `{"id":"other","name":"Demo","runtime":"nodejs","entry":"main.js","trigger":"^demo$"}`,
+			"demo/main.js":     "console.log('ok')",
+		}
+		recorder := httptest.NewRecorder()
+		server.handlePluginImport(recorder, makePluginMultipart(t, "directory", "demo", files))
+		if recorder.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expected manifest id mismatch to fail, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+	})
+}
+
 func TestHandlePluginImportDirectorySuccessAndConflict(t *testing.T) {
 	withTempWorkdir(t, func() {
 		server := testServer(t)
