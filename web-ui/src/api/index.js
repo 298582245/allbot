@@ -175,6 +175,17 @@ export const createPlugin = (data) => {
   })
 }
 
+// 导入本地插件目录或 ZIP 压缩包
+export const importPlugin = (data) => {
+  return request({
+    url: '/plugins/import',
+    method: 'post',
+    data,
+    timeout: 10 * 60 * 1000,
+    silent: true
+  })
+}
+
 // 获取插件模板编辑模型
 export const getPluginTemplateEditor = (pluginId) => {
   return request({

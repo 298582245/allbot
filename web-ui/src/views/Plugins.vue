@@ -420,7 +420,13 @@
       width="1200px"
       @close="handleCreateDialogClose"
     >
-      <div class="create-dialog-body">
+      <div class="create-mode-switch">
+        <el-radio-group v-model="createMode" size="small">
+          <el-radio-button label="template">从模板创建</el-radio-button>
+          <el-radio-button label="import">导入插件</el-radio-button>
+        </el-radio-group>
+      </div>
+      <div v-if="createMode === 'template'" class="create-dialog-body">
         <div class="create-dialog-left">
           <el-tabs v-model="createActiveTab" class="plugin-config-tabs">
             <el-tab-pane label="基础信息" name="base">
@@ -672,9 +678,36 @@
           <pre v-else>{{ createPreview }}</pre>
         </div>
       </div>
+      <div v-else class="plugin-import-panel">
+        <input ref="directoryInput" type="file" multiple webkitdirectory directory hidden @change="handleDirectorySelected" />
+        <input ref="archiveInput" type="file" accept=".zip,application/zip" hidden @change="handleArchiveSelected" />
+        <div class="plugin-import-actions">
+          <el-button type="primary" @click="directoryInput?.click()">选择插件文件夹</el-button>
+          <el-button @click="archiveInput?.click()">选择 ZIP 压缩包</el-button>
+          <el-button v-if="importState.files.length || importState.archive" text @click="clearImportSelection">清空选择</el-button>
+        </div>
+        <div class="field-tip">文件夹根目录应包含 plugin.json 和对应运行时入口；ZIP 包内结构由服务端最终校验。</div>
+        <div v-if="importState.sourceName" class="plugin-import-summary">
+          <div><span>来源：</span>{{ importState.sourceName }}</div>
+          <div><span>插件 ID：</span><el-input v-model="importState.pluginId" size="small" placeholder="可编辑，留空由服务端推导" /></div>
+          <div><span>文件数：</span>{{ importState.files.length }}　<span>总大小：</span>{{ formatFileSize(importState.totalSize) }}</div>
+        </div>
+        <div v-if="importState.diagnostics.length" class="plugin-import-diagnostics">
+          <div v-for="(item, index) in importState.diagnostics" :key="`${item.level}-${index}`" class="import-diagnostic" :class="`is-${item.level}`">
+            <el-tag size="small" :type="importDiagnosticType(item.level)">{{ importDiagnosticLabel(item.level) }}</el-tag>
+            <span>{{ item.message }}</span><code v-if="item.path">{{ item.path }}</code>
+          </div>
+        </div>
+        <el-table v-if="importState.files.length" :data="importState.files" size="small" border max-height="320">
+          <el-table-column prop="path" label="规范化文件路径" min-width="280" show-overflow-tooltip />
+          <el-table-column label="大小" width="110"><template #default="{ row }">{{ formatFileSize(row.size) }}</template></el-table-column>
+        </el-table>
+        <el-empty v-else description="请选择插件文件夹或 ZIP 压缩包" />
+      </div>
       <template #footer>
         <el-button @click="createDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="createSaving" @click="saveCreatedPlugin">创建</el-button>
+        <el-button v-if="createMode === 'template'" type="primary" :loading="createSaving" @click="saveCreatedPlugin">创建</el-button>
+        <el-button v-else type="primary" :loading="importSaving" :disabled="!importState.valid" @click="submitPluginImport">导入并加载</el-button>
       </template>
     </el-dialog>
 
@@ -761,13 +794,14 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, shallowRef 
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled, Plus } from '@element-plus/icons-vue'
-import { getAdapterPlatforms, getAdapters, getPlugins, controlPlugin, setPluginPinned, deletePlugin, getPluginRecycleBin, deletePluginBackup, getPluginTemplates, previewCreatePlugin, validateCreatePlugin, createPlugin, getRuntimeProfiles, getScriptEnvs } from '@/api'
+import { getAdapterPlatforms, getAdapters, getPlugins, controlPlugin, setPluginPinned, deletePlugin, getPluginRecycleBin, deletePluginBackup, getPluginTemplates, previewCreatePlugin, validateCreatePlugin, createPlugin, importPlugin, getRuntimeProfiles, getScriptEnvs } from '@/api'
 import request from '@/utils/request'
 import { EditorView, basicSetup } from 'codemirror'
 import { javascript } from '@codemirror/lang-javascript'
 import { python } from '@codemirror/lang-python'
 import { oneDark } from '@codemirror/theme-one-dark'
 import StdPagination from '@/components/StdPagination.vue'
+import { inspectPluginArchive, inspectPluginDirectory } from '@/utils/pluginImport'
 import {
   accountQLCommands as buildAccountQLCommands,
   accountQLTriggerPreview as buildAccountQLTriggerPreview,
@@ -812,7 +846,12 @@ const pluginPlatformOptions = ref([...pluginPlatformFallback])
 const pluginPlatformNames = computed(() => Object.fromEntries(pluginPlatformOptions.value.map(option => [option.value, option.label])))
 const configDialogVisible = ref(false)
 const createDialogVisible = ref(false)
+const createMode = ref('template')
 const createSaving = ref(false)
+const importSaving = ref(false)
+const directoryInput = ref(null)
+const archiveInput = ref(null)
+const importState = ref(createEmptyImportState())
 const createPreviewLoading = ref(false)
 const createResultVisible = ref(false)
 const createResult = ref(null)
@@ -1190,9 +1229,100 @@ const continueCreatePlugin = async () => {
   openCreateDialog()
 }
 
+function createEmptyImportState() {
+  return {
+    sourceType: '',
+    sourceName: '',
+    pluginId: '',
+    files: [],
+    archive: null,
+    totalSize: 0,
+    manifest: null,
+    diagnostics: [],
+    valid: false
+  }
+}
+
+function importDiagnosticType(level) {
+  if (level === 'error') return 'danger'
+  if (level === 'warning') return 'warning'
+  if (level === 'success') return 'success'
+  return 'info'
+}
+
+function importDiagnosticLabel(level) {
+  return { error: '错误', warning: '警告', success: '通过', info: '提示' }[level] || '提示'
+}
+
+async function handleDirectorySelected(event) {
+  const files = Array.from(event.target?.files || [])
+  importState.value = { ...createEmptyImportState(), sourceType: 'directory' }
+  try {
+    const result = await inspectPluginDirectory(files)
+    importState.value = { ...result, sourceType: 'directory', archive: null }
+  } catch (error) {
+    importState.value.diagnostics = [{ level: 'error', message: error.message || '读取插件文件夹失败', path: '' }]
+  } finally {
+    if (event.target) event.target.value = ''
+  }
+}
+
+function handleArchiveSelected(event) {
+  const archive = event.target?.files?.[0] || null
+  const result = inspectPluginArchive(archive)
+  importState.value = { ...result, sourceType: 'archive', archive, files: result.files || [] }
+  if (event.target) event.target.value = ''
+}
+
+function clearImportSelection() {
+  importState.value = createEmptyImportState()
+}
+
+function appendImportDiagnostic(level, message, path = '') {
+  importState.value.diagnostics = [
+    ...importState.value.diagnostics.filter(item => !(item.level === 'error' && item.server)),
+    { level, message, path, server: true }
+  ]
+  importState.value.valid = false
+}
+
+async function submitPluginImport() {
+  if (!importState.value.valid || importSaving.value) return
+  const state = importState.value
+  const formData = new FormData()
+  formData.append('source_type', state.sourceType)
+  formData.append('plugin_id', String(state.pluginId || '').trim())
+  try {
+    if (state.sourceType === 'directory') {
+      formData.append('paths', JSON.stringify(state.files.map(item => item.path)))
+      state.files.forEach(item => formData.append('files', item.file, item.file.name))
+    } else if (state.sourceType === 'archive' && state.archive) {
+      formData.append('archive', state.archive, state.archive.name)
+    } else {
+      appendImportDiagnostic('error', '请选择要导入的插件文件')
+      return
+    }
+    importSaving.value = true
+    await importPlugin(formData)
+    ElMessage.success('插件导入成功并已加载')
+    createDialogVisible.value = false
+    clearImportSelection()
+    await loadPlugins()
+  } catch (error) {
+    const data = error?.response?.data
+    const message = data?.msg || data?.error || data?.message || error?.message || '插件导入失败'
+    appendImportDiagnostic('error', message)
+    ElMessage.error(message)
+  } finally {
+    importSaving.value = false
+  }
+}
+
 const openCreateDialog = async () => {
   destroyCreateEditors()
   resetAccountQLDefaultState()
+  clearImportSelection()
+  createMode.value = 'template'
   const draft = loadCreateDraft()
   createResult.value = null
   createForm.value = draft || createEmptyPluginForm()
@@ -1256,8 +1386,10 @@ async function showCreateValidationIssues(issues) {
 }
 
 const handleCreateDialogClose = () => {
-  if (!createResultVisible.value) saveCreateDraft()
+  if (!createResultVisible.value && createMode.value === 'template') saveCreateDraft()
   createSaving.value = false
+  importSaving.value = false
+  clearImportSelection()
   updateCreatePreview.latestRequestID = 0
   createPreviewLoading.value = false
   createPreviewData.value = null
@@ -2268,6 +2400,74 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
+.create-mode-switch {
+  margin-bottom: 14px;
+}
+
+.plugin-import-panel {
+  min-height: 560px;
+  padding: 18px;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.plugin-import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.plugin-import-summary {
+  display: grid;
+  grid-template-columns: 1fr 1.5fr 1fr;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 12px;
+  padding: 12px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  background: #fff;
+  color: #606266;
+  font-size: 13px;
+}
+
+.plugin-import-summary > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.plugin-import-summary .el-input {
+  flex: 1;
+}
+
+.plugin-import-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.import-diagnostic {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 7px 9px;
+  border-radius: 4px;
+  background: #fff;
+  color: #606266;
+  font-size: 12px;
+}
+
+.import-diagnostic.is-error { background: #fef0f0; color: #f56c6c; }
+.import-diagnostic.is-warning { background: #fdf6ec; color: #e6a23c; }
+.import-diagnostic.is-success { background: #f0f9eb; color: #67c23a; }
+.import-diagnostic code { color: inherit; }
+
 .create-dialog-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 430px;
@@ -2572,6 +2772,15 @@ onBeforeUnmount(() => {
   }
 
   .create-dialog-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .plugin-import-panel {
+    min-height: 420px;
+    padding: 12px;
+  }
+
+  .plugin-import-summary {
     grid-template-columns: minmax(0, 1fr);
   }
 

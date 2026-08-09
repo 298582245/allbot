@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1987,7 +1988,8 @@ func pluginEntryPath(root, runtimeName, entry string) (string, error) {
 	return safeRelativePath(root, cleanEntry)
 }
 
-func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
+// ValidatePluginConfig 解析并校验指定目录中的插件配置，不安装依赖或修改 Manager 状态。
+func (m *Manager) ValidatePluginConfig(pluginPath, pluginID string) (*types.Plugin, error) {
 	configPath := filepath.Join(pluginPath, "plugin.json")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -1997,11 +1999,17 @@ func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, err
 	}
-	pluginID := filepath.Base(pluginPath)
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" {
+		return nil, fmt.Errorf("插件 ID 不能为空")
+	}
 	config.Runtime = normalizePluginRuntime(config.Runtime)
 	entry, err := validatePluginEntry(pluginPath, config.Runtime, config.Entry)
 	if err != nil {
 		return nil, fmt.Errorf("插件入口文件无效: %w", err)
+	}
+	if _, err := regexp.Compile(config.Trigger); err != nil {
+		return nil, fmt.Errorf("插件触发规则无效: %w", err)
 	}
 	return &types.Plugin{
 		ID:                pluginID,
@@ -2027,6 +2035,10 @@ func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
 		TemplateMetadata:  config.TemplateMetadata,
 		TemplateSource:    config.TemplateSource,
 	}, nil
+}
+
+func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
+	return m.ValidatePluginConfig(pluginPath, filepath.Base(pluginPath))
 }
 
 func normalizePluginRuntime(runtime string) string {

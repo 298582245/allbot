@@ -168,6 +168,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/open-apis/", s.handleOpenAPIConfigDetail)
 	mux.HandleFunc("/api/openapis", s.handleOpenAPIConfigs)
 	mux.HandleFunc("/api/openapis/", s.handleOpenAPIConfigDetail)
+	mux.HandleFunc("/api/plugins/import", s.handlePluginImport)
 	mux.HandleFunc("/api/plugins/config/", s.handlePluginConfig)
 	mux.HandleFunc("/api/plugins/template-editor/", s.handlePluginTemplateEditor)
 	mux.HandleFunc("/api/plugins/export/", s.handlePluginExport)
