@@ -125,10 +125,20 @@
           </el-table-column>
           <el-table-column label="伪造身份" min-width="220">
             <template #default="{ row }">
-              <div>{{ taskIdentityText(row) }}</div>
-              <div class="task-desc">
-                {{ row.group_id ? `群 ${row.group_id}` : "私聊" }}
-              </div>
+              <el-tooltip
+                class="task-identity-tooltip"
+                :content="taskIdentityText(row)"
+                placement="top"
+              >
+                <div class="task-identity-line">{{ taskIdentityText(row) }}</div>
+              </el-tooltip>
+              <el-tooltip
+                class="task-identity-tooltip"
+                :content="taskSessionText(row)"
+                placement="top"
+              >
+                <div class="task-desc task-identity-line">{{ taskSessionText(row) }}</div>
+              </el-tooltip>
             </template>
           </el-table-column>
           <el-table-column label="上次执行" width="180">
@@ -186,8 +196,8 @@
             <div><span>来源</span><strong>{{ sourceName(row.source) }}</strong></div>
             <div v-if="row.plugin_id"><span>插件</span><strong>{{ row.plugin_id }}</strong></div>
             <div><span>表达式</span><strong>{{ row.cron }}</strong></div>
-            <div><span>身份</span><strong>{{ taskIdentityText(row) }}</strong></div>
-            <div><span>会话</span><strong>{{ row.group_id ? `群 ${row.group_id}` : "私聊" }}</strong></div>
+            <div><span>身份</span><strong class="task-identity-value" :title="taskIdentityText(row)">{{ taskIdentityText(row) }}</strong></div>
+            <div><span>会话</span><strong class="task-identity-value" :title="taskSessionText(row)">{{ taskSessionText(row) }}</strong></div>
             <div><span>上次执行</span><strong>{{ formatTime(row.last_run_at) }}</strong></div>
             <div><span>下次执行</span><strong>{{ formatTime(row.next_run_at) }}</strong></div>
           </div>
@@ -771,6 +781,10 @@ function taskIdentityText(task) {
   );
 }
 
+function taskSessionText(task) {
+  return task.group_id ? `群 ${task.group_id}` : "私聊";
+}
+
 function ensureSelectedAdapterMatchesPlatform() {
   if (!form.adapter_id) return;
   const adapter = adapterById.value[String(form.adapter_id)];
@@ -883,6 +897,16 @@ function formatTime(value) {
   margin-top: 4px;
   color: #909399;
   font-size: 12px;
+}
+.task-identity-tooltip {
+  display: block;
+  min-width: 0;
+}
+.task-identity-line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .user-account-option {
   display: flex;
@@ -1019,6 +1043,15 @@ function formatTime(value) {
     text-align: right;
     word-break: break-word;
     overflow-wrap: anywhere;
+  }
+  .mobile-task-fields .task-identity-value {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    word-break: normal;
+    overflow-wrap: normal;
   }
   .mobile-task-actions {
     display: grid;
