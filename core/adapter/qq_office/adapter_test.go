@@ -2,6 +2,7 @@ package qq_office
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +23,68 @@ func TestQQOfficeBotIdentityReturnsOnlyAppID(t *testing.T) {
 	}
 	if strings.Contains(identity.Value, "secret456") {
 		t.Fatalf("identity leaked client secret: %#v", identity)
+	}
+}
+
+func TestQQOfficeDeleteAndMuteUseSupportedAPIs(t *testing.T) {
+	var groupDeleteCalls int32
+	var channelDeleteCalls int32
+	var muteCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/v2/groups/group-openid/messages/msg-group":
+			if r.Method != http.MethodDelete {
+				t.Fatalf("group delete method = %s", r.Method)
+			}
+			atomic.AddInt32(&groupDeleteCalls, 1)
+			w.WriteHeader(http.StatusOK)
+		case "/channels/channel-id/messages/msg-channel":
+			if r.Method != http.MethodDelete || r.URL.Query().Get("hidetip") != "false" {
+				t.Fatalf("channel delete request = %s %s", r.Method, r.URL.String())
+			}
+			atomic.AddInt32(&channelDeleteCalls, 1)
+			w.WriteHeader(http.StatusOK)
+		case "/v2/groups/group-openid/restrict_chat_setting":
+			if r.Method != http.MethodPost {
+				t.Fatalf("mute method = %s", r.Method)
+			}
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			members, ok := body["members"].([]interface{})
+			if !ok || len(members) != 1 {
+				t.Fatalf("mute body = %#v", body)
+			}
+			member := members[0].(map[string]interface{})
+			if member["op"] != "add" || member["member_openid"] != "member-openid" || member["mute_expire_at"] == "" {
+				t.Fatalf("mute member = %#v", member)
+			}
+			atomic.AddInt32(&muteCalls, 1)
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	if err := adp.DeleteMessage(&types.Message{ID: "msg-group", GroupID: "group-openid", Metadata: map[string]string{"message_type": "group"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adp.DeleteMessage(&types.Message{ID: "msg-channel", Metadata: map[string]string{"message_type": "channel", "qq_office_channel_id": "channel-id"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adp.Mute("group-openid", "<@member-openid>", 60); err != nil {
+		t.Fatal(err)
+	}
+	if err := adp.Mute("group-openid", "", 60); !errors.Is(err, contract.ErrUnsupported) {
+		t.Fatalf("whole-group mute error = %v, expected ErrUnsupported", err)
+	}
+	if atomic.LoadInt32(&groupDeleteCalls) != 1 || atomic.LoadInt32(&channelDeleteCalls) != 1 || atomic.LoadInt32(&muteCalls) != 1 {
+		t.Fatalf("calls group=%d channel=%d mute=%d", groupDeleteCalls, channelDeleteCalls, muteCalls)
 	}
 }
 
@@ -798,9 +861,34 @@ func TestQQOfficeHandleGroupMsgReceiveUsesOperator(t *testing.T) {
 	}
 }
 
+func TestQQOfficeHandleChannelMessageBuildsDeletableMessage(t *testing.T) {
+	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
+	got := make(chan *types.Message, 1)
+	adp.SetMessageHandler(func(msg *types.Message) { got <- msg })
+
+	adp.handleDispatch("AT_MESSAGE_CREATE", map[string]interface{}{
+		"id":         "msg-channel",
+		"guild_id":   "guild-openid",
+		"channel_id": "channel-openid",
+		"content":    "频道消息",
+		"author": map[string]interface{}{
+			"id":       "user-openid",
+			"username": "频道用户",
+		},
+	})
+
+	msg := <-got
+	if msg.GroupID != "channel-openid" || msg.UserID != "user-openid" || msg.Metadata["message_type"] != "channel" {
+		t.Fatalf("message = %+v metadata=%#v", msg, msg.Metadata)
+	}
+	if msg.Metadata["reply_target"] != "channel_channel-openid|msg_msg-channel" {
+		t.Fatalf("reply target = %q", msg.Metadata["reply_target"])
+	}
+}
+
 func TestQQOfficeIdentifyIntentsIncludeGroupEvents(t *testing.T) {
-	intents := qqOfficeIntentDirectMessage | qqOfficeIntentGroupMember | qqOfficeIntentGroupAndC2C
-	if intents&qqOfficeIntentGroupMember == 0 || intents&qqOfficeIntentGroupAndC2C == 0 {
+	intents := qqOfficeIntentGuilds | qqOfficeIntentGuildMessages | qqOfficeIntentDirectMessage | qqOfficeIntentGroupMember | qqOfficeIntentGroupAndC2C
+	if intents&qqOfficeIntentGuildMessages == 0 || intents&qqOfficeIntentGroupMember == 0 || intents&qqOfficeIntentGroupAndC2C == 0 {
 		t.Fatalf("intents = %d", intents)
 	}
 }

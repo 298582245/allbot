@@ -72,6 +72,29 @@ test('sendMarkdown writes send_markdown protocol action', async () => {
     ]);
 });
 
+test('listen sends retract time and returns the waited message', async () => {
+    const actions = [];
+    const ctx = new Context({ plugin_id: 'plugin-sdk' }, { once(event, callback) { callback(JSON.stringify({ action: 'listen_response', content: 'answer' })); } });
+    ctx._send = (action) => actions.push(action) || true;
+    assert.equal(await ctx.listen(30, 5), 'answer');
+    assert.deepEqual(actions, [{ action: 'listen', timeout: 30, retract_time: 5 }]);
+});
+
+test('deleteMessage and mute send current-message control requests', async () => {
+    const { ctx, calls } = makeContext({ platform: 'qq', adapter_id: '4', group_id: 'g1' });
+    await ctx.deleteMessage();
+    await ctx.mute({ userId: 'u1', durationSeconds: 60 });
+    await ctx.mute({ durationSeconds: 0 });
+    assert.equal(calls[0].expectedAction, 'delete_message_response');
+    assert.deepEqual(calls[0].action, { action: 'delete_message' });
+    assert.deepEqual(calls[1].action, {
+        action: 'mute', platform: 'qq', adapter_id: '4', group_id: 'g1', user_id: 'u1', duration: 60
+    });
+    assert.deepEqual(calls[2].action, {
+        action: 'mute', platform: 'qq', adapter_id: '4', group_id: 'g1', user_id: '', duration: 0
+    });
+});
+
 test('sendRich writes send_rich protocol action and normalizes parts', async () => {
     const { ctx } = makeContext();
     const actions = [];

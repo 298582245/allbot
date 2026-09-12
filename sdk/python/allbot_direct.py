@@ -291,9 +291,37 @@ class Context:
         """发送文件路径，具体支持取决于平台适配器。"""
         return self._send({"action": "send_file", "path": file_path})
 
-    async def listen(self, timeout: int = 60) -> str:
-        """等待同一用户/群的下一条消息，超时返回空字符串。"""
-        self._send({"action": "listen", "timeout": timeout})
+    async def delete_message(self) -> bool:
+        """撤回当前收到的消息；适配器不支持时返回 False。"""
+        return self._request({"action": "delete_message"}, "delete_message_response")
+
+    async def deleteMessage(self) -> bool:
+        """delete_message 的 camelCase 别名。"""
+        return await self.delete_message()
+
+    async def mute(self, group_id: Any = "", user_id: Any = "", duration_seconds: Any = 0, **options: Any) -> bool:
+        """禁言群成员；user_id 为空时请求群全体禁言，具体支持取决于适配器。"""
+        if isinstance(group_id, dict):
+            options = {**group_id, **options}
+            group_id = options.get("group_id") or options.get("groupId") or ""
+            user_id = options.get("user_id") or options.get("userId") or ""
+            duration_seconds = options.get("duration_seconds", options.get("durationSeconds", options.get("duration", 0)))
+        target_platform = str(options.get("platform") or self.platform)
+        target_group_id = str(options.get("group_id") or options.get("groupId") or group_id or self.group_id)
+        target_user_id = str(options.get("user_id") or options.get("userId") or user_id or "")
+        target_duration = options.get("duration_seconds", options.get("durationSeconds", options.get("duration", duration_seconds)))
+        return self._request({
+            "action": "mute",
+            "platform": target_platform,
+            "adapter_id": self._adapter_id_for(options, target_platform),
+            "group_id": target_group_id,
+            "user_id": target_user_id,
+            "duration": int(target_duration or 0),
+        }, "mute_response")
+
+    async def listen(self, timeout: int = 60, retract_time: int = 0) -> str:
+        """等待同一用户/群的下一条消息，可在指定秒数后撤回该用户消息。"""
+        self._send({"action": "listen", "timeout": timeout, "retract_time": retract_time})
         line = sys.stdin.readline()
         if not line:
             return ""

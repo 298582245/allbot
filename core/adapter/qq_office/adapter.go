@@ -35,12 +35,15 @@ const (
 	qqOfficePlatform            = "qq_office"
 	qqOfficeDefaultAPIBaseURL   = "https://api.sgroup.qq.com"
 	qqOfficeDefaultTokenURL     = "https://bots.qq.com/app/getAppAccessToken"
+	qqOfficeIntentGuilds        = 1 << 0
+	qqOfficeIntentGuildMessages = 1 << 9
 	qqOfficeIntentDirectMessage = 1 << 12
 	qqOfficeIntentGroupMember   = 1 << 24
 	qqOfficeIntentGroupAndC2C   = 1 << 25
 	qqOfficeIntentInteraction   = 1 << 26
 	qqOfficeTokenRefreshBefore  = 60 * time.Second
 	qqOfficeReplySeqTTL         = 10 * time.Minute
+	qqOfficeMaxMuteDuration     = 30 * 24 * time.Hour
 )
 
 type QQOfficeAdapter struct {
@@ -231,6 +234,8 @@ func (a *QQOfficeAdapter) sendMessage(target string, text string, sequence int) 
 	switch targetInfo.kind {
 	case "dms":
 		path = "/dms/" + url.PathEscape(targetInfo.id) + "/messages"
+	case "channel":
+		path = "/channels/" + url.PathEscape(targetInfo.id) + "/messages"
 	case "user":
 		body["msg_type"] = 0
 		if targetInfo.msgID != "" {
@@ -496,6 +501,64 @@ func (a *QQOfficeAdapter) AtUser(groupID string, userID string) error {
 	return fmt.Errorf("QQ 官方机器人 @ 用户暂未实现")
 }
 
+// DeleteMessage 撤回 QQ 官方群聊或频道消息。
+func (a *QQOfficeAdapter) DeleteMessage(msg *types.Message) error {
+	if msg == nil || strings.TrimSpace(msg.ID) == "" {
+		return nil
+	}
+	metadata := msg.Metadata
+	messageType := ""
+	groupID := strings.TrimSpace(msg.GroupID)
+	channelID := ""
+	if metadata != nil {
+		messageType = strings.TrimSpace(metadata["message_type"])
+		if groupID == "" {
+			groupID = strings.TrimSpace(metadata["qq_office_group_openid"])
+		}
+		channelID = strings.TrimSpace(metadata["qq_office_channel_id"])
+	}
+	if channelID != "" && (messageType == "channel" || messageType == "guild") {
+		path := "/channels/" + url.PathEscape(channelID) + "/messages/" + url.PathEscape(msg.ID)
+		return a.callAPI(http.MethodDelete, path+"?hidetip=false", nil, nil)
+	}
+	if groupID != "" && messageType != "channel" && messageType != "guild" {
+		path := "/v2/groups/" + url.PathEscape(groupID) + "/messages/" + url.PathEscape(msg.ID)
+		return a.callAPI(http.MethodDelete, path, nil, nil)
+	}
+	return nil
+}
+
+// Mute 设置 QQ 官方群成员禁言；QQ 官方不支持通过该接口设置全体禁言。
+func (a *QQOfficeAdapter) Mute(groupID string, userID string, durationSeconds int) error {
+	groupID = strings.TrimSpace(groupID)
+	userID = contract.NormalizeUserID(userID)
+	if groupID == "" || durationSeconds < 0 {
+		return nil
+	}
+	if strings.HasPrefix(groupID, "channel_") {
+		return contract.ErrUnsupported
+	}
+	if userID == "" {
+		return contract.ErrUnsupported
+	}
+	duration := time.Duration(durationSeconds) * time.Second
+	if duration > qqOfficeMaxMuteDuration {
+		return fmt.Errorf("QQ 官方成员禁言时长不能超过 30 天")
+	}
+	member := map[string]interface{}{
+		"op":            "add",
+		"member_openid": userID,
+	}
+	if durationSeconds == 0 {
+		member["op"] = "del"
+		member["mute_expire_at"] = ""
+	} else {
+		member["mute_expire_at"] = time.Now().Add(duration).Format(time.RFC3339)
+	}
+	path := "/v2/groups/" + url.PathEscape(groupID) + "/restrict_chat_setting"
+	return a.callAPI(http.MethodPost, path, map[string]interface{}{"members": []map[string]interface{}{member}}, nil)
+}
+
 func (a *QQOfficeAdapter) getAccessToken() (string, error) {
 	a.tokenMu.Lock()
 	defer a.tokenMu.Unlock()
@@ -679,7 +742,7 @@ func (a *QQOfficeAdapter) connectAndReadGateway() error {
 	if err := a.sendIdentify(); err != nil {
 		return fmt.Errorf("发送 Identify 失败: %w", err)
 	}
-	log.Printf("[INFO][QQ官方] Gateway 已连接，已订阅 DMS/C2C/群聊/群成员/群事件")
+	log.Printf("[INFO][QQ官方] Gateway 已连接，已订阅频道/DMS/C2C/群聊/群成员/群事件")
 
 	heartbeatDone := make(chan struct{})
 	defer close(heartbeatDone)
@@ -694,7 +757,7 @@ func (a *QQOfficeAdapter) sendIdentify() error {
 	}
 	return a.sendGatewayPayload(2, map[string]interface{}{
 		"token":   "QQBot " + token,
-		"intents": qqOfficeIntentDirectMessage | qqOfficeIntentGroupMember | qqOfficeIntentGroupAndC2C | qqOfficeIntentInteraction,
+		"intents": qqOfficeIntentGuilds | qqOfficeIntentGuildMessages | qqOfficeIntentDirectMessage | qqOfficeIntentGroupMember | qqOfficeIntentGroupAndC2C | qqOfficeIntentInteraction,
 		"shard":   []int{0, 1},
 		"properties": map[string]string{
 			"$os":      runtime.GOOS,
@@ -785,6 +848,8 @@ func (a *QQOfficeAdapter) handleDispatch(eventType string, data map[string]inter
 		a.handleC2CMessage(data)
 	case "GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE":
 		a.handleGroupMessage(eventType, data)
+	case "AT_MESSAGE_CREATE", "MESSAGE_CREATE":
+		a.handleChannelMessage(eventType, data)
 	case "GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE", "GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT", "GROUP_MSG_RECEIVE", "GROUP_MSG_REJECT":
 		a.handleQQOfficeEvent(eventType, data)
 	case "INTERACTION_CREATE":
@@ -909,6 +974,45 @@ func (a *QQOfficeAdapter) handleGroupMessage(eventType string, data map[string]i
 		},
 	}
 	log.Printf("[接收][QQ官方][%s(群 %s)]：%s", memberOpenID, groupOpenID, content)
+	a.dispatchMessage(msg)
+}
+
+func (a *QQOfficeAdapter) handleChannelMessage(eventType string, data map[string]interface{}) {
+	content := strings.TrimSpace(stringValue(data["content"]))
+	messageID := stringValue(data["id"])
+	channelID := stringValue(data["channel_id"])
+	if content == "" || messageID == "" || channelID == "" {
+		return
+	}
+	author, _ := data["author"].(map[string]interface{})
+	if bot, ok := author["bot"].(bool); ok && bot {
+		return
+	}
+	userID := stringValue(author["id"])
+	if userID == "" {
+		userID = stringValue(author["user_id"])
+	}
+	if userID == "" {
+		return
+	}
+	guildID := stringValue(data["guild_id"])
+	msg := &types.Message{
+		ID:       messageID,
+		Platform: qqOfficePlatform,
+		UserID:   userID,
+		GroupID:  channelID,
+		Content:  content,
+		Metadata: map[string]string{
+			"message_type":          "channel",
+			"qq_office_event_type":  eventType,
+			"qq_office_guild_id":    guildID,
+			"qq_office_channel_id":  channelID,
+			"qq_office_msg_id":      messageID,
+			"qq_office_author_name": stringValue(author["username"]),
+			"reply_target":          "channel_" + channelID + "|msg_" + messageID,
+		},
+	}
+	log.Printf("[接收][QQ官方][%s(频道 %s)]：%s", userID, channelID, content)
 	a.dispatchMessage(msg)
 }
 
@@ -1276,6 +1380,9 @@ func parseQQOfficeMessageTarget(target string) (qqOfficeMessageTarget, error) {
 		target = strings.TrimPrefix(target, "group_")
 	} else if strings.HasPrefix(target, "dms_") {
 		target = strings.TrimPrefix(target, "dms_")
+	} else if strings.HasPrefix(target, "channel_") {
+		kind = "channel"
+		target = strings.TrimPrefix(target, "channel_")
 	}
 
 	parts := strings.Split(target, "|")
@@ -1335,6 +1442,8 @@ func qqOfficeTargetIDName(kind string) string {
 		return " C2C user_openid "
 	case "group":
 		return "群聊 group_openid "
+	case "channel":
+		return "频道 channel_id "
 	default:
 		return " DMS guild_id "
 	}

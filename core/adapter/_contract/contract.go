@@ -1,10 +1,14 @@
 package contract
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/allbot/allbot/core/types"
 )
+
+// ErrUnsupported 表示适配器明确不支持当前操作，调用方应跳过而不是阻塞流程。
+var ErrUnsupported = errors.New("adapter capability unsupported")
 
 // Adapter 定义平台适配器的统一能力契约。
 type Adapter interface {
@@ -37,6 +41,19 @@ type Adapter interface {
 
 	// SetMessageHandler 设置消息处理器。
 	SetMessageHandler(handler func(*types.Message))
+}
+
+// MessageDeleter 由支持撤回消息的平台适配器实现。
+// 不实现该接口的平台会跳过撤回操作。
+type MessageDeleter interface {
+	DeleteMessage(msg *types.Message) error
+}
+
+// GroupMuter 由支持群成员或群全体禁言的平台适配器实现。
+// userID 非空表示成员禁言，userID 为空表示全体禁言/解禁。
+// 不支持对应操作的平台应直接跳过。
+type GroupMuter interface {
+	Mute(groupID string, userID string, durationSeconds int) error
 }
 
 // BotIdentity 表示平台可可靠取得的机器人公开身份。

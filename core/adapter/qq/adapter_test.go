@@ -31,6 +31,44 @@ func TestQQAdapterBotIdentityReadsCachedSelfID(t *testing.T) {
 	}
 }
 
+func TestQQAdapterDeleteAndMuteUseOneBotActions(t *testing.T) {
+	actions := make(chan oneBotRequest, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var params map[string]interface{}
+		if err := json.NewDecoder(request.Body).Decode(&params); err != nil {
+			t.Fatal(err)
+		}
+		actions <- oneBotRequest{Action: strings.TrimPrefix(request.URL.Path, "/"), Params: params}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"status":"ok","retcode":0}`))
+	}))
+	defer server.Close()
+
+	adapter := NewQQAdapter(QQAdapterConfig{HTTPAPIURL: server.URL})
+	if err := adapter.DeleteMessage(&types.Message{ID: "1001"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Mute("2002", "[CQ:at,qq=3003]", 60); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Mute("2002", "", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	deleteAction := <-actions
+	memberMuteAction := <-actions
+	wholeMuteAction := <-actions
+	if deleteAction.Action != "delete_msg" || deleteAction.Params["message_id"] != float64(1001) {
+		t.Fatalf("delete action = %#v", deleteAction)
+	}
+	if memberMuteAction.Action != "set_group_ban" || memberMuteAction.Params["group_id"] != float64(2002) || memberMuteAction.Params["user_id"] != float64(3003) || memberMuteAction.Params["duration"] != float64(60) {
+		t.Fatalf("member mute action = %#v", memberMuteAction)
+	}
+	if wholeMuteAction.Action != "set_group_whole_ban" || wholeMuteAction.Params["group_id"] != float64(2002) || wholeMuteAction.Params["enable"] != false {
+		t.Fatalf("whole mute action = %#v", wholeMuteAction)
+	}
+}
+
 type oneBotRequest struct {
 	Action string                 `json:"action"`
 	Params map[string]interface{} `json:"params"`

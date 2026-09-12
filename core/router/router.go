@@ -2,6 +2,7 @@ package router
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -197,6 +198,19 @@ func (r *Router) SetKeywordReplyManager(manager *KeywordReplyManager) {
 		}
 		return strings.TrimSpace(content)
 	})
+	manager.SetListenWithRetractFunc(func(msg *types.Message, timeout int, retractTimeout int) string {
+		if r.sessionManager == nil || msg == nil {
+			return ""
+		}
+		ch, cancel := r.sessionManager.CreateCancellableMessageSession(messageSessionScope(msg, "builtin:keyword-reply"), timeout)
+		defer cancel()
+		incoming, ok := <-ch
+		if !ok || incoming == nil {
+			return ""
+		}
+		r.scheduleMessageDeletion(incoming, retractTimeout)
+		return strings.TrimSpace(incoming.Content)
+	})
 	manager.SetListenUntilFunc(func(msg *types.Message, timeout int, done <-chan struct{}) string {
 		if r.sessionManager == nil || msg == nil {
 			return ""
@@ -269,7 +283,7 @@ func (r *Router) HandleMessage(msg *types.Message) {
 	if !isEvent && r.rejectDisabledUser(msg, database) {
 		return
 	}
-	if !isEvent && msg.Metadata["fake"] != "true" && r.sessionManager.HandleMessage(messageSessionScope(msg, ""), msg.Content) {
+	if !isEvent && msg.Metadata["fake"] != "true" && r.sessionManager.HandleMessageWithMessage(messageSessionScope(msg, ""), msg) {
 		log.Printf("%s Message intercepted by waiting session", listenLogPrefix(msg))
 		return
 	}
@@ -336,7 +350,7 @@ func (r *Router) HandleMessageForPlugin(msg *types.Message, pluginID string) err
 		return fmt.Errorf("账号已被封禁，请联系管理员")
 	}
 	msg.Metadata["web_chat_plugin_id"] = pluginID
-	if msg.Metadata["fake"] != "true" && r.sessionManager != nil && r.sessionManager.HandleMessageForPlugin(messageSessionScope(msg, ""), pluginID, msg.Content) {
+	if msg.Metadata["fake"] != "true" && r.sessionManager != nil && r.sessionManager.HandleMessageForPluginWithMessage(messageSessionScope(msg, ""), pluginID, msg) {
 		log.Printf("%s Message intercepted by waiting session", listenLogPrefix(msg))
 		return nil
 	}
@@ -694,14 +708,20 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		return sendReplyRichWithFallback(adp, msg, target, message)
 	}
 
-	listenFunc := func(timeout int) string {
-		ch := r.sessionManager.CreateSession(messageSessionScope(msg, plugin.ID), timeout)
-		content, ok := <-ch
+	listenFunc := func(timeout int, retractTimeout int) string {
+		ch, cancel := r.sessionManager.CreateCancellableMessageSession(messageSessionScope(msg, plugin.ID), timeout)
+		defer cancel()
+		incoming, ok := <-ch
 		if !ok {
 			return ""
 		}
-		return content
+		if incoming == nil {
+			return ""
+		}
+		r.scheduleMessageDeletion(incoming, retractTimeout)
+		return incoming.Content
 	}
+	listenTextFunc := func(timeout int) string { return listenFunc(timeout, 0) }
 	listenUntilFunc := func(timeout int, done <-chan struct{}) string {
 		ch, cancel := r.sessionManager.CreateCancellableSession(messageSessionScope(msg, plugin.ID), timeout)
 		defer cancel()
@@ -738,6 +758,53 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 	}
 	sendRichMessageFunc := func(pluginID string, action plugincore.RichMessageAction) plugincore.PluginUserResult {
 		return r.sendPluginRichMessage(pluginID, action)
+	}
+	deleteMessageFunc := func() plugincore.PluginUserResult {
+		if adp == nil {
+			return plugincore.PluginUserResult{Success: true, Data: false}
+		}
+		deleter, ok := adp.(adapter.MessageDeleter)
+		if !ok {
+			return plugincore.PluginUserResult{Success: true, Data: false}
+		}
+		if err := deleter.DeleteMessage(msg); err != nil {
+			if errors.Is(err, adapter.ErrUnsupported) {
+				return plugincore.PluginUserResult{Success: true, Data: false}
+			}
+			return plugincore.PluginUserResult{Success: false, Error: err.Error()}
+		}
+		return plugincore.PluginUserResult{Success: true, Data: true}
+	}
+	muteFunc := func(action plugincore.MuteAction) plugincore.PluginUserResult {
+		platform := stringDefault(strings.TrimSpace(action.Platform), msg.Platform)
+		adapterID := stringDefault(strings.TrimSpace(action.AdapterID), msg.AdapterID)
+		groupID := stringDefault(strings.TrimSpace(action.GroupID), msg.GroupID)
+		userID := strings.TrimSpace(action.UserID)
+		if strings.TrimSpace(action.GroupID) == "" && msg.Metadata != nil {
+			messageType := strings.TrimSpace(msg.Metadata["message_type"])
+			if messageType == "channel" || messageType == "guild" {
+				return plugincore.PluginUserResult{Success: true, Data: false}
+			}
+		}
+		targetMessage := &types.Message{
+			Platform:  platform,
+			AdapterID: adapterID,
+			UserID:    userID,
+			GroupID:   groupID,
+			Metadata:  map[string]string{"adapter_id": adapterID},
+		}
+		targetAdapter := r.getAdapterForMessage(targetMessage)
+		muter, ok := targetAdapter.(adapter.GroupMuter)
+		if !ok {
+			return plugincore.PluginUserResult{Success: true, Data: false}
+		}
+		if err := muter.Mute(groupID, userID, action.DurationSeconds); err != nil {
+			if errors.Is(err, adapter.ErrUnsupported) {
+				return plugincore.PluginUserResult{Success: true, Data: false}
+			}
+			return plugincore.PluginUserResult{Success: false, Error: err.Error()}
+		}
+		return plugincore.PluginUserResult{Success: true, Data: true}
 	}
 	userFunc := func() plugincore.PluginUserResult {
 		if database == nil {
@@ -908,7 +975,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 			return plugincore.PluginUserResult{Success: false, Error: "用户 union_id 不能为空"}
 		}
 		service := payment.NewService(database)
-		result, err := service.WaitPay(payment.WaitPayRequest{PluginID: pluginID, Platform: msg.Platform, AdapterID: msg.AdapterID, UserID: msg.UserID, GroupID: msg.GroupID, UnionID: paymentUnionID, Subject: action.Subject, AmountRaw: action.AmountRaw, Timeout: action.Timeout, PointsUnit: pointsUnit, Methods: action.Methods, Metadata: action.Metadata, Remark: action.Remark}, payment.Interaction{Reply: replyFunc, ReplyButtons: buttonsFunc, SendImage: imageFunc, SendRich: replyRichFunc, Listen: listenFunc, ListenUntil: listenUntilFunc})
+		result, err := service.WaitPay(payment.WaitPayRequest{PluginID: pluginID, Platform: msg.Platform, AdapterID: msg.AdapterID, UserID: msg.UserID, GroupID: msg.GroupID, UnionID: paymentUnionID, Subject: action.Subject, AmountRaw: action.AmountRaw, Timeout: action.Timeout, PointsUnit: pointsUnit, Methods: action.Methods, Metadata: action.Metadata, Remark: action.Remark}, payment.Interaction{Reply: replyFunc, ReplyButtons: buttonsFunc, SendImage: imageFunc, SendRich: replyRichFunc, Listen: listenTextFunc, ListenUntil: listenUntilFunc})
 		if err != nil {
 			return plugincore.PluginUserResult{Success: false, Error: err.Error(), Data: result}
 		}
@@ -918,7 +985,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		return plugincore.PluginUserResult{Success: true, Error: "", Data: result}
 	}
 
-	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc, paymentFunc, buttonsFunc, replyMarkdownFunc, replyRichFunc, sendRichMessageFunc, sendImageMessageFunc); err != nil {
+	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc, paymentFunc, buttonsFunc, replyMarkdownFunc, replyRichFunc, sendRichMessageFunc, sendImageMessageFunc, deleteMessageFunc, muteFunc); err != nil {
 		log.Printf("Failed to execute plugin %s: %v", plugin.Name, err)
 	}
 }
@@ -1693,6 +1760,28 @@ func (r *Router) getAdapterForMessage(msg *types.Message) adapter.Adapter {
 		}
 	}
 	return adp
+}
+
+func (r *Router) scheduleMessageDeletion(msg *types.Message, delaySeconds int) {
+	if msg == nil || delaySeconds <= 0 || strings.TrimSpace(msg.ID) == "" {
+		return
+	}
+	if msg.Metadata != nil && msg.Metadata["fake"] == "true" {
+		return
+	}
+	adp := r.getAdapterForMessage(msg)
+	deleter, ok := adp.(adapter.MessageDeleter)
+	if !ok {
+		return
+	}
+	go func() {
+		timer := time.NewTimer(time.Duration(delaySeconds) * time.Second)
+		defer timer.Stop()
+		<-timer.C
+		if err := deleter.DeleteMessage(msg); err != nil {
+			log.Printf("[SYSTEM] 消息撤回失败: platform=%s adapter_id=%s message_id=%s err=%v", msg.Platform, msg.AdapterID, msg.ID, err)
+		}
+	}()
 }
 
 func (r *Router) GetAdapterForMessage(msg *types.Message) adapter.Adapter {

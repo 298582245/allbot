@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import os
 import subprocess
@@ -78,6 +79,32 @@ class PaySdkTest(unittest.TestCase):
             {"action": "send_markdown", "markdown": "**hi**"},
             {"action": "send_markdown", "markdown": "## title"},
         ])
+
+    def test_listen_sends_retract_time_and_returns_waited_message(self):
+        ctx, _ = self.make_context()
+        actions = []
+        ctx._send = lambda action: actions.append(action) or True
+        original_stdin = sys.stdin
+        try:
+            sys.stdin = io.StringIO('{"action":"listen_response","content":"answer"}\n')
+            self.assertEqual(asyncio.run(ctx.listen(30, 5)), "answer")
+        finally:
+            sys.stdin = original_stdin
+        self.assertEqual(actions, [{"action": "listen", "timeout": 30, "retract_time": 5}])
+
+    def test_delete_message_and_mute_send_control_requests(self):
+        ctx, calls = self.make_context({"platform": "qq", "adapter_id": "4", "group_id": "g1"})
+        asyncio.run(ctx.delete_message())
+        asyncio.run(ctx.mute(user_id="u1", duration_seconds=60))
+        asyncio.run(ctx.mute(duration_seconds=0))
+        self.assertEqual(calls[0]["expected_action"], "delete_message_response")
+        self.assertEqual(calls[0]["action"], {"action": "delete_message"})
+        self.assertEqual(calls[1]["action"], {
+            "action": "mute", "platform": "qq", "adapter_id": "4", "group_id": "g1", "user_id": "u1", "duration": 60,
+        })
+        self.assertEqual(calls[2]["action"], {
+            "action": "mute", "platform": "qq", "adapter_id": "4", "group_id": "g1", "user_id": "", "duration": 0,
+        })
 
     def test_send_rich_outputs_protocol_action(self):
         ctx, _ = self.make_context()

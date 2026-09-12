@@ -89,6 +89,64 @@ func TestTelegramVerifyTokenClearsCachedIdentityOnFailure(t *testing.T) {
 	}
 }
 
+func TestTelegramDeleteAndMuteUseBotAPI(t *testing.T) {
+	var deleteBody map[string]interface{}
+	var muteBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body failed: %v", err)
+		}
+		switch r.URL.Path {
+		case "/deleteMessage":
+			deleteBody = body
+		case "/restrictChatMember":
+			muteBody = body
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	adapter := NewTelegramAdapter("token", "")
+	adapter.apiURL = server.URL
+	adapter.httpClient = server.Client()
+	message := &types.Message{
+		ID:      "456",
+		GroupID: "-100123",
+		Metadata: map[string]string{
+			"chat_id": "-100123",
+		},
+	}
+	if err := adapter.DeleteMessage(message); err != nil {
+		t.Fatalf("DeleteMessage returned error: %v", err)
+	}
+	if err := adapter.Mute("-100123", "<@789>", 60); err != nil {
+		t.Fatalf("Mute returned error: %v", err)
+	}
+	if deleteBody["chat_id"] != float64(-100123) || deleteBody["message_id"] != float64(456) {
+		t.Fatalf("delete body = %#v", deleteBody)
+	}
+	if muteBody["chat_id"] != float64(-100123) || muteBody["user_id"] != float64(789) || muteBody["until_date"] == nil {
+		t.Fatalf("mute body = %#v", muteBody)
+	}
+	permissions := muteBody["permissions"].(map[string]interface{})
+	if permissions["can_send_messages"] != false {
+		t.Fatalf("mute permissions = %#v", permissions)
+	}
+}
+
+func TestTelegramMuteRejectsWholeGroupAndNonNumericUserID(t *testing.T) {
+	adapter := NewTelegramAdapter("token", "")
+	if err := adapter.Mute("-100123", "", 60); err == nil {
+		t.Fatal("expected whole-group mute to be unsupported")
+	}
+	if err := adapter.Mute("-100123", "@username", 60); err == nil {
+		t.Fatal("expected non-numeric user ID to be rejected")
+	}
+}
+
 func TestTelegramSendMarkdownUsesMarkdownParseMode(t *testing.T) {
 	var body map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

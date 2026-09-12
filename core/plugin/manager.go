@@ -105,6 +105,14 @@ type ImageMessageAction struct {
 	URL       string
 }
 
+type MuteAction struct {
+	Platform        string
+	AdapterID       string
+	GroupID         string
+	UserID          string
+	DurationSeconds int
+}
+
 type OpenAPIExecutors struct {
 	DB              func(string, PluginDBAction) PluginDBResult
 	SendMessage     func(string, SendMessageAction) PluginUserResult
@@ -508,7 +516,7 @@ func (b *pluginProcessLogBatch) Flush() {
 
 func isPluginProtocolAction(action string) bool {
 	switch action {
-	case "reply", "send_markdown", "send_rich", "send_buttons", "send_image", "send_file", "listen", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "send_rich_message", "send_image_message", "get_union_id", "list_platform_admins", "set_access_control", "set_scheduled_task", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "web_response", "done":
+	case "reply", "send_markdown", "send_rich", "send_buttons", "send_image", "send_file", "listen", "delete_message", "mute", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "send_rich_message", "send_image_message", "get_union_id", "list_platform_admins", "set_access_control", "set_scheduled_task", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "web_response", "done":
 		return true
 	default:
 		return false
@@ -606,12 +614,14 @@ func waitPluginProcess(cmd *exec.Cmd, stderrDone <-chan struct{}) error {
 	return err
 }
 
-func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte, replyFunc func(string) error, imageFunc func(string) error, fileFunc func(string) error, listenFunc func(timeout int) string, dataViewFunc func(config.DataViewConfig) error, dbFunc func(pluginID string, action PluginDBAction) PluginDBResult, fakeMessageFunc func(pluginID string, action FakeMessageAction) error, sendMessageFunc func(pluginID string, action SendMessageAction) PluginUserResult, userFunc func() PluginUserResult, adminFunc func(platform string) PluginUserResult, configFunc func(pluginID string, action PluginConfigAction) PluginUserResult, scheduleFunc func(pluginID string, action ScheduledTaskAction) PluginUserResult, accountFunc func(pluginID string, action PluginAccountAction) PluginUserResult, authFunc func(pluginID string, action PluginAuthorizationAction) PluginUserResult, scriptFunc func(pluginID string, action ScriptRunAction) PluginUserResult, paymentFunc func(pluginID string, action PaymentWaitAction) PluginUserResult, callbacks ...interface{}) error {
+func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte, replyFunc func(string) error, imageFunc func(string) error, fileFunc func(string) error, listenFunc func(timeout int, retractTimeout int) string, dataViewFunc func(config.DataViewConfig) error, dbFunc func(pluginID string, action PluginDBAction) PluginDBResult, fakeMessageFunc func(pluginID string, action FakeMessageAction) error, sendMessageFunc func(pluginID string, action SendMessageAction) PluginUserResult, userFunc func() PluginUserResult, adminFunc func(platform string) PluginUserResult, configFunc func(pluginID string, action PluginConfigAction) PluginUserResult, scheduleFunc func(pluginID string, action ScheduledTaskAction) PluginUserResult, accountFunc func(pluginID string, action PluginAccountAction) PluginUserResult, authFunc func(pluginID string, action PluginAuthorizationAction) PluginUserResult, scriptFunc func(pluginID string, action ScriptRunAction) PluginUserResult, paymentFunc func(pluginID string, action PaymentWaitAction) PluginUserResult, callbacks ...interface{}) error {
 	var replyMarkdownFunc func(string) error
 	var replyRichFunc func(types.RichMessage) error
 	var sendRichMessageFunc func(string, RichMessageAction) PluginUserResult
 	var sendImageMessageFunc func(string, ImageMessageAction) PluginUserResult
 	var sendButtonsFunc func(string, [][]types.ButtonOption) error
+	var deleteMessageFunc func() PluginUserResult
+	var muteFunc func(MuteAction) PluginUserResult
 	for _, callback := range callbacks {
 		switch fn := callback.(type) {
 		case func(string) error:
@@ -633,6 +643,14 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 		case func(string, [][]types.ButtonOption) error:
 			if sendButtonsFunc == nil {
 				sendButtonsFunc = fn
+			}
+		case func() PluginUserResult:
+			if deleteMessageFunc == nil {
+				deleteMessageFunc = fn
+			}
+		case func(MuteAction) PluginUserResult:
+			if muteFunc == nil {
+				muteFunc = fn
 			}
 		}
 	}
@@ -690,6 +708,8 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			URL            string                     `json:"url"`
 			Path           string                     `json:"path"`
 			Timeout        int                        `json:"timeout"`
+			RetractTimeout int                        `json:"retract_time"`
+			Duration       int                        `json:"duration"`
 			Success        bool                       `json:"success"`
 			Error          string                     `json:"error"`
 			TableName      string                     `json:"table_name"`
@@ -806,11 +826,23 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			}
 			content := ""
 			if listenFunc != nil {
-				content = listenFunc(timeout)
+				content = listenFunc(timeout, action.RetractTimeout)
 			}
 			response, _ := json.Marshal(map[string]string{"action": "listen_response", "content": content})
 			response = append(response, '\n')
 			_, _ = stdin.Write(response)
+		case "delete_message":
+			result := PluginUserResult{Success: true, Data: false}
+			if deleteMessageFunc != nil {
+				result = deleteMessageFunc()
+			}
+			writePluginUserResult(stdin, "delete_message_response", action.RequestID, result)
+		case "mute":
+			result := PluginUserResult{Success: true, Data: false}
+			if muteFunc != nil {
+				result = muteFunc(MuteAction{Platform: action.Platform, AdapterID: action.AdapterID, GroupID: action.GroupID, UserID: action.UserID, DurationSeconds: action.Duration})
+			}
+			writePluginUserResult(stdin, "mute_response", action.RequestID, result)
 		case "set_data_view":
 			if dataViewFunc != nil && action.TableName != "" {
 				view := config.DataViewConfig{PluginID: plugin.ID, TableName: action.TableName, ViewName: action.ViewName, GroupName: action.GroupName, Description: action.Description, Columns: action.Columns}

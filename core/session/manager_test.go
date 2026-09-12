@@ -3,6 +3,8 @@ package session
 import (
 	"testing"
 	"time"
+
+	"github.com/allbot/allbot/core/types"
 )
 
 func TestSessionScopeIsolation(t *testing.T) {
@@ -110,5 +112,25 @@ func TestCancellableSessionClosesChannel(t *testing.T) {
 	}
 	if manager.GetSession(scope) != nil {
 		t.Fatal("取消后会话仍存在")
+	}
+}
+
+func TestMessageSessionReturnsOriginalMessage(t *testing.T) {
+	manager := NewManager()
+	scope := Scope{Platform: "qq", AdapterID: "1", UserID: "u1", GroupID: "g1", Namespace: "plugin"}
+	ch, cancel := manager.CreateCancellableMessageSession(scope, 30)
+	defer cancel()
+
+	message := &types.Message{ID: "m1", Platform: "qq", UserID: "u1", GroupID: "g1", Content: "answer"}
+	if !manager.HandleMessageWithMessage(scope, message) {
+		t.Fatal("消息应消费等待会话")
+	}
+	select {
+	case got := <-ch:
+		if got != message || got.ID != "m1" || got.Content != "answer" {
+			t.Fatalf("message = %#v, expected original message", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未收到完整消息")
 	}
 }

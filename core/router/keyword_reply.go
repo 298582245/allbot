@@ -19,22 +19,24 @@ type RestartRequest = builtin.RestartRequest
 type UpdateHandler = builtin.UpdateHandler
 type keywordPluginAdminStore = builtin.PluginAdminStore
 type keywordListenFunc = builtin.ListenFunc
+type keywordListenWithRetractFunc = builtin.ListenWithRetractFunc
 type keywordListenUntilFunc = builtin.ListenUntilFunc
 
 type KeywordReplyManager struct {
-	database         *config.Database
-	adapterFor       func(msg *types.Message) adapter.Adapter
-	adminCheck       func(platform, userID string) bool
-	pluginStore      keywordPluginAdminStore
-	registerPlugin   func(*types.Plugin) error
-	listen           keywordListenFunc
-	listenUntil      keywordListenUntilFunc
-	startTime        time.Time
-	releaseClient    updater.ReleaseClient
-	updateHandler    UpdateHandler
-	restartHandler   builtin.RestartHandler
-	restartMu        sync.Mutex
-	restartRequested bool
+	database          *config.Database
+	adapterFor        func(msg *types.Message) adapter.Adapter
+	adminCheck        func(platform, userID string) bool
+	pluginStore       keywordPluginAdminStore
+	registerPlugin    func(*types.Plugin) error
+	listen            keywordListenFunc
+	listenWithRetract keywordListenWithRetractFunc
+	listenUntil       keywordListenUntilFunc
+	startTime         time.Time
+	releaseClient     updater.ReleaseClient
+	updateHandler     UpdateHandler
+	restartHandler    builtin.RestartHandler
+	restartMu         sync.Mutex
+	restartRequested  bool
 }
 
 func NewKeywordReplyManager(database *config.Database, adapterFor func(msg *types.Message) adapter.Adapter, adminCheck func(platform, userID string) bool, startTime time.Time) *KeywordReplyManager {
@@ -58,6 +60,10 @@ func (m *KeywordReplyManager) SetPluginAdminStore(store keywordPluginAdminStore)
 
 func (m *KeywordReplyManager) SetListenFunc(listen keywordListenFunc) {
 	m.listen = listen
+}
+
+func (m *KeywordReplyManager) SetListenWithRetractFunc(listen keywordListenWithRetractFunc) {
+	m.listenWithRetract = listen
 }
 
 func (m *KeywordReplyManager) SetListenUntilFunc(listen keywordListenUntilFunc) {
@@ -150,17 +156,18 @@ func (m *KeywordReplyManager) replyBuiltin(keyword string, msg *types.Message) e
 		botIdentity = provider.GetBotIdentity(msg)
 	}
 	ctx := &builtin.Context{
-		Database:       m.database,
-		Message:        msg,
-		Target:         target,
-		StartTime:      m.startTime,
-		ReleaseClient:  m.releaseClient,
-		UpdateHandler:  m.updateHandler,
-		PluginStore:    m.pluginStore,
-		RegisterPlugin: m.registerPlugin,
-		Listen:         m.listen,
-		ListenUntil:    m.listenUntil,
-		AdminCheck:     m.adminCheck,
+		Database:          m.database,
+		Message:           msg,
+		Target:            target,
+		StartTime:         m.startTime,
+		ReleaseClient:     m.releaseClient,
+		UpdateHandler:     m.updateHandler,
+		PluginStore:       m.pluginStore,
+		RegisterPlugin:    m.registerPlugin,
+		Listen:            m.listen,
+		ListenWithRetract: m.listenWithRetract,
+		ListenUntil:       m.listenUntil,
+		AdminCheck:        m.adminCheck,
 		Reply: func(text string) error {
 			return m.sendText(adp, target, msg, text)
 		},

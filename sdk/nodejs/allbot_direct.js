@@ -269,9 +269,32 @@ class Context {
         return this.sendFile(filePath);
     }
 
+    async deleteMessage() {
+        return this._request({ action: 'delete_message' }, 'delete_message_response');
+    }
+
+    async delete_message() {
+        return this.deleteMessage();
+    }
+
+    async mute(options = {}, userId = '', durationSeconds = 0) {
+        if (typeof options !== 'object' || options === null) {
+            options = { groupId: options, userId, durationSeconds };
+        }
+        const targetPlatform = String(options.platform || this.platform || '');
+        return this._request({
+            action: 'mute',
+            platform: targetPlatform,
+            adapter_id: this._adapterIdFor(options, targetPlatform),
+            group_id: String(options.groupId || options.group_id || this.groupId || ''),
+            user_id: String(options.userId || options.user_id || ''),
+            duration: Number(options.durationSeconds ?? options.duration_seconds ?? options.duration ?? 0)
+        }, 'mute_response');
+    }
+
     
-    async listen(timeout = 60) {
-        this._send({ action: 'listen', timeout });
+    async listen(timeout = 60, retractTime = 0) {
+        this._send({ action: 'listen', timeout, retract_time: retractTime });
 
         return new Promise((resolve) => {
             const timer = setTimeout(() => resolve(''), (timeout + 5) * 1000);

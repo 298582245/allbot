@@ -199,6 +199,36 @@ type SendTargetResolver interface {
 - Telegram 群聊返回 `groupID`。
 - QQ 官方支持 `dms_`、`user_`、`group_` 前缀。
 
+### MessageDeleter
+
+支持撤回消息的适配器实现此接口。未实现时，Router 和插件 SDK 会直接跳过撤回，不会阻塞消息处理。
+
+```go
+type MessageDeleter interface {
+    DeleteMessage(msg *types.Message) error
+}
+```
+
+### GroupMuter
+
+支持群成员禁言或群全体禁言的适配器实现此接口，时长单位为秒。`userID` 非空表示禁言指定成员，`userID` 为空表示请求群全体禁言或解禁；适配器不支持对应模式时返回 `contract.ErrUnsupported`，上层会按跳过处理。
+
+```go
+type GroupMuter interface {
+    Mute(groupID string, userID string, durationSeconds int) error
+}
+```
+
+禁言实现应先使用公共函数解析用户参数：
+
+```go
+userID = contract.NormalizeUserID(userID)
+```
+
+当前公共解析函数支持 OneBot `[CQ:at,qq=<id>]`、QQ 官方 `<@<id>>`、Telegram `tg://user?id=<id>` 链接以及裸 `@<id>`。未识别的格式会原样返回，便于适配器追加平台专用格式。
+
+Telegram 适配器通过 Bot API 的 `deleteMessage` 实现撤回，通过 `restrictChatMember` 实现群成员禁言；Telegram 不提供通过该能力接口设置群全体禁言，因此 `userID` 为空时返回 `contract.ErrUnsupported`。
+
 ## 消息结构
 
 适配器收到平台消息后，需要转换成 `types.Message`。

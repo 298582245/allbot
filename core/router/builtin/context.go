@@ -24,31 +24,34 @@ type PluginAdminStore interface {
 
 type ListenFunc func(msg *types.Message, timeout int) string
 
+type ListenWithRetractFunc func(msg *types.Message, timeout int, retractTimeout int) string
+
 type ListenUntilFunc func(msg *types.Message, timeout int, done <-chan struct{}) string
 
 type RestartHandler func(RestartRequest) error
 
 type Context struct {
-	Database         *config.Database
-	Message          *types.Message
-	Target           string
-	StartTime        time.Time
-	ReleaseClient    updater.ReleaseClient
-	UpdateHandler    UpdateHandler
-	PluginStore      PluginAdminStore
-	RegisterPlugin   func(*types.Plugin) error
-	Listen           ListenFunc
-	ListenUntil      ListenUntilFunc
-	AdminCheck       func(platform, userID string) bool
-	Reply            func(text string) error
-	ReplyButtons     func(text string, buttons [][]types.ButtonOption) error
-	SendImage        func(imageURL string) error
-	SendRich         func(message types.RichMessage) error
-	ReserveRestart   func() (RestartHandler, bool)
-	ReleaseRestart   func()
-	MessageKey       func(msg *types.Message) string
-	BotIdentityLabel string
-	BotIdentityValue string
+	Database          *config.Database
+	Message           *types.Message
+	Target            string
+	StartTime         time.Time
+	ReleaseClient     updater.ReleaseClient
+	UpdateHandler     UpdateHandler
+	PluginStore       PluginAdminStore
+	RegisterPlugin    func(*types.Plugin) error
+	Listen            ListenFunc
+	ListenWithRetract ListenWithRetractFunc
+	ListenUntil       ListenUntilFunc
+	AdminCheck        func(platform, userID string) bool
+	Reply             func(text string) error
+	ReplyButtons      func(text string, buttons [][]types.ButtonOption) error
+	SendImage         func(imageURL string) error
+	SendRich          func(message types.RichMessage) error
+	ReserveRestart    func() (RestartHandler, bool)
+	ReleaseRestart    func()
+	MessageKey        func(msg *types.Message) string
+	BotIdentityLabel  string
+	BotIdentityValue  string
 }
 
 func (c *Context) SendText(text string) error {
@@ -62,8 +65,16 @@ func (c *Context) IsAdmin() bool {
 	return c != nil && c.Message != nil && c.AdminCheck != nil && c.AdminCheck(c.Message.Platform, c.Message.UserID)
 }
 
-func (c *Context) ListenText(timeout int) string {
+func (c *Context) ListenText(timeout int, retractTimeout ...int) string {
 	if c == nil || c.Listen == nil || c.Message == nil {
+		if c == nil || c.ListenWithRetract == nil || c.Message == nil {
+			return ""
+		}
+	}
+	if len(retractTimeout) > 0 && c.ListenWithRetract != nil {
+		return strings.TrimSpace(c.ListenWithRetract(c.Message, timeout, retractTimeout[0]))
+	}
+	if c.Listen == nil {
 		return ""
 	}
 	return strings.TrimSpace(c.Listen(c.Message, timeout))

@@ -570,6 +570,71 @@ func (a *TelegramAdapter) SendMessage(target string, text string) error {
 	return a.callAPI("/sendMessage", data)
 }
 
+// DeleteMessage 撤回 Telegram 消息。
+func (a *TelegramAdapter) DeleteMessage(msg *types.Message) error {
+	if msg == nil || strings.TrimSpace(msg.ID) == "" {
+		return nil
+	}
+	chatID := ""
+	if msg.Metadata != nil {
+		chatID = strings.TrimSpace(msg.Metadata["chat_id"])
+	}
+	if chatID == "" {
+		chatID = strings.TrimSpace(msg.GroupID)
+	}
+	if chatID == "" {
+		return nil
+	}
+	return a.callTelegramMethod("/deleteMessage", map[string]interface{}{
+		"chat_id":    telegramChatID(chatID),
+		"message_id": telegramChatID(msg.ID),
+	})
+}
+
+// Mute 设置 Telegram 群成员禁言；Telegram 不支持通过该接口设置全体禁言。
+func (a *TelegramAdapter) Mute(groupID string, userID string, durationSeconds int) error {
+	groupID = strings.TrimSpace(groupID)
+	userID = contract.NormalizeUserID(userID)
+	if groupID == "" || durationSeconds < 0 {
+		return nil
+	}
+	if userID == "" {
+		return contract.ErrUnsupported
+	}
+	if _, err := strconv.ParseInt(userID, 10, 64); err != nil {
+		return fmt.Errorf("Telegram 禁言需要数字用户 ID，收到 %q", userID)
+	}
+
+	data := map[string]interface{}{
+		"chat_id":     telegramChatID(groupID),
+		"user_id":     telegramChatID(userID),
+		"permissions": telegramChatPermissions(durationSeconds == 0),
+	}
+	if durationSeconds > 0 {
+		data["until_date"] = time.Now().Add(time.Duration(durationSeconds) * time.Second).Unix()
+	}
+	return a.callTelegramMethod("/restrictChatMember", data)
+}
+
+func telegramChatPermissions(allow bool) map[string]bool {
+	return map[string]bool{
+		"can_send_messages":         allow,
+		"can_send_audios":           allow,
+		"can_send_documents":        allow,
+		"can_send_photos":           allow,
+		"can_send_videos":           allow,
+		"can_send_video_notes":      allow,
+		"can_send_voice_notes":      allow,
+		"can_send_polls":            allow,
+		"can_send_other_messages":   allow,
+		"can_add_web_page_previews": allow,
+		"can_change_info":           allow,
+		"can_invite_users":          allow,
+		"can_pin_messages":          allow,
+		"can_manage_topics":         allow,
+	}
+}
+
 func (a *TelegramAdapter) SendMarkdown(target string, markdown string) error {
 	markdown = strings.TrimSpace(markdown)
 	if markdown == "" {
@@ -702,6 +767,21 @@ func (a *TelegramAdapter) AtUser(groupID string, userID string) error {
 	// Telegram 使用 mention 格式
 	text := fmt.Sprintf("[User](tg://user?id=%s)", userID)
 	return a.SendMessage(groupID, text)
+}
+
+func (a *TelegramAdapter) callTelegramMethod(endpoint string, data map[string]interface{}) error {
+	var result struct {
+		OK          bool   `json:"ok"`
+		ErrorCode   int    `json:"error_code"`
+		Description string `json:"description"`
+	}
+	if err := a.callAPIWithResult(endpoint, data, &result); err != nil {
+		return err
+	}
+	if !result.OK {
+		return fmt.Errorf("Telegram API错误 [%d]: %s", result.ErrorCode, result.Description)
+	}
+	return nil
 }
 
 // callAPI 调用 Telegram API

@@ -356,6 +356,34 @@ func (a *QQAdapter) SendMessage(target string, text string) error {
 	return a.callAPI("send_msg", params)
 }
 
+// DeleteMessage 撤回 OneBot 消息。
+func (a *QQAdapter) DeleteMessage(msg *types.Message) error {
+	if msg == nil || strings.TrimSpace(msg.ID) == "" {
+		return nil
+	}
+	return a.callAPI("delete_msg", map[string]interface{}{"message_id": parseQQID(msg.ID)})
+}
+
+// Mute 设置群成员禁言；userID 为空时设置群全体禁言。
+func (a *QQAdapter) Mute(groupID string, userID string, durationSeconds int) error {
+	groupID = strings.TrimSpace(groupID)
+	userID = contract.NormalizeUserID(userID)
+	if groupID == "" || durationSeconds < 0 {
+		return nil
+	}
+	if userID == "" {
+		return a.callAPI("set_group_whole_ban", map[string]interface{}{
+			"group_id": parseQQID(groupID),
+			"enable":   durationSeconds > 0,
+		})
+	}
+	return a.callAPI("set_group_ban", map[string]interface{}{
+		"group_id": parseQQID(groupID),
+		"user_id":  parseQQID(userID),
+		"duration": durationSeconds,
+	})
+}
+
 func (a *QQAdapter) markRecentSent(messageType string, targetID string, content string) {
 	a.recentMu.Lock()
 	defer a.recentMu.Unlock()

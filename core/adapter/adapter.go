@@ -5,6 +5,20 @@ import "github.com/allbot/allbot/core/adapter/_contract"
 // Adapter 平台适配器接口。
 type Adapter = contract.Adapter
 
+// MessageDeleter 由适配器按平台能力撤回消息。
+type MessageDeleter = contract.MessageDeleter
+
+// GroupMuter 由适配器按平台能力执行群成员或全体禁言。
+type GroupMuter = contract.GroupMuter
+
+// ErrUnsupported 表示适配器明确不支持当前操作。
+var ErrUnsupported = contract.ErrUnsupported
+
+// NormalizeUserID 将常见平台的 @ 用户格式解析为用户 ID。
+func NormalizeUserID(value string) string {
+	return contract.NormalizeUserID(value)
+}
+
 // BotIdentity 平台机器人公开身份。
 type BotIdentity = contract.BotIdentity
 

@@ -69,6 +69,10 @@ await ctx.send_text("文本消息")
 await ctx.send_image("https://example.com/image.png")
 await ctx.send_file("/path/to/file.txt")
 reply = await ctx.listen(60)
+reply = await ctx.listen(60, 10)  # 等待 60 秒，收到的用户消息 10 秒后撤回
+await ctx.delete_message()        # 撤回当前收到的用户消息；不支持时返回 False
+await ctx.mute(user_id="123456", duration_seconds=60)
+await ctx.mute(duration_seconds=60)  # user_id 为空时请求群全体禁言
 await ctx.set_data_view("plugin_table", "数据视图", "插件数据", "说明", ["id", "name"])
 await ctx.fake_message("telegram", "123456", "-100888888", "天气 北京")
 

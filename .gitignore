@@ -8,6 +8,7 @@
 config.db
 
 .claude/
+.workbuddy/
 
 
 # 插件与备份运行文件
