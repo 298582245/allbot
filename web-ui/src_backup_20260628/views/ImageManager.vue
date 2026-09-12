@@ -484,7 +484,7 @@ onMounted(async () => {
 .image-table-wrap { flex: 1; min-height: 0; }
 .table-thumb { width: 58px; height: 58px; border-radius: 8px; background: #f5f7fa; }
 .desktop-image-table code,
-.mobile-url { padding: 4px 8px; border-radius: 6px; color: #1d4ed8; background: #eff6ff; font-family: "JetBrains Mono", "Cascadia Code", monospace; word-break: break-all; }
+.mobile-url { padding: 4px 8px; border-radius: 6px; color: #1d4ed8; background: #eff6ff; font-family: var(--font-mono); word-break: break-all; }
 .mobile-image-grid { display: none; }
 .field-tip { margin-top: 6px; color: #909399; font-size: 12px; line-height: 1.5; }
 .preview-dialog :deep(.el-dialog__body) { text-align: center; background: #f8fafc; }

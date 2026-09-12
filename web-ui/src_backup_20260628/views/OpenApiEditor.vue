@@ -347,7 +347,7 @@ onBeforeUnmount(destroyEditor)
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
-  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  font-family: var(--font-mono);
 }
 
 .editor-layout {

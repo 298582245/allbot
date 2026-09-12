@@ -49,7 +49,7 @@ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica N
 
 ```css
 /* 方案：Plus Jakarta Sans（标题）+ Inter（正文）+ JetBrains Mono（代码） */
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+/* 字体已通过 src/styles/tokens.css 自托管，无需访问外部字体服务 */
 
 :root {
   --font-heading: 'Plus Jakarta Sans', system-ui, sans-serif;

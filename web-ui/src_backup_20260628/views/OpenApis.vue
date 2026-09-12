@@ -668,7 +668,7 @@ onMounted(() => {
   border-radius: 6px;
   color: #1d4ed8;
   background: #eff6ff;
-  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  font-family: var(--font-mono);
   word-break: break-all;
   white-space: normal;
 }

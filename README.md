@@ -214,6 +214,23 @@ volumes:
 
 `/data/sdk` 是持久化的插件 SDK 目录。镜像重新构建后，容器入口脚本会对比镜像 SDK 指纹和 `/data/sdk` 当前内容：如果确认 `/data/sdk` 未被用户修改，会自动同步镜像内新版 SDK；如果检测到用户修改过 `/data/sdk`，会跳过覆盖并在日志中提示。首次引入该同步机制时，如果已有 `/data/sdk` 与镜像内容不一致，也会保守跳过覆盖。如需强制使用镜像新版 SDK，请先备份 `/data/sdk`，再删除 `/data/sdk` 并重启容器。
 
+如果执行 `git pull` 后发现容器内 SDK 仍然是旧版本，这是因为 Docker 镜像中的 SDK 位于 `/opt/allbot/sdk`，而实际运行时优先使用持久化卷中的 `/data/sdk`。`docker compose up -d --build` 不会直接覆盖这个持久化目录。可以先检查入口脚本日志：
+
+```bash
+docker compose logs --tail=200 allbot | grep -i sdk
+```
+
+如果日志中出现“检测到 `/data/sdk` 可能已被用户修改”或“缺少历史指纹，跳过自动覆盖”，请先备份并删除持久化 SDK 目录，再重新创建容器：
+
+```bash
+docker compose exec allbot sh -c \
+  'cp -a /data/sdk /data/sdk.backup && rm -rf /data/sdk /data/.allbot-sdk-image-sha256'
+
+docker compose up -d --build
+```
+
+该操作只会重新初始化 SDK，不会删除配置数据库、插件、日志或其他运行数据。不要使用 `docker compose down -v`，因为它会删除整个 `allbot_data` 命名卷。
+
 ### 5. Docker 模式升级
 
 Compose 默认设置 `ALLBOT_UPDATE_MODE=docker`。管理员在系统设置页点击“一键升级”或向机器人发送「更新」时，程序会下载 Release 资产并写入升级请求；容器入口脚本检测到请求后，会备份旧的 `/data/allbot`，替换为新版程序并自动重启应用。
