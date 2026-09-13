@@ -141,7 +141,7 @@ func TestParseTextMessageXML(t *testing.T) {
 		t.Fatalf("parseMessageXML returned error: %v", err)
 	}
 	assertMessage(t, msg, "123456", "openid", "你好")
-	if msg.Metadata["wechat_msg_type"] != "text" || msg.Metadata["reply_target"] != wechatOfficialPassiveReplyTarget("openid", "123456") || msg.Metadata["wechat_to_user_name"] != "gh_app" {
+	if msg.Metadata["wechat_msg_type"] != "text" || msg.Metadata["reply_target"] != "openid" || msg.Metadata["wechat_to_user_name"] != "gh_app" {
 		t.Fatalf("metadata = %#v", msg.Metadata)
 	}
 }
@@ -176,7 +176,7 @@ func TestParseEventMessageXML(t *testing.T) {
 func TestPostCallbackDispatchesMessage(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "gh_app", "secret", "token", "callback", "", "")
 	wechatOfficialPassiveReplyWait = 10 * time.Millisecond
-	defer func() { wechatOfficialPassiveReplyWait = 2 * time.Second }()
+	defer func() { wechatOfficialPassiveReplyWait = wechatOfficialPassiveReplyDefault }()
 	messages := make(chan *types.Message, 1)
 	adapter.SetMessageHandler(func(msg *types.Message) { messages <- msg })
 	query := url.Values{}
@@ -227,7 +227,7 @@ func TestVerifyFreshSignatureRejectsStaleAndReplay(t *testing.T) {
 func TestPostCallbackRejectsWrongTargetAndDuplicateMessage(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "gh_app", "secret", "token", "callback", "", "")
 	wechatOfficialPassiveReplyWait = 10 * time.Millisecond
-	defer func() { wechatOfficialPassiveReplyWait = 2 * time.Second }()
+	defer func() { wechatOfficialPassiveReplyWait = wechatOfficialPassiveReplyDefault }()
 	messages := make(chan *types.Message, 2)
 	adapter.SetMessageHandler(func(msg *types.Message) { messages <- msg })
 
@@ -290,7 +290,7 @@ func TestPostCallbackRejectsOversizedBody(t *testing.T) {
 func TestPostCallbackAllowsUnconfiguredOriginalID(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "", "secret", "token", "callback", "", "")
 	wechatOfficialPassiveReplyWait = 10 * time.Millisecond
-	defer func() { wechatOfficialPassiveReplyWait = 2 * time.Second }()
+	defer func() { wechatOfficialPassiveReplyWait = wechatOfficialPassiveReplyDefault }()
 	messages := make(chan *types.Message, 1)
 	adapter.SetMessageHandler(func(msg *types.Message) { messages <- msg })
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
@@ -328,30 +328,87 @@ func TestReplyAndSendTarget(t *testing.T) {
 	}
 }
 
-func TestPassiveReplyTargetsDoNotCollide(t *testing.T) {
+func TestPassiveReplyUsesUserTargetAfterListen(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "gh_app", "secret", "token", "", "", "")
-	firstTarget := wechatOfficialPassiveReplyTarget("openid", "message-1")
-	secondTarget := wechatOfficialPassiveReplyTarget("openid", "message-2")
-	firstCh := adapter.registerPassiveReply(firstTarget)
-	secondCh := adapter.registerPassiveReply(secondTarget)
-	defer adapter.unregisterPassiveReply(firstTarget, firstCh)
-	defer adapter.unregisterPassiveReply(secondTarget, secondCh)
+	previousCh := adapter.registerPassiveReply("openid")
+	currentCh := adapter.registerPassiveReply("openid")
+	defer adapter.unregisterPassiveReply("openid", currentCh)
 
-	if err := adapter.SendMessage(firstTarget, "延迟回复"); err != nil {
+	if err := adapter.SendMessage("openid", "延迟回复"); err != nil {
 		t.Fatalf("SendMessage returned error: %v", err)
 	}
 	select {
-	case reply := <-firstCh:
+	case reply := <-currentCh:
 		if reply.text != "延迟回复" {
-			t.Fatalf("first reply = %#v", reply)
+			t.Fatalf("current reply = %#v", reply)
 		}
 	default:
-		t.Fatal("first passive reply was not delivered")
+		t.Fatal("current passive reply was not delivered")
 	}
 	select {
-	case reply := <-secondCh:
-		t.Fatalf("second callback stole first reply: %#v", reply)
+	case reply := <-previousCh:
+		t.Fatalf("reply was delivered to the previous callback: %#v", reply)
 	default:
+	}
+}
+
+func TestPostCallbackMergesRepliesAfterListenMessage(t *testing.T) {
+	adapter := NewWeChatOfficialAdapter("app", "gh_app", "secret", "token", "callback", "", "")
+	wechatOfficialPassiveReplyWait = 100 * time.Millisecond
+	defer func() { wechatOfficialPassiveReplyWait = wechatOfficialPassiveReplyDefault }()
+
+	firstHandlerReady := make(chan struct{})
+	listenedMessage := make(chan string)
+	adapter.SetMessageHandler(func(msg *types.Message) {
+		if msg.Content == "first" {
+			close(firstHandlerReady)
+			<-listenedMessage
+			if err := adapter.SendMessage(msg.UserID, "处理中"); err != nil {
+				t.Errorf("first reply returned error: %v", err)
+			}
+			if err := adapter.SendMessage(msg.UserID, "处理完成"); err != nil {
+				t.Errorf("second reply returned error: %v", err)
+			}
+			return
+		}
+		listenedMessage <- msg.Content
+	})
+
+	post := func(messageID, content string) *httptest.ResponseRecorder {
+		query := url.Values{}
+		query.Set("timestamp", strconv.FormatInt(time.Now().Unix(), 10))
+		query.Set("nonce", "nonce-"+messageID)
+		query.Set("signature", testWeChatSignature("token", query.Get("timestamp"), query.Get("nonce")))
+		request := httptest.NewRequest(http.MethodPost, "/?"+query.Encode(), strings.NewReader(testWeChatMessageXMLWithContent("gh_app", messageID, content)))
+		response := httptest.NewRecorder()
+		adapter.HandleHTTPCallback("callback", response, request)
+		return response
+	}
+
+	firstResponse := make(chan *httptest.ResponseRecorder, 1)
+	go func() { firstResponse <- post("first-message", "first") }()
+	select {
+	case <-firstHandlerReady:
+	case <-time.After(time.Second):
+		t.Fatal("first message handler did not start")
+	}
+
+	secondResponse := post("second-message", "token")
+	if secondResponse.Code != http.StatusOK {
+		t.Fatalf("second callback status = %d", secondResponse.Code)
+	}
+	for _, want := range []string{"处理中", "处理完成"} {
+		if !strings.Contains(secondResponse.Body.String(), want) {
+			t.Fatalf("second callback missing %q in %q", want, secondResponse.Body.String())
+		}
+	}
+	select {
+	case response := <-firstResponse:
+		if response.Body.String() != "success" {
+			t.Fatalf("first callback body = %q", response.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first callback did not finish")
 	}
 }
 
@@ -394,7 +451,7 @@ func TestAccessTokenCacheAndRefresh(t *testing.T) {
 func TestPostCallbackUsesPassiveTextReply(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "gh_app", "secret", "token", "callback", "", "")
 	adapter.SetMessageHandler(func(msg *types.Message) {
-		if err := adapter.SendMessage(adapter.ReplyTarget(msg), "你好 <allbot>"); err != nil {
+		if err := adapter.SendMessage(msg.UserID, "你好 <allbot>"); err != nil {
 			t.Errorf("SendMessage returned error: %v", err)
 		}
 	})
@@ -421,13 +478,12 @@ func TestPostCallbackUsesPassiveTextReply(t *testing.T) {
 func TestPostCallbackMergesPassiveReplies(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "gh_app", "secret", "token", "callback", "", "")
 	wechatOfficialPassiveReplyWait = 20 * time.Millisecond
-	defer func() { wechatOfficialPassiveReplyWait = 2 * time.Second }()
+	defer func() { wechatOfficialPassiveReplyWait = wechatOfficialPassiveReplyDefault }()
 	adapter.SetMessageHandler(func(msg *types.Message) {
-		target := adapter.ReplyTarget(msg)
-		if err := adapter.SendMessage(target, "正在加载二维码，请稍候..."); err != nil {
+		if err := adapter.SendMessage(msg.UserID, "正在加载二维码，请稍候..."); err != nil {
 			t.Errorf("SendMessage returned error: %v", err)
 		}
-		if err := adapter.SendImage(target, "https://example.com/qrcode.png"); err != nil {
+		if err := adapter.SendImage(msg.UserID, "https://example.com/qrcode.png"); err != nil {
 			t.Errorf("SendImage returned error: %v", err)
 		}
 	})
@@ -451,7 +507,7 @@ func TestPostCallbackMergesPassiveReplies(t *testing.T) {
 func TestSendRichMessageUsesImageURLPrompt(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "gh_app", "secret", "token", "callback", "", "")
 	adapter.SetMessageHandler(func(msg *types.Message) {
-		err := adapter.SendRichMessage(adapter.ReplyTarget(msg), types.RichMessage{Parts: []types.RichMessagePart{
+		err := adapter.SendRichMessage(msg.UserID, types.RichMessage{Parts: []types.RichMessagePart{
 			{Type: "text", Text: "请使用微信扫描二维码登录"},
 			{Type: "image", URL: "https://example.com/qrcode.png", Alt: "朴朴微信登录二维码"},
 		}})
@@ -482,7 +538,7 @@ func TestSendRichMessageUsesImageURLPrompt(t *testing.T) {
 func TestSendImageSendsImageURLAsText(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "gh_app", "secret", "token", "callback", "", "")
 	adapter.SetMessageHandler(func(msg *types.Message) {
-		if err := adapter.SendImage(adapter.ReplyTarget(msg), "https://example.com/a.png"); err != nil {
+		if err := adapter.SendImage(msg.UserID, "https://example.com/a.png"); err != nil {
 			t.Errorf("SendImage returned error: %v", err)
 		}
 	})
@@ -545,7 +601,7 @@ func TestSendMessageUsesCustomerServiceAPI(t *testing.T) {
 func TestPostCallbackReturnsBeforeSlowHandler(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "gh_app", "secret", "token", "callback", "", "")
 	wechatOfficialPassiveReplyWait = 10 * time.Millisecond
-	defer func() { wechatOfficialPassiveReplyWait = 2 * time.Second }()
+	defer func() { wechatOfficialPassiveReplyWait = wechatOfficialPassiveReplyDefault }()
 	started := make(chan struct{})
 	release := make(chan struct{})
 	adapter.SetMessageHandler(func(msg *types.Message) {
@@ -700,7 +756,11 @@ func assertMessage(t *testing.T, msg *types.Message, id string, userID string, c
 }
 
 func testWeChatMessageXML(toUserName, messageID string) string {
-	return `<xml><ToUserName><![CDATA[` + toUserName + `]]></ToUserName><FromUserName><![CDATA[openid]]></FromUserName><CreateTime>` + strconv.FormatInt(time.Now().Unix(), 10) + `</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[ping]]></Content><MsgId>` + messageID + `</MsgId></xml>`
+	return testWeChatMessageXMLWithContent(toUserName, messageID, "ping")
+}
+
+func testWeChatMessageXMLWithContent(toUserName, messageID, content string) string {
+	return `<xml><ToUserName><![CDATA[` + toUserName + `]]></ToUserName><FromUserName><![CDATA[openid]]></FromUserName><CreateTime>` + strconv.FormatInt(time.Now().Unix(), 10) + `</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[` + content + `]]></Content><MsgId>` + messageID + `</MsgId></xml>`
 }
 
 func testWeChatSignature(token, timestamp, nonce string) string {

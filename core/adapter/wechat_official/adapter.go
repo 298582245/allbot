@@ -30,13 +30,14 @@ const (
 	wechatOfficialDefaultPath         = "callback"
 	wechatOfficialDefaultAPIBase      = "https://api.weixin.qq.com"
 	wechatOfficialDefaultTokenURL     = "https://api.weixin.qq.com/cgi-bin/token"
-	wechatOfficialPassiveTargetPrefix = "wechat_passive:"
 	wechatOfficialTokenRefreshLead    = 5 * time.Minute
 	wechatOfficialCallbackFreshness   = 5 * time.Minute
 	wechatOfficialCallbackBodyLimit   = 1 << 20
+	wechatOfficialPassiveReplyDefault = 4 * time.Second
 )
 
-var wechatOfficialPassiveReplyWait = 2 * time.Second
+// 微信要求被动回复在 5 秒内完成，预留网络和序列化开销。
+var wechatOfficialPassiveReplyWait = wechatOfficialPassiveReplyDefault
 
 type WeChatOfficialAdapter struct {
 	appID        string
@@ -197,23 +198,22 @@ func (a *WeChatOfficialAdapter) SendMessage(target string, text string) error {
 	if target == "" {
 		return fmt.Errorf("微信公众号发送目标不能为空")
 	}
-	passiveTarget, recipient := parseWeChatOfficialPassiveTarget(target)
-	if passiveTarget != "" && a.sendPassiveReply(passiveTarget, text) {
-		log.Printf("[发送][微信公众号][%s][被动回复]：%s", recipient, text)
+	if a.sendPassiveReply(target, text) {
+		log.Printf("[发送][微信公众号][%s][被动回复]：%s", target, text)
 		return nil
 	}
 	body := map[string]interface{}{
-		"touser":  recipient,
+		"touser":  target,
 		"msgtype": "text",
 		"text": map[string]string{
 			"content": text,
 		},
 	}
 	if err := a.callAPI(http.MethodPost, "/cgi-bin/message/custom/send", body, nil); err != nil {
-		log.Printf("[发送失败][微信公众号][%s][客服消息]：%v", recipient, err)
+		log.Printf("[发送失败][微信公众号][%s][客服消息]：%v", target, err)
 		return err
 	}
-	log.Printf("[发送][微信公众号][%s][客服消息]：%s", recipient, text)
+	log.Printf("[发送][微信公众号][%s][客服消息]：%s", target, text)
 	return nil
 }
 
@@ -324,9 +324,8 @@ func (a *WeChatOfficialAdapter) handleMessageCallback(w http.ResponseWriter, r *
 		writeWeChatOfficialSuccess(w)
 		return
 	}
-	replyTarget := a.ReplyTarget(msg)
-	replyCh := a.registerPassiveReply(replyTarget)
-	defer a.unregisterPassiveReply(replyTarget, replyCh)
+	replyCh := a.registerPassiveReply(msg.UserID)
+	defer a.unregisterPassiveReply(msg.UserID, replyCh)
 	go a.dispatchMessage(msg)
 	replies := collectWeChatOfficialPassiveReplies(replyCh, wechatOfficialPassiveReplyWait)
 	if len(replies) == 0 {
@@ -432,7 +431,7 @@ func (a *WeChatOfficialAdapter) buildMessage(incoming wechatOfficialMessageXML, 
 	}
 	metadata := map[string]string{
 		"message_type":          "private",
-		"reply_target":          wechatOfficialPassiveReplyTarget(openID, messageID),
+		"reply_target":          openID,
 		"wechat_openid":         openID,
 		"wechat_to_user_name":   strings.TrimSpace(incoming.ToUserName),
 		"wechat_from_user_name": openID,
@@ -500,28 +499,6 @@ func (a *WeChatOfficialAdapter) sendPassiveReply(target string, text string) boo
 	case <-time.After(wechatOfficialPassiveReplyWait):
 		return false
 	}
-}
-
-func wechatOfficialPassiveReplyTarget(openID, messageID string) string {
-	openID = strings.TrimSpace(openID)
-	messageID = strings.TrimSpace(messageID)
-	if openID == "" || messageID == "" {
-		return openID
-	}
-	return wechatOfficialPassiveTargetPrefix + openID + "|" + messageID
-}
-
-func parseWeChatOfficialPassiveTarget(target string) (passiveTarget, recipient string) {
-	target = strings.TrimSpace(target)
-	if !strings.HasPrefix(target, wechatOfficialPassiveTargetPrefix) {
-		return "", target
-	}
-	value := strings.TrimPrefix(target, wechatOfficialPassiveTargetPrefix)
-	separator := strings.IndexByte(value, '|')
-	if separator <= 0 || separator == len(value)-1 {
-		return "", target
-	}
-	return target, value[:separator]
 }
 
 func collectWeChatOfficialPassiveReplies(ch <-chan wechatOfficialPassiveReply, wait time.Duration) []string {
