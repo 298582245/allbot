@@ -42,7 +42,9 @@
             </el-table-column>
             <el-table-column label="路径" min-width="220" show-overflow-tooltip>
               <template #default="{ row }">
-                <code>{{ displayPath(row) }}</code>
+                <el-tooltip :content="displayPath(row)" placement="top" :show-after="200">
+                  <code class="api-path-text">{{ displayPath(row) }}</code>
+                </el-tooltip>
               </template>
             </el-table-column>
             <el-table-column label="Runtime" width="120">
@@ -101,7 +103,9 @@
               </div>
               <div class="api-info-row">
                 <span class="label">路径：</span>
-                <code class="path-text">{{ displayPath(row) }}</code>
+                <el-tooltip class="api-path-tooltip" :content="displayPath(row)" placement="top" :show-after="200">
+                  <code class="path-text">{{ displayPath(row) }}</code>
+                </el-tooltip>
               </div>
               <div class="api-info-row">
                 <span class="label">Runtime：</span>
@@ -338,7 +342,13 @@
           <el-table :data="callItems" border stripe height="100%" empty-text="暂无调用数据">
             <el-table-column label="调用时间" min-width="180"><template #default="{ row }">{{ formatTime(row.started_at || row.startedAt) }}</template></el-table-column>
             <el-table-column prop="method" label="方法" width="85" />
-            <el-table-column label="路径" min-width="170" show-overflow-tooltip><template #default="{ row }">{{ displayCallPath(row) }}</template></el-table-column>
+            <el-table-column label="路径" min-width="170" show-overflow-tooltip>
+              <template #default="{ row }">
+                <el-tooltip :content="displayCallPath(row)" placement="top" :show-after="200">
+                  <code class="api-path-text">{{ displayCallPath(row) }}</code>
+                </el-tooltip>
+              </template>
+            </el-table-column>
             <el-table-column label="客户端 IP" min-width="165" show-overflow-tooltip><template #default="{ row }">{{ row.client_ip || row.clientIp || '-' }}</template></el-table-column>
             <el-table-column label="HTTP" width="80" align="center"><template #default="{ row }">{{ row.status_code ?? row.statusCode ?? '-' }}</template></el-table-column>
             <el-table-column label="结果" width="110"><template #default="{ row }"><el-tag :type="outcomeTagType(row.outcome)" effect="plain">{{ outcomeLabel(row.outcome) }}</el-tag></template></el-table-column>
@@ -1119,6 +1129,17 @@ onMounted(() => {
   word-break: break-all;
 }
 
+.api-path-tooltip,
+.api-path-text,
+.path-text {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .api-table code,
 .path-text {
   max-width: 100%;
@@ -1127,8 +1148,18 @@ onMounted(() => {
   color: #1d4ed8;
   background: #eff6ff;
   font-family: var(--font-mono);
-  word-break: break-all;
-  white-space: normal;
+}
+
+.api-table :deep(.el-tooltip__trigger),
+.calls-table-wrap :deep(.el-tooltip__trigger) {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.api-info-row .api-path-tooltip {
+  flex: 1;
+  min-width: 0;
 }
 
 .api-card-footer {

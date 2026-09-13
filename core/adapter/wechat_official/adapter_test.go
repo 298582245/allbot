@@ -141,7 +141,7 @@ func TestParseTextMessageXML(t *testing.T) {
 		t.Fatalf("parseMessageXML returned error: %v", err)
 	}
 	assertMessage(t, msg, "123456", "openid", "你好")
-	if msg.Metadata["wechat_msg_type"] != "text" || msg.Metadata["reply_target"] != "openid" || msg.Metadata["wechat_to_user_name"] != "gh_app" {
+	if msg.Metadata["wechat_msg_type"] != "text" || msg.Metadata["reply_target"] != wechatOfficialPassiveReplyTarget("openid", "123456") || msg.Metadata["wechat_to_user_name"] != "gh_app" {
 		t.Fatalf("metadata = %#v", msg.Metadata)
 	}
 }
@@ -328,6 +328,33 @@ func TestReplyAndSendTarget(t *testing.T) {
 	}
 }
 
+func TestPassiveReplyTargetsDoNotCollide(t *testing.T) {
+	adapter := NewWeChatOfficialAdapter("app", "gh_app", "secret", "token", "", "", "")
+	firstTarget := wechatOfficialPassiveReplyTarget("openid", "message-1")
+	secondTarget := wechatOfficialPassiveReplyTarget("openid", "message-2")
+	firstCh := adapter.registerPassiveReply(firstTarget)
+	secondCh := adapter.registerPassiveReply(secondTarget)
+	defer adapter.unregisterPassiveReply(firstTarget, firstCh)
+	defer adapter.unregisterPassiveReply(secondTarget, secondCh)
+
+	if err := adapter.SendMessage(firstTarget, "延迟回复"); err != nil {
+		t.Fatalf("SendMessage returned error: %v", err)
+	}
+	select {
+	case reply := <-firstCh:
+		if reply.text != "延迟回复" {
+			t.Fatalf("first reply = %#v", reply)
+		}
+	default:
+		t.Fatal("first passive reply was not delivered")
+	}
+	select {
+	case reply := <-secondCh:
+		t.Fatalf("second callback stole first reply: %#v", reply)
+	default:
+	}
+}
+
 func TestAccessTokenCacheAndRefresh(t *testing.T) {
 	var tokenCalls int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -367,7 +394,7 @@ func TestAccessTokenCacheAndRefresh(t *testing.T) {
 func TestPostCallbackUsesPassiveTextReply(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "gh_app", "secret", "token", "callback", "", "")
 	adapter.SetMessageHandler(func(msg *types.Message) {
-		if err := adapter.SendMessage(msg.UserID, "你好 <allbot>"); err != nil {
+		if err := adapter.SendMessage(adapter.ReplyTarget(msg), "你好 <allbot>"); err != nil {
 			t.Errorf("SendMessage returned error: %v", err)
 		}
 	})
@@ -396,10 +423,11 @@ func TestPostCallbackMergesPassiveReplies(t *testing.T) {
 	wechatOfficialPassiveReplyWait = 20 * time.Millisecond
 	defer func() { wechatOfficialPassiveReplyWait = 2 * time.Second }()
 	adapter.SetMessageHandler(func(msg *types.Message) {
-		if err := adapter.SendMessage(msg.UserID, "正在加载二维码，请稍候..."); err != nil {
+		target := adapter.ReplyTarget(msg)
+		if err := adapter.SendMessage(target, "正在加载二维码，请稍候..."); err != nil {
 			t.Errorf("SendMessage returned error: %v", err)
 		}
-		if err := adapter.SendImage(msg.UserID, "https://example.com/qrcode.png"); err != nil {
+		if err := adapter.SendImage(target, "https://example.com/qrcode.png"); err != nil {
 			t.Errorf("SendImage returned error: %v", err)
 		}
 	})
@@ -423,7 +451,7 @@ func TestPostCallbackMergesPassiveReplies(t *testing.T) {
 func TestSendRichMessageUsesImageURLPrompt(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "gh_app", "secret", "token", "callback", "", "")
 	adapter.SetMessageHandler(func(msg *types.Message) {
-		err := adapter.SendRichMessage(msg.UserID, types.RichMessage{Parts: []types.RichMessagePart{
+		err := adapter.SendRichMessage(adapter.ReplyTarget(msg), types.RichMessage{Parts: []types.RichMessagePart{
 			{Type: "text", Text: "请使用微信扫描二维码登录"},
 			{Type: "image", URL: "https://example.com/qrcode.png", Alt: "朴朴微信登录二维码"},
 		}})
@@ -454,7 +482,7 @@ func TestSendRichMessageUsesImageURLPrompt(t *testing.T) {
 func TestSendImageSendsImageURLAsText(t *testing.T) {
 	adapter := NewWeChatOfficialAdapter("app", "gh_app", "secret", "token", "callback", "", "")
 	adapter.SetMessageHandler(func(msg *types.Message) {
-		if err := adapter.SendImage(msg.UserID, "https://example.com/a.png"); err != nil {
+		if err := adapter.SendImage(adapter.ReplyTarget(msg), "https://example.com/a.png"); err != nil {
 			t.Errorf("SendImage returned error: %v", err)
 		}
 	})
