@@ -222,6 +222,48 @@ func TestQQAdapterExplicitHTTPActionChannel(t *testing.T) {
 	}
 }
 
+func TestQQAdapterSendMessageSplitsLongText(t *testing.T) {
+	var mu sync.Mutex
+	messages := make([]string, 0, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/get_login_info" {
+			_, _ = writer.Write([]byte(`{"status":"ok","retcode":0,"data":{"user_id":10001}}`))
+			return
+		}
+		if request.URL.Path != "/send_msg" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		var params map[string]interface{}
+		if err := json.NewDecoder(request.Body).Decode(&params); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		messages = append(messages, params["message"].(string))
+		mu.Unlock()
+		_, _ = writer.Write([]byte(`{"status":"ok","retcode":0,"data":{"message_id":1}}`))
+	}))
+	defer server.Close()
+
+	adapter := NewQQAdapter(QQAdapterConfig{HTTPAPIURL: server.URL})
+	text := strings.Repeat("一", contract.DefaultTextMessageLimit*2+17)
+	if err := adapter.SendMessage("20002", text); err != nil {
+		t.Fatalf("SendMessage returned error: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(messages) != 3 {
+		t.Fatalf("messages len = %d", len(messages))
+	}
+	if got := strings.Join(messages, ""); got != text {
+		t.Fatal("sent messages do not reassemble to original text")
+	}
+	for index, part := range messages {
+		if contract.TextRuneCount(part) > contract.DefaultTextMessageLimit {
+			t.Fatalf("part %d too long", index)
+		}
+	}
+}
+
 func TestQQAdapterHTTPDoesNotReuseWebSocketToken(t *testing.T) {
 	authorization := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

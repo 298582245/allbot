@@ -601,7 +601,9 @@ class AccountStore {
       const expiresTime = new Date(expiresAt).getTime();
       if (!Number.isFinite(expiresTime)) { result.skipped++; continue; }
       const daysLeft = Math.ceil((expiresTime - now) / 86400000);
-      const notifyMatched = notifyDays.includes(daysLeft) || (daysLeft < 0 && notifyDays.includes(0));
+      // 0 means the expiration day only; negative values can be configured
+      // explicitly when reminders are needed after expiration.
+      const notifyMatched = notifyDays.includes(daysLeft);
       const shouldDelete = deleteAfterDays >= 0 && now - expiresTime >= deleteAfterDays * 86400000;
       if ((notifyMatched || shouldDelete) && options.notify !== false) {
         const text = typeof options.message === 'function' ? options.message(account, { daysLeft, expiresAt }) : `${options.title || '账号授权'} ${daysLeft >= 0 ? `将在 ${daysLeft} 天后过期` : '已过期'}`;

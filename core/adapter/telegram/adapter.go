@@ -559,6 +559,19 @@ func htmlEscape(value string) string {
 }
 
 func (a *TelegramAdapter) SendMessage(target string, text string) error {
+	parts := contract.SplitTextMessage(text, contract.DefaultTextMessageLimit)
+	if len(parts) > 1 {
+		log.Printf("[WARN][Telegram][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
+	}
+	for index, part := range parts {
+		if err := a.sendMessagePart(target, part); err != nil {
+			return fmt.Errorf("Telegram 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+		}
+	}
+	return nil
+}
+
+func (a *TelegramAdapter) sendMessagePart(target string, text string) error {
 	data := map[string]interface{}{
 		"chat_id": telegramChatID(target),
 		"text":    text,

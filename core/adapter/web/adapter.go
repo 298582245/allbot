@@ -103,7 +103,16 @@ func (a *Adapter) Stop() error {
 }
 
 func (a *Adapter) SendMessage(target string, text string) error {
-	return a.saveOutbound(target, &config.WebChatMessage{MessageType: "text", Content: text, Target: target, PluginID: webChatPluginIDFromTarget(target)})
+	parts := contract.SplitTextMessage(text, contract.DefaultTextMessageLimit)
+	if len(parts) > 1 {
+		log.Printf("[WARN][web][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
+	}
+	for index, part := range parts {
+		if err := a.saveOutbound(target, &config.WebChatMessage{MessageType: "text", Content: part, Target: target, PluginID: webChatPluginIDFromTarget(target)}); err != nil {
+			return fmt.Errorf("web 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+		}
+	}
+	return nil
 }
 
 func (a *Adapter) SendMarkdown(target string, markdown string) error {

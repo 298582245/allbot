@@ -203,6 +203,19 @@ func (a *DingTalkAdapter) SendMessage(target string, text string) error {
 	if err != nil {
 		return err
 	}
+	parts := contract.SplitTextMessagePreserveCQ(text, contract.DefaultTextMessageLimit)
+	if len(parts) > 1 {
+		log.Printf("[WARN][钉钉][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
+	}
+	for index, part := range parts {
+		if err := a.sendMessagePart(targetInfo, target, part); err != nil {
+			return fmt.Errorf("钉钉第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+		}
+	}
+	return nil
+}
+
+func (a *DingTalkAdapter) sendMessagePart(targetInfo dingTalkMessageTarget, target string, text string) error {
 	switch targetInfo.kind {
 	case dingTalkTargetWebhook:
 		if a.replier == nil {

@@ -222,6 +222,23 @@ func (a *QQOfficeAdapter) SendMessageWithSequence(target string, text string, se
 }
 
 func (a *QQOfficeAdapter) sendMessage(target string, text string, sequence int) error {
+	parts := contract.SplitTextMessage(text, contract.DefaultTextMessageLimit)
+	if len(parts) > 1 {
+		log.Printf("[WARN][QQ官方][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
+	}
+	for index, part := range parts {
+		partSequence := sequence
+		if sequence > 0 {
+			partSequence = sequence + index
+		}
+		if err := a.sendMessagePart(target, part, partSequence); err != nil {
+			return fmt.Errorf("QQ 官方第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+		}
+	}
+	return nil
+}
+
+func (a *QQOfficeAdapter) sendMessagePart(target string, text string, sequence int) error {
 	targetInfo, err := parseQQOfficeMessageTarget(target)
 	if err != nil {
 		return err

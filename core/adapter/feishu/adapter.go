@@ -309,6 +309,19 @@ func (a *FeishuAdapter) SendMessage(target string, text string) error {
 	if text == "" {
 		return fmt.Errorf("飞书消息内容不能为空")
 	}
+	parts := contract.SplitTextMessage(text, contract.DefaultTextMessageLimit)
+	if len(parts) > 1 {
+		log.Printf("[WARN][飞书][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
+	}
+	for index, part := range parts {
+		if err := a.sendMessagePart(target, part); err != nil {
+			return fmt.Errorf("飞书第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+		}
+	}
+	return nil
+}
+
+func (a *FeishuAdapter) sendMessagePart(target string, text string) error {
 	content, err := json.Marshal(map[string]string{"text": text})
 	if err != nil {
 		return err

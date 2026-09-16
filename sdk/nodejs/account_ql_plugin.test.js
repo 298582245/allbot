@@ -73,6 +73,25 @@ test('normalizeSchedules supports multiple run items', () => {
   assert.equal(schedules[1].cron, '13 8,15 * * *');
 });
 
+test('expiration day zero does not repeat after expiration', async () => {
+  const account = {
+    id: 1,
+    account_name: '账号1',
+    expires_at: new Date(Date.now() - 2 * 86400000).toISOString()
+  };
+  const plugin = makePlugin();
+  const ctx = makeCtx({ accounts: [account] });
+  ctx.sendMessage = async () => true;
+
+  const result = await plugin.store(ctx).scanExpirations({
+    notifyDays: [0],
+    deleteAfterDays: -1
+  });
+
+  assert.equal(result.notified, 0);
+  assert.equal(result.deleted, 0);
+});
+
 test('ensureSchedules uses task count as default maxCount', async () => {
   const plugin = new AccountQLPlugin({
     prefix: '测试',

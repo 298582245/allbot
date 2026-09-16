@@ -339,6 +339,19 @@ func (a *QQAdapter) handleMessageEvent(event map[string]interface{}) {
 
 // SendMessage 发送消息。
 func (a *QQAdapter) SendMessage(target string, text string) error {
+	parts := contract.SplitTextMessagePreserveCQ(text, contract.DefaultTextMessageLimit)
+	if len(parts) > 1 {
+		log.Printf("[WARN][QQ][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
+	}
+	for index, part := range parts {
+		if err := a.sendMessagePart(target, part); err != nil {
+			return fmt.Errorf("QQ 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+		}
+	}
+	return nil
+}
+
+func (a *QQAdapter) sendMessagePart(target string, text string) error {
 	messageType := "private"
 	targetID := target
 	if strings.HasPrefix(target, "group_") {

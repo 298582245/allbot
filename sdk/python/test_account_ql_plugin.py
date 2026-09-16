@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import os
 import sys
 import unittest
@@ -16,6 +17,7 @@ class FakeContext:
         self.fake = fake
         self.result = result or {"status": "success", "task_id": "task-1"}
         self.accounts = accounts or []
+        self.requests = []
         self.listens = list(listens or [])
         self.listen_timeouts = []
         self.replies = []
@@ -56,7 +58,8 @@ class FakeContext:
         self.scheduled_tasks.append(payload)
         return payload
 
-    def _request(self, _action, _expected_action="account_response"):
+    def _request(self, action, _expected_action="account_response"):
+        self.requests.append(action)
         return self.accounts
 
 
@@ -99,6 +102,26 @@ class AccountQLPluginScheduleTest(unittest.TestCase):
 
         self.assertEqual(len(ctx.scheduled_tasks), 4)
         self.assertEqual({item["max_count"] for item in ctx.scheduled_tasks}, {4})
+
+    def test_expiration_day_zero_does_not_repeat_after_expiration(self):
+        account = {
+            "id": 1,
+            "account_name": "账号1",
+            "expires_at": (
+                datetime.datetime.now(datetime.timezone.utc)
+                - datetime.timedelta(days=2)
+            ).isoformat(),
+        }
+        plugin = make_plugin()
+        ctx = FakeContext(accounts=[account])
+
+        result = asyncio.run(plugin.store(ctx).scan_expirations(
+            notify_days=[0],
+            delete_after_days=-1,
+        ))
+
+        self.assertEqual(result["notified"], 0)
+        self.assertEqual(result["deleted"], 0)
 
 
 class AccountQLPluginRunHookTest(unittest.TestCase):

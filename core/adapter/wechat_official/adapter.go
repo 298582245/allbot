@@ -198,6 +198,10 @@ func (a *WeChatOfficialAdapter) SendMessage(target string, text string) error {
 	if target == "" {
 		return fmt.Errorf("微信公众号发送目标不能为空")
 	}
+	if contract.TextRuneCount(text) > contract.DefaultTextMessageLimit {
+		log.Printf("[WARN][微信公众号][%s] 文本长度 %d 超过 %d，按平台限制跳过发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit)
+		return nil
+	}
 	if a.sendPassiveReply(target, text) {
 		log.Printf("[发送][微信公众号][%s][被动回复]：%s", target, text)
 		return nil

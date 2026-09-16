@@ -332,6 +332,42 @@ func TestQQOfficeSendMessageWithSequenceAdvancesReplySeq(t *testing.T) {
 	}
 }
 
+func TestQQOfficeSendMessageSplitsLongTextAndIncrementsReplySeq(t *testing.T) {
+	bodies := make(chan map[string]interface{}, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/v2/users/user-openid/messages":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body failed: %v", err)
+			}
+			bodies <- body
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	text := strings.Repeat("一", contract.DefaultTextMessageLimit*2+17)
+	if err := adp.SendMessage("user_user-openid|msg_msg-c2c", text); err != nil {
+		t.Fatalf("SendMessage returned error: %v", err)
+	}
+	first := <-bodies
+	second := <-bodies
+	third := <-bodies
+	if first["msg_seq"] != float64(1) || second["msg_seq"] != float64(2) || third["msg_seq"] != float64(3) {
+		t.Fatalf("msg_seq = %v/%v/%v", first["msg_seq"], second["msg_seq"], third["msg_seq"])
+	}
+	joined := first["content"].(string) + second["content"].(string) + third["content"].(string)
+	if joined != text {
+		t.Fatal("sent content does not reassemble to original text")
+	}
+}
+
 func TestQQOfficeSendMessageWithSequenceDMSOmitsReplySeq(t *testing.T) {
 	var body map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

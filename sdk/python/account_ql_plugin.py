@@ -679,7 +679,9 @@ class AccountStore:
                 result["skipped"] += 1
                 continue
             days_left = int(((expires_time - now).total_seconds() + 86399) // 86400)
-            notify_matched = days_left in notify_days or (days_left < 0 and 0 in notify_days)
+            # 0 means the expiration day only; negative values can be configured
+            # explicitly when reminders are needed after expiration.
+            notify_matched = days_left in notify_days
             should_delete = delete_after_days >= 0 and (now - expires_time).total_seconds() >= delete_after_days * 86400
             if (notify_matched or should_delete) and options.get("notify", True) is not False:
                 message = options.get("message")
