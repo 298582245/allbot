@@ -149,6 +149,7 @@ func main() {
 	if err := adapterManager.LoadAndStartAdapters(); err != nil {
 		log.Printf("警告：加载适配器失败: %v", err)
 	}
+	adapterManager.StartHealthMonitor()
 	messageRouter.SetAdapterGetter(adapterManager.GetAdapter)
 	messageRouter.SetMessageAdapterGetter(adapterManager.GetAdapterForMessage)
 	messageRouter.SetDataViewSaver(configDB.SaveDataView)

@@ -108,6 +108,20 @@ func (a *QQAdapter) GetPlatform() string {
 	return "qq"
 }
 
+func (a *QQAdapter) IsHealthy() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.conn == nil {
+		return false
+	}
+	select {
+	case <-a.closed:
+		return false
+	default:
+		return true
+	}
+}
+
 func (a *QQAdapter) GetBotIdentity(msg *types.Message) contract.BotIdentity {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -345,7 +359,9 @@ func (a *QQAdapter) SendMessage(target string, text string) error {
 	}
 	for index, part := range parts {
 		if err := a.sendMessagePart(target, part); err != nil {
-			return fmt.Errorf("QQ 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+			sendErr := fmt.Errorf("QQ 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+			log.Printf("[ERROR][QQ][%s]：%v", target, sendErr)
+			return sendErr
 		}
 	}
 	return nil
@@ -364,9 +380,12 @@ func (a *QQAdapter) sendMessagePart(target string, text string) error {
 	} else {
 		params["user_id"] = parseQQID(targetID)
 	}
-	log.Printf("[发送][QQ][%s]：%s", target, text)
+	if err := a.callAPI("send_msg", params); err != nil {
+		return err
+	}
 	a.markRecentSent(messageType, targetID, text)
-	return a.callAPI("send_msg", params)
+	log.Printf("[INFO][发送][QQ][%s]：%s", target, text)
+	return nil
 }
 
 // DeleteMessage 撤回 OneBot 消息。

@@ -109,7 +109,9 @@ func (a *Adapter) SendMessage(target string, text string) error {
 	}
 	for index, part := range parts {
 		if err := a.saveOutbound(target, &config.WebChatMessage{MessageType: "text", Content: part, Target: target, PluginID: webChatPluginIDFromTarget(target)}); err != nil {
-			return fmt.Errorf("web 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+			sendErr := fmt.Errorf("web 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+			log.Printf("[ERROR][web][%s]：%v", target, sendErr)
+			return sendErr
 		}
 	}
 	return nil
@@ -249,7 +251,6 @@ func (a *Adapter) saveOutbound(target string, message *config.WebChatMessage) er
 	}
 	message.UserID = userID
 	message.Direction = "out"
-	log.Printf("[发送][web][%s]：%s", target, webChatLogContent(message))
 	database := a.currentDatabase()
 	if database != nil {
 		saved, err := database.SaveWebChatMessage(message)
@@ -259,6 +260,7 @@ func (a *Adapter) saveOutbound(target string, message *config.WebChatMessage) er
 		message = saved
 	}
 	a.broadcast(userID, message)
+	log.Printf("[INFO][发送][web][%s]：%s", target, webChatLogContent(message))
 	return nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/allbot/allbot/core/adapter"
 	"github.com/allbot/allbot/core/adapter/_registry"
@@ -20,13 +21,18 @@ type AdapterManager struct {
 	lifecycleLocks map[int64]*sync.Mutex
 	messageHandler func(*types.Message)
 	mu             sync.RWMutex
+	healthStop     chan struct{}
+	healthStopOnce sync.Once
 }
+
+const adapterHealthCheckInterval = 30 * time.Second
 
 func NewAdapterManager(db *Database) *AdapterManager {
 	return &AdapterManager{
 		db:             db,
 		adapters:       make(map[int64]adapter.Adapter),
 		lifecycleLocks: make(map[int64]*sync.Mutex),
+		healthStop:     make(chan struct{}),
 	}
 }
 
@@ -53,6 +59,49 @@ func (m *AdapterManager) LoadAndStartAdapters() error {
 	}
 
 	return nil
+}
+
+func (m *AdapterManager) StartHealthMonitor() {
+	go m.healthMonitorLoop()
+}
+
+func (m *AdapterManager) StopHealthMonitor() {
+	m.healthStopOnce.Do(func() {
+		close(m.healthStop)
+	})
+}
+
+func (m *AdapterManager) healthMonitorLoop() {
+	ticker := time.NewTicker(adapterHealthCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.healthStop:
+			return
+		case <-ticker.C:
+			m.RestartUnhealthyAdapters()
+		}
+	}
+}
+
+func (m *AdapterManager) RestartUnhealthyAdapters() {
+	if m == nil || m.db == nil {
+		return
+	}
+	configs, err := m.db.GetAllAdapters()
+	if err != nil {
+		log.Printf("警告：检查适配器健康状态失败: %v", err)
+		return
+	}
+	for _, config := range configs {
+		if config == nil || !config.Enabled || m.IsAdapterRunning(config.ID) {
+			continue
+		}
+		log.Printf("警告：适配器未运行，准备自动重启: %s#%d", config.Platform, config.ID)
+		if err := m.ReloadAdapterByID(config.ID); err != nil {
+			log.Printf("警告：自动重启适配器失败 %s#%d: %v", config.Platform, config.ID, err)
+		}
+	}
 }
 
 func (m *AdapterManager) adapterLifecycleLock(id int64) *sync.Mutex {
@@ -210,7 +259,7 @@ func (m *AdapterManager) ReloadAdapterByID(id int64) error {
 	}
 
 	if err := m.stopAdapterLocked(id); err != nil {
-		log.Printf("警告：停止旧适配器失败: %v", err)
+		return fmt.Errorf("停止旧适配器失败: %w", err)
 	}
 
 	if config.Enabled {
@@ -262,6 +311,34 @@ func (m *AdapterManager) GetAdapterByID(id int64) adapter.Adapter {
 	return m.adapters[id]
 }
 
+func (m *AdapterManager) IsAdapterRunning(id int64) bool {
+	adp := m.GetAdapterByID(id)
+	if adp == nil {
+		return false
+	}
+	if healthChecker, ok := adp.(adapter.HealthChecker); ok {
+		return healthChecker.IsHealthy()
+	}
+	return true
+}
+
+func (m *AdapterManager) RunningAdapterCount() int {
+	m.mu.RLock()
+	ids := make([]int64, 0, len(m.adapters))
+	for id := range m.adapters {
+		ids = append(ids, id)
+	}
+	m.mu.RUnlock()
+
+	running := 0
+	for _, id := range ids {
+		if m.IsAdapterRunning(id) {
+			running++
+		}
+	}
+	return running
+}
+
 func (m *AdapterManager) GetAdapterForMessage(msg *types.Message) adapter.Adapter {
 	if msg == nil {
 		return nil
@@ -292,6 +369,7 @@ func (m *AdapterManager) GetAllAdapters() map[int64]adapter.Adapter {
 }
 
 func (m *AdapterManager) StopAll() {
+	m.StopHealthMonitor()
 	m.mu.RLock()
 	ids := make([]int64, 0, len(m.adapters))
 	for id := range m.adapters {
@@ -363,12 +441,7 @@ func (m *AdapterManager) SaveAdapterConfig(id int64, platform, remark, descripti
 	}
 
 	if err := m.ReloadAdapterByID(config.ID); err != nil {
-		if enabled {
-			config.Enabled = false
-			if saveErr := m.db.SaveAdapter(config); saveErr != nil {
-				return fmt.Errorf("启动适配器失败: %w；回写停止状态失败: %v", err, saveErr)
-			}
-		}
+		// 启动失败不等于用户禁用，保留数据库中的启用配置，便于后续重试。
 		return err
 	}
 

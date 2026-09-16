@@ -483,13 +483,37 @@ func (cl *CustomLogger) Write(p []byte) (n int, err error) {
 	}
 
 	level := "info"
-	contentLower := strings.ToLower(content)
-	if strings.Contains(contentLower, "warn") || strings.Contains(content, "警告") {
-		level = "warn"
-	} else if strings.Contains(contentLower, "error") || strings.Contains(contentLower, "failed") || strings.Contains(content, "失败") {
+	classificationContent := strings.TrimSpace(content)
+	contentLower := strings.ToLower(classificationContent)
+	switch {
+	case strings.HasPrefix(contentLower, "[error]"):
 		level = "error"
-	} else if strings.Contains(content, "[DEBUG]") {
+	case strings.HasPrefix(contentLower, "[warn]"), strings.HasPrefix(contentLower, "[warning]"):
+		level = "warn"
+	case strings.HasPrefix(contentLower, "[debug]"):
 		level = "debug"
+	case strings.HasPrefix(contentLower, "[info]"):
+		level = "info"
+	default:
+		// Send/receive logs contain user content after these separators. Do not
+		// use that content to infer the severity of the log entry.
+		if index := strings.Index(classificationContent, " text="); index >= 0 {
+			classificationContent = classificationContent[:index]
+		}
+		if strings.HasPrefix(classificationContent, "[发送") ||
+			strings.HasPrefix(classificationContent, "[接收") ||
+			strings.HasPrefix(classificationContent, "[交互") ||
+			strings.HasPrefix(classificationContent, "[事件") {
+			if index := strings.Index(classificationContent, "："); index >= 0 {
+				classificationContent = classificationContent[:index]
+			}
+		}
+		contentLower = strings.ToLower(classificationContent)
+		if strings.Contains(contentLower, "error") || strings.Contains(contentLower, "failed") || strings.Contains(classificationContent, "失败") {
+			level = "error"
+		} else if strings.Contains(contentLower, "warn") || strings.Contains(classificationContent, "警告") {
+			level = "warn"
+		}
 	}
 
 	cl.logManager.AddLog(level, content)

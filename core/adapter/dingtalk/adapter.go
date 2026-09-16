@@ -209,7 +209,9 @@ func (a *DingTalkAdapter) SendMessage(target string, text string) error {
 	}
 	for index, part := range parts {
 		if err := a.sendMessagePart(targetInfo, target, part); err != nil {
-			return fmt.Errorf("钉钉第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+			sendErr := fmt.Errorf("钉钉第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+			log.Printf("[ERROR][钉钉][%s]：%v", target, sendErr)
+			return sendErr
 		}
 	}
 	return nil
@@ -221,21 +223,26 @@ func (a *DingTalkAdapter) sendMessagePart(targetInfo dingTalkMessageTarget, targ
 		if a.replier == nil {
 			a.replier = chatbot.NewChatbotReplier()
 		}
-		log.Printf("[发送][钉钉][%s]：%s", target, text)
 		parsed := parseDingTalkCQAtText(text)
+		var err error
 		if !parsed.hasAt {
-			return a.replier.SimpleReplyText(context.Background(), targetInfo.id, []byte(text))
+			err = a.replier.SimpleReplyText(context.Background(), targetInfo.id, []byte(text))
+		} else {
+			err = a.replier.ReplyMessage(context.Background(), targetInfo.id, map[string]interface{}{
+				"msgtype": "text",
+				"text": map[string]interface{}{
+					"content": parsed.content,
+				},
+				"at": map[string]interface{}{
+					"atUserIds": parsed.atUserIDs,
+					"isAtAll":   parsed.isAtAll,
+				},
+			})
 		}
-		return a.replier.ReplyMessage(context.Background(), targetInfo.id, map[string]interface{}{
-			"msgtype": "text",
-			"text": map[string]interface{}{
-				"content": parsed.content,
-			},
-			"at": map[string]interface{}{
-				"atUserIds": parsed.atUserIDs,
-				"isAtAll":   parsed.isAtAll,
-			},
-		})
+		if err == nil {
+			log.Printf("[INFO][发送][钉钉][%s]：%s", target, text)
+		}
+		return err
 	case dingTalkTargetConversation:
 		return fmt.Errorf("钉钉 Stream 适配器暂未实现会话主动发送，请使用最近消息的 session webhook 回复目标")
 	case dingTalkTargetUser:

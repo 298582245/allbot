@@ -5,6 +5,9 @@ import "github.com/allbot/allbot/core/adapter/_contract"
 // Adapter 平台适配器接口。
 type Adapter = contract.Adapter
 
+// HealthChecker 由可判断运行态的适配器实现。
+type HealthChecker = contract.HealthChecker
+
 // MessageDeleter 由适配器按平台能力撤回消息。
 type MessageDeleter = contract.MessageDeleter
 

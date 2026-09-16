@@ -565,7 +565,9 @@ func (a *TelegramAdapter) SendMessage(target string, text string) error {
 	}
 	for index, part := range parts {
 		if err := a.sendMessagePart(target, part); err != nil {
-			return fmt.Errorf("Telegram 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+			sendErr := fmt.Errorf("Telegram 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+			log.Printf("[ERROR][Telegram][%s]：%v", target, sendErr)
+			return sendErr
 		}
 	}
 	return nil
@@ -579,8 +581,11 @@ func (a *TelegramAdapter) sendMessagePart(target string, text string) error {
 	if strings.Contains(text, "tg://user?id=") {
 		data["parse_mode"] = "HTML"
 	}
-	log.Printf("[发送][Telegram][%s]：%s", target, text)
-	return a.callAPI("/sendMessage", data)
+	if err := a.callAPI("/sendMessage", data); err != nil {
+		return err
+	}
+	log.Printf("[INFO][发送][Telegram][%s]：%s", target, text)
+	return nil
 }
 
 // DeleteMessage 撤回 Telegram 消息。

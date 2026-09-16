@@ -315,7 +315,9 @@ func (a *FeishuAdapter) SendMessage(target string, text string) error {
 	}
 	for index, part := range parts {
 		if err := a.sendMessagePart(target, part); err != nil {
-			return fmt.Errorf("飞书第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+			sendErr := fmt.Errorf("飞书第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+			log.Printf("[ERROR][飞书][%s]：%v", target, sendErr)
+			return sendErr
 		}
 	}
 	return nil
@@ -326,8 +328,11 @@ func (a *FeishuAdapter) sendMessagePart(target string, text string) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("[发送][飞书][%s]：%s", target, text)
-	return a.sendFeishuMessage(target, "text", string(content))
+	if err := a.sendFeishuMessage(target, "text", string(content)); err != nil {
+		return err
+	}
+	log.Printf("[INFO][发送][飞书][%s]：%s", target, text)
+	return nil
 }
 
 func (a *FeishuAdapter) SendMarkdown(target string, markdown string) error {

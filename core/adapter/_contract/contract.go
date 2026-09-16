@@ -43,6 +43,12 @@ type Adapter interface {
 	SetMessageHandler(handler func(*types.Message))
 }
 
+// HealthChecker 由可判断运行态的适配器实现。
+// IsHealthy 必须只做本地轻量检查，不应发起网络请求。
+type HealthChecker interface {
+	IsHealthy() bool
+}
+
 // MessageDeleter 由支持撤回消息的平台适配器实现。
 // 不实现该接口的平台会跳过撤回操作。
 type MessageDeleter interface {

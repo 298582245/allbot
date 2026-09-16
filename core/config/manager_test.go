@@ -14,6 +14,28 @@ func TestAdapterManagerStartAdapterRejectsUnknownPlatform(t *testing.T) {
 	}
 }
 
+func TestAdapterManagerKeepsEnabledAfterStartFailure(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	manager := NewAdapterManager(db)
+	err = manager.SaveAdapterConfig(0, "unknown", "", "", true, map[string]interface{}{})
+	if err == nil || !strings.Contains(err.Error(), "不支持的平台: unknown") {
+		t.Fatalf("expected start failure, got %v", err)
+	}
+
+	adapters, err := db.GetAllAdapters()
+	if err != nil {
+		t.Fatalf("GetAllAdapters returned error: %v", err)
+	}
+	if len(adapters) != 1 || !adapters[0].Enabled {
+		t.Fatalf("expected failed adapter to remain enabled, got %#v", adapters)
+	}
+}
+
 func TestAdapterManagerMergesMaskedSMTPPassword(t *testing.T) {
 	db, err := NewDatabase(":memory:")
 	if err != nil {

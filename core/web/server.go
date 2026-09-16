@@ -738,7 +738,7 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 	adapterCount := 0
 	runningAdapterCount := 0
 	if s.adapterManager != nil {
-		runningAdapterCount = len(s.adapterManager.GetAllAdapters())
+		runningAdapterCount = s.adapterManager.RunningAdapterCount()
 		if s.adapterManager.GetDatabase() != nil {
 			if adapters, err := s.adapterManager.GetDatabase().GetAllAdapters(); err == nil {
 				adapterCount = len(adapters)
@@ -803,10 +803,9 @@ func (s *Server) handleAdapters(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "获取适配器配置失败: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		runningAdapters := s.adapterManager.GetAllAdapters()
 		result := make([]map[string]interface{}, 0, len(adapters))
 		for _, item := range adapters {
-			_, running := runningAdapters[item.ID]
+			running := s.adapterManager.IsAdapterRunning(item.ID)
 			result = append(result, map[string]interface{}{"id": item.ID, "platform": item.Platform, "remark": item.Remark, "description": item.Description, "enabled": item.Enabled, "pinned": item.Pinned, "config": utils.MaskSensitiveConfig(item.Config), "running": running, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt})
 		}
 		sort.SliceStable(result, func(i, j int) bool {
@@ -893,7 +892,7 @@ func (s *Server) handleAdapterDetail(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "配置不存在", http.StatusNotFound)
 			return
 		}
-		s.jsonResponse(w, map[string]interface{}{"id": item.ID, "platform": item.Platform, "remark": item.Remark, "description": item.Description, "enabled": item.Enabled, "pinned": item.Pinned, "config": utils.MaskSensitiveConfig(item.Config), "running": s.adapterManager.GetAdapterByID(item.ID) != nil, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt})
+		s.jsonResponse(w, map[string]interface{}{"id": item.ID, "platform": item.Platform, "remark": item.Remark, "description": item.Description, "enabled": item.Enabled, "pinned": item.Pinned, "config": utils.MaskSensitiveConfig(item.Config), "running": s.adapterManager.IsAdapterRunning(item.ID), "created_at": item.CreatedAt, "updated_at": item.UpdatedAt})
 		return
 	}
 	s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)

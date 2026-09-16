@@ -67,6 +67,7 @@ type QQOfficeAdapter struct {
 	stopChan chan struct{}
 	stopOnce sync.Once
 	lastSeq  int64
+	running  atomic.Bool
 
 	replySeqMu sync.Mutex
 	replySeqs  map[string]qqOfficeReplySeq
@@ -113,6 +114,15 @@ func NewQQOfficeAdapter(appID, clientSecret, apiBaseURL, tokenURL string) *QQOff
 
 func (a *QQOfficeAdapter) GetPlatform() string {
 	return qqOfficePlatform
+}
+
+func (a *QQOfficeAdapter) IsHealthy() bool {
+	select {
+	case <-a.stopChan:
+		return false
+	default:
+		return a.running.Load()
+	}
 }
 
 func (a *QQOfficeAdapter) GetBotIdentity(msg *types.Message) contract.BotIdentity {
@@ -195,6 +205,7 @@ func (a *QQOfficeAdapter) Start() error {
 	if _, err := a.getAccessToken(); err != nil {
 		return fmt.Errorf("获取 QQ 官方 access token 失败: %w", err)
 	}
+	a.running.Store(true)
 	go a.gatewayLoop()
 	log.Printf("QQ 官方机器人 Adapter 已启动")
 	return nil
@@ -202,6 +213,7 @@ func (a *QQOfficeAdapter) Start() error {
 
 func (a *QQOfficeAdapter) Stop() error {
 	a.stopOnce.Do(func() {
+		a.running.Store(false)
 		close(a.stopChan)
 	})
 	a.closeCurrentConn()
@@ -232,7 +244,9 @@ func (a *QQOfficeAdapter) sendMessage(target string, text string, sequence int) 
 			partSequence = sequence + index
 		}
 		if err := a.sendMessagePart(target, part, partSequence); err != nil {
-			return fmt.Errorf("QQ 官方第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+			sendErr := fmt.Errorf("QQ 官方第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+			log.Printf("[ERROR][QQ官方][%s]：%v", target, sendErr)
+			return sendErr
 		}
 	}
 	return nil
@@ -268,8 +282,11 @@ func (a *QQOfficeAdapter) sendMessagePart(target string, text string, sequence i
 	default:
 		return fmt.Errorf("QQ 官方消息目标类型无效: %s", targetInfo.kind)
 	}
-	log.Printf("[发送][QQ官方][%s]：%s", target, text)
-	return a.callAPIWithPassiveFallback(path, body, targetInfo)
+	if err := a.callAPIWithPassiveFallback(path, body, targetInfo); err != nil {
+		return err
+	}
+	log.Printf("[INFO][发送][QQ官方][%s]：%s", target, text)
+	return nil
 }
 
 func (a *QQOfficeAdapter) SendButtons(target string, text string, buttons [][]types.ButtonOption) error {
@@ -694,6 +711,7 @@ func (a *QQOfficeAdapter) callAPI(method, path string, body interface{}, result 
 }
 
 func (a *QQOfficeAdapter) gatewayLoop() {
+	defer a.running.Store(false)
 	failureCount := 0
 	for {
 		select {

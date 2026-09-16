@@ -139,7 +139,7 @@ func (s *Server) statisticsSystemSummary() statisticsSystemSummary {
 	adapterCount := 0
 	runningAdapterCount := 0
 	if s.adapterManager != nil {
-		runningAdapterCount = len(s.adapterManager.GetAllAdapters())
+		runningAdapterCount = s.adapterManager.RunningAdapterCount()
 		if s.adapterManager.GetDatabase() != nil {
 			if adapters, err := s.adapterManager.GetDatabase().GetAllAdapters(); err == nil {
 				adapterCount = len(adapters)

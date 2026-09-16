@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,6 +41,38 @@ func TestLogManagerMergesRepeatedTelegramTimeoutLogs(t *testing.T) {
 			t.Fatalf("json should expose repeat and lastTime fields: %s", jsonText)
 		}
 	})
+}
+
+func TestCustomLoggerIgnoresFailureWordsInMessagePayload(t *testing.T) {
+	lm := newTestLogManager(t, 10)
+	logger := NewCustomLogger(lm)
+	logger.logger = log.New(io.Discard, "", 0)
+
+	_, err := logger.Write([]byte("2026/09/16 00:13:59 [SYSTEM] Plugin pushMessage send message: platform=qq_office text=失败个数：0个"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logs := lm.GetLogs(10)
+	if len(logs) != 1 || logs[0].Level != "info" {
+		t.Fatalf("message payload should not change level: %#v", logs)
+	}
+}
+
+func TestCustomLoggerKeepsExplicitErrorLevel(t *testing.T) {
+	lm := newTestLogManager(t, 10)
+	logger := NewCustomLogger(lm)
+	logger.logger = log.New(io.Discard, "", 0)
+
+	_, err := logger.Write([]byte("2026/09/16 00:13:59 [ERROR][QQ官方] 发送失败: 请求超时"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logs := lm.GetLogs(10)
+	if len(logs) != 1 || logs[0].Level != "error" {
+		t.Fatalf("explicit error level should be preserved: %#v", logs)
+	}
 }
 
 func TestLogManagerClearLogsResetsRepeatState(t *testing.T) {

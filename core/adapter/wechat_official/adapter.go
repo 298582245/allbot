@@ -214,7 +214,7 @@ func (a *WeChatOfficialAdapter) SendMessage(target string, text string) error {
 		},
 	}
 	if err := a.callAPI(http.MethodPost, "/cgi-bin/message/custom/send", body, nil); err != nil {
-		log.Printf("[发送失败][微信公众号][%s][客服消息]：%v", target, err)
+		log.Printf("[ERROR][发送失败][微信公众号][%s][客服消息]：%v", target, err)
 		return err
 	}
 	log.Printf("[发送][微信公众号][%s][客服消息]：%s", target, text)
@@ -532,7 +532,7 @@ func (a *WeChatOfficialAdapter) writePassiveTextReply(w http.ResponseWriter, msg
 	}
 	payload, err := xml.Marshal(reply)
 	if err != nil {
-		log.Printf("[发送失败][微信公众号][%s][被动回复]：%v", msg.UserID, err)
+		log.Printf("[ERROR][发送失败][微信公众号][%s][被动回复]：%v", msg.UserID, err)
 		writeWeChatOfficialSuccess(w)
 		return
 	}
