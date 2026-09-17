@@ -255,7 +255,17 @@ func (a *WeChatOfficialAdapter) SendRichMessage(target string, message types.Ric
 	if len(parts) == 0 {
 		return fmt.Errorf("微信公众号富文本消息内容不能为空")
 	}
-	return a.SendMessage(target, strings.Join(parts, "\n\n"))
+	text := strings.Join(parts, "\n\n")
+	chunks := contract.SplitTextMessage(text, contract.DefaultTextMessageLimit)
+	if len(chunks) > 1 {
+		log.Printf("[WARN][微信公众号][%s] 富文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(chunks))
+	}
+	for index, chunk := range chunks {
+		if err := a.SendMessage(target, chunk); err != nil {
+			return fmt.Errorf("微信公众号富文本第 %d/%d 段发送失败: %w", index+1, len(chunks), err)
+		}
+	}
+	return nil
 }
 
 func (a *WeChatOfficialAdapter) SendFile(target string, filePath string) error {

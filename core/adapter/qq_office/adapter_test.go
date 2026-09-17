@@ -481,6 +481,56 @@ func TestQQOfficeSendMarkdownPostsC2CAndGroup(t *testing.T) {
 	}
 }
 
+func TestQQOfficeSendMarkdownSplitsLongTextAndIncrementsReplySeq(t *testing.T) {
+	bodies := make(chan map[string]interface{}, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/v2/users/user-openid/messages":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body failed: %v", err)
+			}
+			bodies <- body
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	markdown := strings.Repeat("一", contract.DefaultRichMessageLimit*2+17)
+	if err := adp.SendMarkdown("user_user-openid|msg_msg-c2c", markdown); err != nil {
+		t.Fatalf("SendMarkdown returned error: %v", err)
+	}
+	parts := make([]string, 0, 3)
+	sequences := make([]float64, 0, 3)
+	for index := 0; index < 3; index++ {
+		body := <-bodies
+		part, ok := body["markdown"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("body %d markdown = %#v", index, body)
+		}
+		content, ok := part["content"].(string)
+		if !ok {
+			t.Fatalf("body %d content = %#v", index, part)
+		}
+		if contract.TextRuneCount(content) > contract.DefaultRichMessageLimit {
+			t.Fatalf("body %d content length = %d", index, contract.TextRuneCount(content))
+		}
+		parts = append(parts, content)
+		sequences = append(sequences, body["msg_seq"].(float64))
+	}
+	if sequences[0] != 1 || sequences[1] != 2 || sequences[2] != 3 {
+		t.Fatalf("msg_seq = %#v", sequences)
+	}
+	if strings.Join(parts, "") != markdown {
+		t.Fatal("sent markdown does not reassemble to original text")
+	}
+}
+
 func TestQQOfficeSendMarkdownDMSFallsBackToText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

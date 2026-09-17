@@ -11,6 +11,7 @@ import (
 	"github.com/allbot/allbot/core/adapter/_contract"
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/types"
+	"github.com/allbot/allbot/core/utils"
 )
 
 const platformName = "web"
@@ -118,7 +119,16 @@ func (a *Adapter) SendMessage(target string, text string) error {
 }
 
 func (a *Adapter) SendMarkdown(target string, markdown string) error {
-	return a.saveOutbound(target, &config.WebChatMessage{MessageType: "markdown", Content: markdown, Target: target, PluginID: webChatPluginIDFromTarget(target)})
+	parts := contract.SplitMarkdownMessage(markdown, contract.DefaultRichMessageLimit)
+	if len(parts) > 1 {
+		log.Printf("[WARN][web][%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(markdown), contract.DefaultRichMessageLimit, len(parts))
+	}
+	for index, part := range parts {
+		if err := a.saveOutbound(target, &config.WebChatMessage{MessageType: "markdown", Content: part, Target: target, PluginID: webChatPluginIDFromTarget(target)}); err != nil {
+			return fmt.Errorf("web Markdown 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+		}
+	}
+	return nil
 }
 
 func (a *Adapter) SendImage(target string, imageURL string) error {
@@ -130,15 +140,88 @@ func (a *Adapter) SendFile(target string, filePath string) error {
 }
 
 func (a *Adapter) SendRichMessage(target string, message types.RichMessage) error {
-	data, err := json.Marshal(message)
-	if err != nil {
-		return err
+	parts := utils.RichMessageParts(message)
+	total := contract.TextRuneCount(message.FallbackText)
+	for _, part := range parts {
+		switch strings.ToLower(strings.TrimSpace(part.Type)) {
+		case "image":
+			total += contract.TextRuneCount(part.URL) + contract.TextRuneCount(part.Alt) + 10
+		case "markdown":
+			total += contract.TextRuneCount(part.Markdown)
+		default:
+			total += contract.TextRuneCount(part.Text)
+		}
 	}
-	content := strings.TrimSpace(message.FallbackText)
-	if content == "" {
-		content = richFallback(message)
+	if total <= contract.DefaultRichMessageLimit {
+		data, err := json.Marshal(message)
+		if err != nil {
+			return err
+		}
+		content := strings.TrimSpace(message.FallbackText)
+		if content == "" {
+			content = richFallback(message)
+		}
+		return a.saveOutbound(target, &config.WebChatMessage{MessageType: "rich", Content: content, RichJSON: string(data), Target: target, PluginID: webChatPluginIDFromTarget(target)})
 	}
-	return a.saveOutbound(target, &config.WebChatMessage{MessageType: "rich", Content: content, RichJSON: string(data), Target: target, PluginID: webChatPluginIDFromTarget(target)})
+
+	chunks := make([]types.RichMessage, 0, total/contract.DefaultRichMessageLimit+1)
+	current := types.RichMessage{Prefer: message.Prefer}
+	currentCount := 0
+	flush := func() {
+		if len(current.Parts) == 0 {
+			return
+		}
+		chunks = append(chunks, current)
+		current = types.RichMessage{Prefer: message.Prefer}
+		currentCount = 0
+	}
+	for _, part := range parts {
+		partPieces := []types.RichMessagePart{part}
+		switch strings.ToLower(strings.TrimSpace(part.Type)) {
+		case "text":
+			partPieces = make([]types.RichMessagePart, 0, 1)
+			for _, text := range contract.SplitTextMessage(part.Text, contract.DefaultRichMessageLimit) {
+				partPieces = append(partPieces, types.RichMessagePart{Type: "text", Text: text})
+			}
+		case "markdown":
+			partPieces = make([]types.RichMessagePart, 0, 1)
+			for _, markdown := range contract.SplitMarkdownMessage(part.Markdown, contract.DefaultRichMessageLimit) {
+				partPieces = append(partPieces, types.RichMessagePart{Type: "markdown", Markdown: markdown})
+			}
+		}
+		for _, piece := range partPieces {
+			pieceCount := contract.TextRuneCount(piece.Text) + contract.TextRuneCount(piece.Markdown)
+			if strings.EqualFold(piece.Type, "image") {
+				pieceCount = contract.TextRuneCount(piece.URL) + contract.TextRuneCount(piece.Alt) + 10
+			}
+			if currentCount > 0 && currentCount+pieceCount > contract.DefaultRichMessageLimit {
+				flush()
+			}
+			current.Parts = append(current.Parts, piece)
+			currentCount += pieceCount
+		}
+	}
+	flush()
+	if len(chunks) == 0 {
+		for _, text := range contract.SplitTextMessage(message.FallbackText, contract.DefaultRichMessageLimit) {
+			chunks = append(chunks, types.RichMessage{
+				Parts:  []types.RichMessagePart{{Type: "text", Text: text}},
+				Prefer: message.Prefer,
+			})
+		}
+	}
+	log.Printf("[WARN][web][%s] 富文本长度 %d 超过 %d，拆分为 %d 段发送", target, total, contract.DefaultRichMessageLimit, len(chunks))
+	for index, chunk := range chunks {
+		data, err := json.Marshal(chunk)
+		if err != nil {
+			return err
+		}
+		content := richFallback(chunk)
+		if err := a.saveOutbound(target, &config.WebChatMessage{MessageType: "rich", Content: content, RichJSON: string(data), Target: target, PluginID: webChatPluginIDFromTarget(target)}); err != nil {
+			return fmt.Errorf("web 富文本第 %d/%d 段发送失败: %w", index+1, len(chunks), err)
+		}
+	}
+	return nil
 }
 
 func (a *Adapter) SendButtons(target string, text string, buttons [][]types.ButtonOption) error {

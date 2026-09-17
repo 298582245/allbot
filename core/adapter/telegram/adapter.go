@@ -658,17 +658,26 @@ func (a *TelegramAdapter) SendMarkdown(target string, markdown string) error {
 	if markdown == "" {
 		return fmt.Errorf("Telegram Markdown 内容不能为空")
 	}
-	data := map[string]interface{}{
-		"chat_id":    telegramChatID(target),
-		"text":       markdown,
-		"parse_mode": "Markdown",
+	parts := contract.SplitMarkdownMessage(markdown, contract.DefaultTextMessageLimit)
+	if len(parts) > 1 {
+		log.Printf("[WARN][Telegram][%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(markdown), contract.DefaultTextMessageLimit, len(parts))
 	}
-	log.Printf("[发送][Telegram][%s]：[Markdown] %s", target, markdown)
-	if err := a.callAPI("/sendMessage", data); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "can't parse entities") {
-			return a.SendMessage(target, utils.MarkdownToPlainText(markdown))
+	for index, part := range parts {
+		data := map[string]interface{}{
+			"chat_id":    telegramChatID(target),
+			"text":       part,
+			"parse_mode": "Markdown",
 		}
-		return err
+		log.Printf("[发送][Telegram][%s]：[Markdown] %s", target, part)
+		if err := a.callAPI("/sendMessage", data); err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "can't parse entities") {
+				if fallbackErr := a.SendMessage(target, utils.MarkdownToPlainText(part)); fallbackErr != nil {
+					return fmt.Errorf("Telegram Markdown 第 %d/%d 段降级发送失败: %w", index+1, len(parts), fallbackErr)
+				}
+				continue
+			}
+			return fmt.Errorf("Telegram Markdown 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+		}
 	}
 	return nil
 }

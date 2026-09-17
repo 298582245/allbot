@@ -46,3 +46,53 @@ func TestSplitTextMessagePreserveCQKeepsCodeIntact(t *testing.T) {
 		t.Fatal("joined parts do not match original text")
 	}
 }
+
+func TestSplitMarkdownMessagePreservesLinksAndLength(t *testing.T) {
+	link := "[打开链接](https://example.com/" + strings.Repeat("a", 300) + ")"
+	markdown := strings.Repeat("正文", 4900) + "\n\n" + link
+	parts := SplitMarkdownMessage(markdown, DefaultRichMessageLimit)
+	if len(parts) != 2 {
+		t.Fatalf("parts = %#v", parts)
+	}
+	for index, part := range parts {
+		if count := TextRuneCount(part); count > DefaultRichMessageLimit {
+			t.Fatalf("part %d length = %d", index, count)
+		}
+		if strings.Contains(part, "[打开链接](") && !strings.HasSuffix(part, ")") {
+			t.Fatalf("link was split: %#v", parts)
+		}
+	}
+	if !strings.HasSuffix(parts[1], link) {
+		t.Fatalf("link was not kept intact: %#v", parts)
+	}
+}
+
+func TestSplitMarkdownMessageKeepsOversizeCodeFenceValid(t *testing.T) {
+	body := strings.Repeat("一", DefaultRichMessageLimit*2+100)
+	markdown := "```text\n" + body + "\n```\n"
+	parts := SplitMarkdownMessage(markdown, DefaultRichMessageLimit)
+	if len(parts) != 3 {
+		t.Fatalf("parts length = %d", len(parts))
+	}
+	for index, part := range parts {
+		if count := TextRuneCount(part); count > DefaultRichMessageLimit {
+			t.Fatalf("part %d length = %d", index, count)
+		}
+		if strings.Count(part, "```") != 2 || !strings.HasPrefix(part, "```text\n") || !strings.HasSuffix(part, "```") {
+			t.Fatalf("part %d is not a valid code fence: %q", index, part)
+		}
+	}
+}
+
+func TestSplitMarkdownMessageKeepsEscapedCharactersIntact(t *testing.T) {
+	markdown := strings.Repeat("正文\\* ", DefaultRichMessageLimit/4+100)
+	parts := SplitMarkdownMessage(markdown, DefaultRichMessageLimit)
+	for index, part := range parts {
+		if count := TextRuneCount(part); count > DefaultRichMessageLimit {
+			t.Fatalf("part %d length = %d", index, count)
+		}
+		if strings.HasSuffix(part, "\\") {
+			t.Fatalf("part %d ends with a dangling escape: %q", index, part)
+		}
+	}
+}

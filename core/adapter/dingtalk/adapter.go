@@ -266,8 +266,17 @@ func (a *DingTalkAdapter) SendMarkdown(target string, markdown string) error {
 		if a.replier == nil {
 			a.replier = chatbot.NewChatbotReplier()
 		}
-		log.Printf("[发送][钉钉][%s]：[Markdown] %s", target, markdown)
-		return a.replier.SimpleReplyMarkdown(context.Background(), targetInfo.id, []byte(dingTalkMarkdownTitle(markdown)), []byte(markdown))
+		parts := contract.SplitMarkdownMessage(markdown, contract.DefaultRichMessageLimit)
+		if len(parts) > 1 {
+			log.Printf("[WARN][钉钉][%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(markdown), contract.DefaultRichMessageLimit, len(parts))
+		}
+		for index, part := range parts {
+			log.Printf("[发送][钉钉][%s]：[Markdown] %s", target, part)
+			if err := a.replier.SimpleReplyMarkdown(context.Background(), targetInfo.id, []byte(dingTalkMarkdownTitle(part)), []byte(part)); err != nil {
+				return fmt.Errorf("钉钉 Markdown 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+			}
+		}
+		return nil
 	case dingTalkTargetConversation:
 		return fmt.Errorf("钉钉 Stream 适配器暂未实现会话主动发送 Markdown，请使用最近消息的 session webhook 回复目标")
 	case dingTalkTargetUser:

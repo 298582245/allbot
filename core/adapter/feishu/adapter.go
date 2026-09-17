@@ -340,22 +340,31 @@ func (a *FeishuAdapter) SendMarkdown(target string, markdown string) error {
 	if markdown == "" {
 		return fmt.Errorf("飞书 Markdown 内容不能为空")
 	}
-	content, err := json.Marshal(map[string]interface{}{
-		"config": map[string]interface{}{
-			"wide_screen_mode": true,
-		},
-		"elements": []map[string]interface{}{
-			{
-				"tag":     "markdown",
-				"content": markdown,
-			},
-		},
-	})
-	if err != nil {
-		return err
+	parts := contract.SplitMarkdownMessage(markdown, contract.DefaultRichMessageLimit)
+	if len(parts) > 1 {
+		log.Printf("[WARN][飞书][%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(markdown), contract.DefaultRichMessageLimit, len(parts))
 	}
-	log.Printf("[发送][飞书][%s]：[Markdown] %s", target, markdown)
-	return a.sendFeishuMessage(target, "interactive", string(content))
+	for index, part := range parts {
+		content, err := json.Marshal(map[string]interface{}{
+			"config": map[string]interface{}{
+				"wide_screen_mode": true,
+			},
+			"elements": []map[string]interface{}{
+				{
+					"tag":     "markdown",
+					"content": part,
+				},
+			},
+		})
+		if err != nil {
+			return err
+		}
+		log.Printf("[发送][飞书][%s]：[Markdown] %s", target, part)
+		if err := a.sendFeishuMessage(target, "interactive", string(content)); err != nil {
+			return fmt.Errorf("飞书 Markdown 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+		}
+	}
+	return nil
 }
 
 func (a *FeishuAdapter) SendImage(target string, imageURL string) error {

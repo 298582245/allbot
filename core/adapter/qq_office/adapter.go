@@ -397,25 +397,45 @@ func (a *QQOfficeAdapter) SendMarkdown(target string, markdown string) error {
 	if targetInfo.kind == "dms" {
 		return a.SendMessage(target, utils.MarkdownToPlainText(markdown))
 	}
-	body := map[string]interface{}{
-		"msg_type": 2,
-		"markdown": map[string]interface{}{"content": qqOfficeGroupAtContent(targetInfo, markdown)},
+	splitLimit := contract.DefaultRichMessageLimit
+	if targetInfo.atUser != "" {
+		splitLimit -= contract.TextRuneCount(fmt.Sprintf("<@%s>\n", strings.TrimSpace(targetInfo.atUser)))
+		if splitLimit <= 0 {
+			splitLimit = contract.DefaultRichMessageLimit
+		}
 	}
-	if targetInfo.msgID != "" {
-		body["msg_id"] = targetInfo.msgID
-		body["msg_seq"] = a.nextReplySeq(targetInfo)
+	parts := contract.SplitMarkdownMessage(markdown, splitLimit)
+	if len(parts) > 1 {
+		log.Printf("[WARN][QQ官方][%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(markdown), splitLimit, len(parts))
 	}
-	path := ""
-	switch targetInfo.kind {
-	case "user":
-		path = "/v2/users/" + url.PathEscape(targetInfo.id) + "/messages"
-	case "group":
-		path = "/v2/groups/" + url.PathEscape(targetInfo.id) + "/messages"
-	default:
-		return fmt.Errorf("QQ 官方 Markdown 目标类型无效: %s", targetInfo.kind)
+	for index, part := range parts {
+		content := part
+		if index == 0 {
+			content = qqOfficeGroupAtContent(targetInfo, content)
+		}
+		body := map[string]interface{}{
+			"msg_type": 2,
+			"markdown": map[string]interface{}{"content": content},
+		}
+		if targetInfo.msgID != "" {
+			body["msg_id"] = targetInfo.msgID
+			body["msg_seq"] = a.nextReplySeq(targetInfo)
+		}
+		path := ""
+		switch targetInfo.kind {
+		case "user":
+			path = "/v2/users/" + url.PathEscape(targetInfo.id) + "/messages"
+		case "group":
+			path = "/v2/groups/" + url.PathEscape(targetInfo.id) + "/messages"
+		default:
+			return fmt.Errorf("QQ 官方 Markdown 目标类型无效: %s", targetInfo.kind)
+		}
+		if err := a.callAPIWithPassiveFallback(path, body, targetInfo); err != nil {
+			return fmt.Errorf("QQ 官方 Markdown 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
+		}
+		log.Printf("[发送][QQ官方][%s]：[Markdown] %s", target, content)
 	}
-	log.Printf("[发送][QQ官方][%s]：[Markdown] %s", target, markdown)
-	return a.callAPIWithPassiveFallback(path, body, targetInfo)
+	return nil
 }
 
 func (a *QQOfficeAdapter) nextReplySeq(target qqOfficeMessageTarget) int {
