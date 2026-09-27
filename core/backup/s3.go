@@ -67,6 +67,7 @@ func (u *S3Uploader) Upload(ctx context.Context, file BackupFile, settings confi
 	if err != nil {
 		return fmt.Errorf("加载 S3 客户端配置失败: %w", err)
 	}
+	awsSettings.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 	if settings.AccessKey != "" || settings.SecretKey != "" {
 		awsSettings.Credentials = credentials.NewStaticCredentialsProvider(settings.AccessKey, settings.SecretKey, settings.SessionToken)
 	}
@@ -78,6 +79,7 @@ func (u *S3Uploader) Upload(ctx context.Context, file BackupFile, settings confi
 		if normalizeAddressingStyle(settings.AddressingStyle) == "path" {
 			options.UsePathStyle = true
 		}
+		options.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 	})
 
 	input := &s3.PutObjectInput{
