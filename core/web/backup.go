@@ -14,6 +14,42 @@ import (
 	"github.com/allbot/allbot/core/router"
 )
 
+type backupOSSSettingsResponse struct {
+	Enabled             bool   `json:"enabled"`
+	Provider            string `json:"provider"`
+	Bucket              string `json:"bucket"`
+	Endpoint            string `json:"endpoint"`
+	Region              string `json:"region"`
+	AccessKey           string `json:"access_key"`
+	AddressingStyle     string `json:"addressing_style"`
+	Prefix              string `json:"prefix"`
+	SecretKeyConfigured bool   `json:"secret_key_configured"`
+	SessionConfigured   bool   `json:"session_token_configured"`
+}
+
+type backupSettingsResponse struct {
+	config.BackupSettings
+	OSS backupOSSSettingsResponse `json:"oss"`
+}
+
+func newBackupSettingsResponse(settings config.BackupSettings) backupSettingsResponse {
+	return backupSettingsResponse{
+		BackupSettings: settings,
+		OSS: backupOSSSettingsResponse{
+			Enabled:             settings.OSS.Enabled,
+			Provider:            settings.OSS.Provider,
+			Bucket:              settings.OSS.Bucket,
+			Endpoint:            settings.OSS.Endpoint,
+			Region:              settings.OSS.Region,
+			AccessKey:           settings.OSS.AccessKey,
+			AddressingStyle:     settings.OSS.AddressingStyle,
+			Prefix:              settings.OSS.Prefix,
+			SecretKeyConfigured: settings.OSS.SecretKey != "",
+			SessionConfigured:   settings.OSS.SessionToken != "",
+		},
+	}
+}
+
 func (s *Server) handleBackups(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -76,7 +112,7 @@ func (s *Server) handleBackupOverview(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, "获取备份列表失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.jsonResponse(w, map[string]interface{}{"settings": settings, "status": service.Status(), "files": files})
+	s.jsonResponse(w, map[string]interface{}{"settings": newBackupSettingsResponse(settings), "status": service.Status(), "files": files})
 }
 
 func (s *Server) handleBackupSettings(w http.ResponseWriter, r *http.Request) {
@@ -91,12 +127,23 @@ func (s *Server) handleBackupSettings(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "获取备份配置失败: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		s.jsonResponse(w, settings)
+		s.jsonResponse(w, newBackupSettingsResponse(settings))
 	case http.MethodPut:
 		var settings config.BackupSettings
 		if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
 			s.jsonError(w, "请求数据无效", http.StatusBadRequest)
 			return
+		}
+		storedSettings, err := s.adapterManager.GetDatabase().GetBackupSettings()
+		if err != nil {
+			s.jsonError(w, "获取现有备份配置失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if strings.TrimSpace(settings.OSS.SecretKey) == "" {
+			settings.OSS.SecretKey = storedSettings.OSS.SecretKey
+		}
+		if strings.TrimSpace(settings.OSS.SessionToken) == "" {
+			settings.OSS.SessionToken = storedSettings.OSS.SessionToken
 		}
 		settings = config.NormalizeBackupSettings(settings)
 		if _, err := router.NextCronTime(settings.Cron, time.Now()); err != nil {
@@ -107,12 +154,16 @@ func (s *Server) handleBackupSettings(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "至少需要选择插件、数据、图片、日志或运行环境中的一项", http.StatusBadRequest)
 			return
 		}
+		if err := backup.ValidateS3BackupSettings(settings.OSS); err != nil {
+			s.jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if err := s.adapterManager.GetDatabase().SaveBackupSettings(settings); err != nil {
 			s.jsonError(w, "保存备份配置失败: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		service.Reload()
-		s.jsonResponse(w, map[string]interface{}{"message": "保存成功", "settings": settings, "status": service.Status()})
+		s.jsonResponse(w, map[string]interface{}{"message": "保存成功", "settings": newBackupSettingsResponse(settings), "status": service.Status()})
 	default:
 		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}

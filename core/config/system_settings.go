@@ -83,11 +83,16 @@ type BackupSettings struct {
 }
 
 type OSSBackupSettings struct {
-	Enabled  bool   `json:"enabled"`
-	Provider string `json:"provider"`
-	Bucket   string `json:"bucket"`
-	Endpoint string `json:"endpoint"`
-	Prefix   string `json:"prefix"`
+	Enabled         bool   `json:"enabled"`
+	Provider        string `json:"provider"`
+	Bucket          string `json:"bucket"`
+	Endpoint        string `json:"endpoint"`
+	Region          string `json:"region"`
+	AccessKey       string `json:"access_key"`
+	SecretKey       string `json:"secret_key"`
+	SessionToken    string `json:"session_token,omitempty"`
+	AddressingStyle string `json:"addressing_style"`
+	Prefix          string `json:"prefix"`
 }
 
 func (d *Database) GetSetting(key string) (string, error) {
@@ -254,7 +259,7 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 }
 
 func DefaultBackupSettings() BackupSettings {
-	return BackupSettings{Enabled: false, Cron: "0 3 * * *", Retention: 7, BackupDir: "./backups", IncludePlugins: true, IncludeData: true, IncludeImages: true, IncludeLogs: true, IncludeRuntimeEnv: true, OSS: OSSBackupSettings{Provider: "", Prefix: "allbot/"}}
+	return BackupSettings{Enabled: false, Cron: "0 3 * * *", Retention: 7, BackupDir: "./backups", IncludePlugins: true, IncludeData: true, IncludeImages: true, IncludeLogs: true, IncludeRuntimeEnv: true, OSS: OSSBackupSettings{Provider: "", Region: "us-east-1", AddressingStyle: "auto", Prefix: "allbot/"}}
 }
 
 func (d *Database) GetBackupSettings() (BackupSettings, error) {
@@ -313,6 +318,25 @@ func NormalizeBackupSettings(settings BackupSettings) BackupSettings {
 	settings.OSS.Provider = strings.TrimSpace(settings.OSS.Provider)
 	settings.OSS.Bucket = strings.TrimSpace(settings.OSS.Bucket)
 	settings.OSS.Endpoint = strings.TrimSpace(settings.OSS.Endpoint)
+	settings.OSS.Region = strings.TrimSpace(settings.OSS.Region)
+	if settings.OSS.Region == "" {
+		settings.OSS.Region = "us-east-1"
+	}
+	settings.OSS.AccessKey = strings.TrimSpace(settings.OSS.AccessKey)
+	settings.OSS.SecretKey = strings.TrimSpace(settings.OSS.SecretKey)
+	settings.OSS.SessionToken = strings.TrimSpace(settings.OSS.SessionToken)
+	settings.OSS.AddressingStyle = strings.ToLower(strings.TrimSpace(settings.OSS.AddressingStyle))
+	switch settings.OSS.AddressingStyle {
+	case "path-style", "path_style":
+		settings.OSS.AddressingStyle = "path"
+	case "virtual-hosted-style", "virtual_hosted_style", "virtual-hosted", "virtual_hosted":
+		settings.OSS.AddressingStyle = "virtual"
+	case "":
+		settings.OSS.AddressingStyle = "auto"
+	case "path", "virtual", "auto":
+	default:
+		settings.OSS.AddressingStyle = "auto"
+	}
 	settings.OSS.Prefix = strings.TrimSpace(settings.OSS.Prefix)
 	if settings.OSS.Prefix == "" {
 		settings.OSS.Prefix = defaults.OSS.Prefix

@@ -41,6 +41,38 @@
             <el-form-item label="备份目录">
               <el-input v-model="form.backup_dir" placeholder="./backups" />
             </el-form-item>
+            <el-form-item label="S3 备份">
+              <el-switch v-model="form.oss.enabled" />
+              <span class="hint">备份完成后上传到 S3 数据桶</span>
+            </el-form-item>
+            <template v-if="form.oss.enabled">
+              <el-form-item label="存储桶">
+                <el-input v-model="form.oss.bucket" placeholder="my-backup-bucket" />
+              </el-form-item>
+              <el-form-item label="Endpoint">
+                <el-input v-model="form.oss.endpoint" placeholder="AWS S3 可留空；兼容存储填写服务地址" />
+              </el-form-item>
+              <el-form-item label="区域">
+                <el-input v-model="form.oss.region" placeholder="us-east-1" />
+              </el-form-item>
+              <el-form-item label="Access Key">
+                <el-input v-model="form.oss.access_key" autocomplete="off" />
+              </el-form-item>
+              <el-form-item label="Secret Key">
+                <el-input v-model="form.oss.secret_key" type="password" show-password autocomplete="new-password" placeholder="留空保持已配置的密钥不变" />
+              </el-form-item>
+              <el-form-item label="寻址方式">
+                <el-select v-model="form.oss.addressing_style" class="addressing-style-select">
+                  <el-option label="自动（SDK 默认）" value="auto" />
+                  <el-option label="Path-style" value="path" />
+                  <el-option label="Virtual-hosted-style" value="virtual" />
+                </el-select>
+                <span class="hint">按 S3 服务要求选择</span>
+              </el-form-item>
+              <el-form-item label="对象前缀">
+                <el-input v-model="form.oss.prefix" placeholder="allbot/" />
+              </el-form-item>
+            </template>
             <el-form-item label="保留最新">
               <el-input-number v-model="form.retention" :min="1" :max="365" />
               <span class="hint">超过数量后自动删除最旧备份</span>
@@ -320,7 +352,7 @@ function createDefaultSettings() {
     include_images: true,
     include_logs: true,
     include_runtime_env: true,
-    oss: { enabled: false, provider: '', bucket: '', endpoint: '', prefix: 'allbot/' }
+    oss: { enabled: false, provider: '', bucket: '', endpoint: '', region: 'us-east-1', access_key: '', secret_key: '', addressing_style: 'auto', prefix: 'allbot/' }
   }
 }
 
@@ -404,6 +436,7 @@ function formatSummaryIncludes(summary = {}) {
 .section-header .section-title { margin-bottom: 4px; }
 .section-desc { color: #909399; font-size: 13px; }
 .backup-form { max-width: 820px; }
+.addressing-style-select { width: 280px; }
 .hint { margin-left: 10px; color: #999; }
 .hidden-file-input { display: none; }
 
@@ -474,6 +507,7 @@ function formatSummaryIncludes(summary = {}) {
   }
   .backups :deep(.el-form-item__content) { margin-left: 0 !important; }
   .backups :deep(.el-input-number) { width: 100%; }
+  .addressing-style-select { width: 100%; }
   .hint { display: block; margin: 6px 0 0; }
   .info-grid { grid-template-columns: 1fr; }
   .form-actions {

@@ -291,7 +291,11 @@ func (s *Service) createWithSettings(ctx context.Context, trigger string, settin
 		includes = append(includes, "runtime_env")
 	}
 
-	manifest := Manifest{Version: 1, CreatedAt: createdAt, Trigger: strings.TrimSpace(trigger), Includes: includes, OSS: "reserved"}
+	manifestOSS := ""
+	if settings.OSS.Enabled {
+		manifestOSS = "s3"
+	}
+	manifest := Manifest{Version: 1, CreatedAt: createdAt, Trigger: strings.TrimSpace(trigger), Includes: includes, OSS: manifestOSS}
 	tmpZipPath := backupPath + ".tmp"
 	if err := s.writeZip(tmpZipPath, stagingDir, backupDir, settings, manifest); err != nil {
 		_ = os.Remove(tmpZipPath)
@@ -309,9 +313,10 @@ func (s *Service) createWithSettings(ctx context.Context, trigger string, settin
 	file := BackupFile{Name: fileName, Path: backupPath, Size: info.Size(), CreatedAt: createdAt, Trigger: trigger, Includes: includes}
 	if settings.OSS.Enabled {
 		if s.uploader == nil {
-			log.Printf("[SYSTEM] OSS 备份接口已预留，当前未配置上传实现: %s", fileName)
-		} else if err := s.uploader.Upload(ctx, file, settings.OSS); err != nil {
-			log.Printf("[SYSTEM] OSS 备份上传失败: %v", err)
+			return BackupFile{}, fmt.Errorf("S3 上传器未初始化")
+		}
+		if err := s.uploader.Upload(ctx, file, settings.OSS); err != nil {
+			return BackupFile{}, err
 		}
 	}
 	if cleanup {

@@ -177,6 +177,7 @@ func main() {
 	alipayBillMonitor := payment.NewAlipayBillMonitor(configDB)
 	alipayBillMonitor.Start()
 	backupService := backup.NewService(configDB, pluginManager.PluginDir())
+	backupService.SetOSSUploader(backup.NewS3Uploader())
 	backupService.SetRuntimeDepsManager(pluginManager.GetDepsManager())
 	backupService.Start()
 	logCleanupService := web.NewLogCleanupService(configDB, webServer.GetLogManager())
