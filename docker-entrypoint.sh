@@ -152,6 +152,34 @@ apply_update_if_requested() {
     backup_path=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("backupPath", ""))' "${UPGRADE_REQUEST}")
     from_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("fromVersion", ""))' "${UPGRADE_REQUEST}")
     to_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("toVersion", ""))' "${UPGRADE_REQUEST}")
+    notification_exports=$(python3 - "${UPGRADE_REQUEST}" <<'PY'
+import json
+import shlex
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as source:
+    values = json.load(source)
+
+notification = values.get("notification") or {}
+fields = {
+    "ALLBOT_IGNORE_UPDATE_MESSAGE_KEY": notification.get("messageKey", ""),
+    "ALLBOT_UPDATE_NOTIFY_PLATFORM": notification.get("platform", ""),
+    "ALLBOT_UPDATE_NOTIFY_ADAPTER_ID": notification.get("adapterId", ""),
+    "ALLBOT_UPDATE_NOTIFY_USER_ID": notification.get("userId", ""),
+    "ALLBOT_UPDATE_NOTIFY_GROUP_ID": notification.get("groupId", ""),
+    "ALLBOT_UPDATE_NOTIFY_TARGET": notification.get("target", ""),
+    "ALLBOT_UPDATE_NOTIFY_STARTED_AT_NS": notification.get("startedAtNs", ""),
+}
+for key, value in fields.items():
+    if str(value).strip():
+        print(f"export {key}={shlex.quote(str(value))}")
+PY
+    ) || {
+        echo "Docker 更新请求无效：${UPGRADE_REQUEST}" >&2
+        rm -f "${UPGRADE_REQUEST}"
+        return 1
+    }
 
     if [ -z "${new_path}" ] || [ ! -f "${new_path}" ]; then
         echo "升级请求无效：新程序不存在 ${new_path}" >&2
@@ -178,6 +206,7 @@ apply_update_if_requested() {
     export ALLBOT_UPDATED_TO="${to_version}"
     export ALLBOT_RESTARTED=1
     export ALLBOT_RESTART_DELAY_MS=2000
+    eval "${notification_exports}"
     echo "AllBot Docker 更新已应用：${from_version} -> ${to_version}"
     return 0
 }
@@ -186,9 +215,13 @@ clear_transient_startup_env() {
     unset ALLBOT_UPDATED ALLBOT_UPDATED_FROM ALLBOT_UPDATED_TO
     unset ALLBOT_RESTARTED ALLBOT_RESTART_DELAY_MS ALLBOT_PARENT_PID
     unset ALLBOT_IGNORE_RESTART_MESSAGE_KEY
+    unset ALLBOT_IGNORE_UPDATE_MESSAGE_KEY
     unset ALLBOT_RESTART_NOTIFY_PLATFORM ALLBOT_RESTART_NOTIFY_ADAPTER_ID
     unset ALLBOT_RESTART_NOTIFY_USER_ID ALLBOT_RESTART_NOTIFY_GROUP_ID
     unset ALLBOT_RESTART_NOTIFY_TARGET ALLBOT_RESTART_STARTED_AT_NS
+    unset ALLBOT_UPDATE_NOTIFY_PLATFORM ALLBOT_UPDATE_NOTIFY_ADAPTER_ID
+    unset ALLBOT_UPDATE_NOTIFY_USER_ID ALLBOT_UPDATE_NOTIFY_GROUP_ID
+    unset ALLBOT_UPDATE_NOTIFY_TARGET ALLBOT_UPDATE_NOTIFY_STARTED_AT_NS
 }
 
 terminate_child() {

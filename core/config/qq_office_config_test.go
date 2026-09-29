@@ -10,11 +10,27 @@ func TestParseQQOfficeConfigDefaultsAndValidation(t *testing.T) {
 	if config.AppID != "app123" || config.ClientSecret != "secret456" {
 		t.Fatalf("config = %+v", config)
 	}
+	if config.BotType != "public" {
+		t.Fatalf("BotType = %q, want public", config.BotType)
+	}
 	if config.APIBaseURL != "https://api.sgroup.qq.com" {
 		t.Fatalf("APIBaseURL = %q", config.APIBaseURL)
 	}
 	if config.TokenURL != "https://bots.qq.com/app/getAppAccessToken" {
 		t.Fatalf("TokenURL = %q", config.TokenURL)
+	}
+}
+
+func TestParseQQOfficeConfigBotType(t *testing.T) {
+	config, err := ParseQQOfficeConfig(`{"app_id":"app123","client_secret":"secret456","bot_type":" PRIVATE "}`)
+	if err != nil {
+		t.Fatalf("ParseQQOfficeConfig returned error: %v", err)
+	}
+	if config.BotType != "private" {
+		t.Fatalf("BotType = %q, want private", config.BotType)
+	}
+	if _, err := ParseQQOfficeConfig(`{"app_id":"app123","client_secret":"secret456","bot_type":"unknown"}`); err == nil {
+		t.Fatal("expected invalid bot_type error")
 	}
 }
 

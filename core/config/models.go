@@ -28,6 +28,7 @@ type QQConfig struct {
 type QQOfficeConfig struct {
 	AppID        string `json:"app_id"`
 	ClientSecret string `json:"client_secret"`
+	BotType      string `json:"bot_type,omitempty"`
 	APIBaseURL   string `json:"api_base_url,omitempty"`
 	TokenURL     string `json:"token_url,omitempty"`
 }

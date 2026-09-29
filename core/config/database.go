@@ -1732,6 +1732,7 @@ func ParseQQOfficeConfig(configJSON string) (*QQOfficeConfig, error) {
 	}
 	config.AppID = strings.TrimSpace(config.AppID)
 	config.ClientSecret = strings.TrimSpace(config.ClientSecret)
+	config.BotType = strings.ToLower(strings.TrimSpace(config.BotType))
 	config.APIBaseURL = strings.TrimSpace(config.APIBaseURL)
 	config.TokenURL = strings.TrimSpace(config.TokenURL)
 	if config.AppID == "" {
@@ -1739,6 +1740,12 @@ func ParseQQOfficeConfig(configJSON string) (*QQOfficeConfig, error) {
 	}
 	if config.ClientSecret == "" {
 		return nil, fmt.Errorf("client_secret 不能为空")
+	}
+	if config.BotType == "" {
+		config.BotType = "public"
+	}
+	if config.BotType != "public" && config.BotType != "private" {
+		return nil, fmt.Errorf("bot_type 必须是 public 或 private")
 	}
 	if config.APIBaseURL == "" {
 		config.APIBaseURL = "https://api.sgroup.qq.com"

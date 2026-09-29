@@ -109,11 +109,16 @@ func (m *KeywordReplyManager) Handle(msg *types.Message) bool {
 }
 
 func (m *KeywordReplyManager) shouldIgnoreRestartMessage(msg *types.Message) bool {
-	if strings.TrimSpace(msg.Content) != "重启" {
+	switch strings.TrimSpace(msg.Content) {
+	case "重启":
+		ignoredKey := strings.TrimSpace(os.Getenv("ALLBOT_IGNORE_RESTART_MESSAGE_KEY"))
+		return ignoredKey != "" && ignoredKey == RestartMessageKey(msg)
+	case "更新":
+		ignoredKey := strings.TrimSpace(os.Getenv("ALLBOT_IGNORE_UPDATE_MESSAGE_KEY"))
+		return ignoredKey != "" && ignoredKey == RestartMessageKey(msg)
+	default:
 		return false
 	}
-	ignoredKey := strings.TrimSpace(os.Getenv("ALLBOT_IGNORE_RESTART_MESSAGE_KEY"))
-	return ignoredKey != "" && ignoredKey == RestartMessageKey(msg)
 }
 
 func RestartMessageKey(msg *types.Message) string {

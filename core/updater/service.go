@@ -303,7 +303,8 @@ func (s *Service) runDownload(parent context.Context, currentVersion string, lat
 	if runner == nil {
 		runner = DefaultUpgradeRunner
 	}
-	request := ApplyUpdateRequest{ParentPID: os.Getpid(), CurrentPath: currentPath, NewPath: newPath, BackupPath: filepath.Join(updateDir, "backup", filepath.Base(currentPath)+".bak"), UpdateRoot: updateDir, ExpectedSHA256: expectedSHA256, AssetName: asset.Name, ChecksumPayload: base64.StdEncoding.EncodeToString(checksumBytes), UpdateSignature: strings.TrimSpace(string(signature)), WorkDir: workDir, Args: os.Args[1:], FromVersion: currentVersion, ToVersion: latestVersion, RestartDelay: "2000", RestartedFlag: "1"}
+	notification, _ := UpgradeNotificationFromContext(ctx)
+	request := ApplyUpdateRequest{ParentPID: os.Getpid(), CurrentPath: currentPath, NewPath: newPath, BackupPath: filepath.Join(updateDir, "backup", filepath.Base(currentPath)+".bak"), UpdateRoot: updateDir, ExpectedSHA256: expectedSHA256, AssetName: asset.Name, ChecksumPayload: base64.StdEncoding.EncodeToString(checksumBytes), UpdateSignature: strings.TrimSpace(string(signature)), WorkDir: workDir, Args: os.Args[1:], FromVersion: currentVersion, ToVersion: latestVersion, RestartDelay: "2000", RestartedFlag: "1", Notification: notification}
 	if err := runner(request); err != nil {
 		_ = os.RemoveAll(stagingDir)
 		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "启动更新器失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name, DownloadedAt: downLoadedAt})
