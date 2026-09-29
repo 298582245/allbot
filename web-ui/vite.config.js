@@ -1,5 +1,8 @@
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import Components from 'unplugin-vue-components/vite'
+import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
+import ElementPlus from 'unplugin-element-plus/vite'
 import { resolve } from 'path'
 
 export default defineConfig(({ mode }) => {
@@ -7,7 +10,13 @@ export default defineConfig(({ mode }) => {
   const apiTarget = env.VITE_ALLBOT_API_TARGET || `http://localhost:${env.ALLBOT_WEB_PORT || '3000'}`
 
   return {
-    plugins: [vue()],
+    plugins: [
+      vue(),
+      Components({
+        resolvers: [ElementPlusResolver()]
+      }),
+      ElementPlus()
+    ],
     resolve: {
       alias: {
         '@': resolve(__dirname, 'src')
@@ -28,7 +37,6 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         output: {
           manualChunks: {
-            'element-plus': ['element-plus'],
             'vue-vendor': ['vue', 'vue-router', 'pinia']
           }
         }

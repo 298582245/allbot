@@ -242,8 +242,19 @@ git pull
 docker pull golang:1.26-alpine
 docker pull debian:bookworm-slim
 docker compose build --progress=plain allbot
-docker compose up -d allbot
+ALLBOT_WEB_PORT=3000 docker compose up -d --build
 ```
+
+如果此前使用 Docker 内的一键升级更新过程序，升级后再重启却回到旧版本，请先拉取包含修复的代码并重建镜像，再清除旧版入口脚本写错的镜像指纹标记：
+
+```bash
+git pull
+docker compose build --no-cache allbot
+docker compose run --rm --entrypoint sh allbot -c 'rm -f /data/.allbot-image-sha256'
+ALLBOT_WEB_PORT=3000 docker compose up -d
+```
+
+清除该标记不会删除 `/data/allbot`、配置数据库或其他持久化数据；后续容器重启会保留 Docker 一键升级安装的版本。不要使用 `docker compose down -v`，以免删除 `allbot_data` 命名卷。默认 Web 端口为 `3000`；若修改了端口，启动命令中的 `ALLBOT_WEB_PORT` 也要使用相同值。
 
 如果 SSH 会话不稳定，可在 `tmux` 或 `screen` 中执行构建；这只能避免终端断线终止任务，无法解决服务器 OOM、磁盘不足或镜像仓库网络异常。
 

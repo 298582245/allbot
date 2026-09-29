@@ -2,6 +2,19 @@
 
 本文件只记录 `web-ui/src` 下的打包前前端源码改动，不记录 `web/` 下构建产物。
 
+## 2026-09-29
+### `vite.config.js`、`src/main.js`
+
+- 时间：本次任务
+- 修改范围：Element Plus 组件、样式和公共依赖拆分
+- 变更摘要：移除 Element Plus 全量注册和全量 CSS，引入按需组件与样式解析；保留 Vue 公共依赖，将 Element Plus 组件资源和页面资源按实际引用拆分，避免首屏预加载完整 Element Plus 包。
+
+### `package.json`、`package-lock.json`
+
+- 时间：本次任务
+- 修改范围：新增前端构建插件依赖
+- 变更摘要：新增 `unplugin-vue-components` 和 `unplugin-element-plus`。
+
 ## 2026-08-10
 ### `src/views/Plugins.vue`
 
