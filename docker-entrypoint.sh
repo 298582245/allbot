@@ -198,7 +198,11 @@ PY
     fi
     mv "${new_path}" "${APP_BIN}"
     chmod 0755 "${APP_BIN}"
-    sha256sum "${APP_BIN}" | cut -d ' ' -f 1 > "${APP_IMAGE_HASH}"
+    if [ -f "${IMAGE_HASH}" ]; then
+        cp "${IMAGE_HASH}" "${APP_IMAGE_HASH}"
+    else
+        rm -f "${APP_IMAGE_HASH}"
+    fi
     rm -f "${UPGRADE_REQUEST}"
 
     export ALLBOT_UPDATED=1
