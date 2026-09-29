@@ -256,6 +256,8 @@ ALLBOT_WEB_PORT=3000 docker compose up -d
 
 清除该标记不会删除 `/data/allbot`、配置数据库或其他持久化数据；后续容器重启会保留 Docker 一键升级安装的版本。不要使用 `docker compose down -v`，以免删除 `allbot_data` 命名卷。默认 Web 端口为 `3000`；若修改了端口，启动命令中的 `ALLBOT_WEB_PORT` 也要使用相同值。
 
+旧版 Docker 镜像也可以直接从后台执行在线更新。兼容版本启动时会自动把旧入口脚本写错的镜像指纹修正为镜像自身指纹，因此不需要先手动运行下载的 `allbot-v版本号-linux-amd64` 文件；更新完成后仍由容器入口脚本管理 `/data/allbot`。如果旧容器没有设置 `ALLBOT_UPDATE_MODE=docker`，则不会走 Docker 更新流程，应先按上面的方式重建一次镜像。
+
 如果 SSH 会话不稳定，可在 `tmux` 或 `screen` 中执行构建；这只能避免终端断线终止任务，无法解决服务器 OOM、磁盘不足或镜像仓库网络异常。
 
 重新构建镜像时，未被用户修改的 `/data/sdk` 会随镜像内 SDK 自动更新；如果日志提示 `/data/sdk` 已被修改，需要手动备份并删除 `/data/sdk` 后重启容器，才会重新初始化为镜像新版 SDK。

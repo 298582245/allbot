@@ -46,6 +46,8 @@ func main() {
 		return
 	}
 
+	repairDockerUpdateMarker()
+
 	pluginDir := flag.String("plugins", "./plugins", "插件目录")
 	showAccessCode := flag.Bool("show-access-code", false, "显示当前安全访问码并退出")
 	resetPassword := flag.Bool("reset-password", false, "重置管理员密码并退出")
@@ -271,6 +273,42 @@ func main() {
 			return
 		}
 	}
+}
+
+func repairDockerUpdateMarker() {
+	if !updater.DockerUpdateModeEnabled() || strings.TrimSpace(os.Getenv("ALLBOT_UPDATED")) != "1" {
+		return
+	}
+	dataDir := strings.TrimSpace(os.Getenv("ALLBOT_DATA_DIR"))
+	if dataDir == "" {
+		dataDir = "/data"
+	}
+	imageDir := strings.TrimSpace(os.Getenv("ALLBOT_IMAGE_DIR"))
+	if imageDir == "" {
+		imageDir = "/opt/allbot"
+	}
+	if err := syncDockerUpdateMarker(dataDir, imageDir); err != nil {
+		log.Printf("Docker 更新标记修复失败: %v", err)
+	}
+}
+
+func syncDockerUpdateMarker(dataDir string, imageDir string) error {
+	markerPath := filepath.Join(dataDir, ".allbot-image-sha256")
+	imageHashPath := filepath.Join(imageDir, "allbot.sha256")
+	imageHash, err := os.ReadFile(imageHashPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if removeErr := os.Remove(markerPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return removeErr
+			}
+			return nil
+		}
+		return err
+	}
+	if strings.TrimSpace(string(imageHash)) == "" {
+		return fmt.Errorf("镜像程序哈希为空")
+	}
+	return os.WriteFile(markerPath, imageHash, 0600)
 }
 
 func resetAdminPassword(dbPath string, output io.Writer) error {
