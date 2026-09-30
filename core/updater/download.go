@@ -13,6 +13,7 @@ import (
 
 type Downloader struct {
 	HTTPClient *http.Client
+	ProxyURL   string
 }
 
 func (d Downloader) Download(ctx context.Context, asset ReleaseAsset, targetPath string) error {
@@ -23,6 +24,7 @@ func (d Downloader) Download(ctx context.Context, asset ReleaseAsset, targetPath
 	if strings.TrimSpace(targetPath) == "" {
 		return fmt.Errorf("目标文件不能为空")
 	}
+	url = ProxyDownloadURL(url, d.ProxyURL)
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0700); err != nil {
 		return err
 	}

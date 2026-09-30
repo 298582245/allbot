@@ -64,6 +64,14 @@
         </section>
 
         <section class="form-section">
+          <div class="section-title">更新配置</div>
+          <el-form-item label="GitHub 下载代理">
+            <el-input v-model.trim="form.github_proxy_url" clearable placeholder="例如：https://gh-proxy.com/，留空表示直连" />
+            <span class="hint">用于检查更新和下载升级文件的代理前缀</span>
+          </el-form-item>
+        </section>
+
+        <section class="form-section">
           <div class="section-header">
             <div class="section-title">系统信息</div>
             <div class="section-actions">
@@ -186,6 +194,7 @@ const form = reactive({
   auto_load_plugins: true,
   script_task_concurrent_limit: 1,
   points_unit: '积分',
+  github_proxy_url: '',
   access_control: createAccessControl()
 })
 
@@ -280,6 +289,7 @@ const loadSettings = async () => {
       auto_load_plugins: data.auto_load_plugins,
       script_task_concurrent_limit: Number(data.script_task_concurrent_limit || 1),
       points_unit: data.points_unit || '积分',
+      github_proxy_url: data.github_proxy_url || '',
       access_control: normalizeAccessControl(data.access_control)
     })
   } finally {
@@ -405,7 +415,8 @@ const handleSave = async () => {
       plugin_dir: form.plugin_dir,
       auto_load_plugins: form.auto_load_plugins,
       script_task_concurrent_limit: form.script_task_concurrent_limit,
-      points_unit: form.points_unit
+      points_unit: form.points_unit,
+      github_proxy_url: form.github_proxy_url
     })
     authStore.username = form.admin_username
     localStorage.setItem('username', form.admin_username)

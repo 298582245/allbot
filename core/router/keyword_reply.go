@@ -176,6 +176,13 @@ func (m *KeywordReplyManager) replyBuiltin(keyword string, msg *types.Message) e
 		Reply: func(text string) error {
 			return m.sendText(adp, target, msg, text)
 		},
+		ReplyUser: func(text string) error {
+			userTarget := msg.UserID
+			if resolver, ok := adp.(adapter.SendTargetResolver); ok {
+				userTarget = resolver.SendTarget(msg.UserID, "")
+			}
+			return m.sendText(adp, userTarget, msg, text)
+		},
 		ReplyButtons: func(text string, buttons [][]types.ButtonOption) error {
 			return sendReplyButtonsWithFallback(adp, msg, target, text, buttons)
 		},

@@ -39,11 +39,12 @@ type UpdateCheckResult struct {
 }
 
 type Service struct {
-	client      ReleaseClient
-	runner      func(ApplyUpdateRequest) error
-	exitHandler func()
-	mu          sync.Mutex
-	state       UpgradeState
+	client        ReleaseClient
+	runner        func(ApplyUpdateRequest) error
+	exitHandler   func()
+	downloadProxy string
+	mu            sync.Mutex
+	state         UpgradeState
 }
 
 func NewService(client ReleaseClient, runner func(ApplyUpdateRequest) error) *Service {
@@ -53,7 +54,11 @@ func NewService(client ReleaseClient, runner func(ApplyUpdateRequest) error) *Se
 	if runner == nil {
 		runner = DefaultUpgradeRunner
 	}
-	return &Service{client: client, runner: runner, state: UpgradeState{Status: UpgradeStatusIdle, Message: "暂无升级任务"}}
+	downloadProxy := ""
+	if githubClient, ok := client.(*GitHubClient); ok {
+		downloadProxy = strings.TrimSpace(githubClient.ProxyURL)
+	}
+	return &Service{client: client, runner: runner, downloadProxy: downloadProxy, state: UpgradeState{Status: UpgradeStatusIdle, Message: "暂无升级任务"}}
 }
 
 func (s *Service) SetReleaseClient(client ReleaseClient) {
@@ -62,7 +67,19 @@ func (s *Service) SetReleaseClient(client ReleaseClient) {
 	if client == nil {
 		client = NewGitHubClient()
 	}
+	if githubClient, ok := client.(*GitHubClient); ok {
+		githubClient.ProxyURL = s.downloadProxy
+	}
 	s.client = client
+}
+
+func (s *Service) SetDownloadProxy(proxyURL string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.downloadProxy = strings.TrimSpace(proxyURL)
+	if githubClient, ok := s.client.(*GitHubClient); ok {
+		githubClient.ProxyURL = s.downloadProxy
+	}
 }
 
 func (s *Service) SetUpgradeRunner(runner func(ApplyUpdateRequest) error) {
@@ -219,6 +236,11 @@ func (s *Service) setState(state UpgradeState) {
 func (s *Service) runDownload(parent context.Context, currentVersion string, latestVersion string, asset ReleaseAsset, checksumAsset ReleaseAsset, signatureAsset ReleaseAsset) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 15*time.Minute)
 	defer cancel()
+	stopProgress := s.startProgressNotifier(ctx)
+	defer stopProgress()
+	s.mu.Lock()
+	downloadProxy := s.downloadProxy
+	s.mu.Unlock()
 	currentPath, err := os.Executable()
 	if err != nil {
 		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "获取当前程序路径失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
@@ -249,24 +271,26 @@ func (s *Service) runDownload(parent context.Context, currentVersion string, lat
 		return
 	}
 	newPath := filepath.Join(stagingDir, downloadedBinaryName())
-	if err := (Downloader{}).Download(ctx, asset, newPath); err != nil {
+	if err := (Downloader{ProxyURL: downloadProxy}).Download(ctx, asset, newPath); err != nil {
 		_ = os.RemoveAll(stagingDir)
 		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "下载升级包失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
 		return
 	}
-	checksumBytes, err := DownloadChecksumBytes(ctx, checksumAsset)
+	s.setState(UpgradeState{Status: UpgradeStatusDownloading, Message: "升级包下载完成，正在下载校验文件", Version: latestVersion, AssetName: asset.Name})
+	checksumBytes, err := downloadChecksumBytes(ctx, checksumAsset, downloadProxy)
 	if err != nil {
 		_ = os.RemoveAll(stagingDir)
 		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "下载校验文件失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
 		return
 	}
+	s.setState(UpgradeState{Status: UpgradeStatusDownloading, Message: "校验文件下载完成，正在验证升级包", Version: latestVersion, AssetName: asset.Name})
 	publicKey, err := trustedUpdatePublicKey()
 	if err != nil {
 		_ = os.RemoveAll(stagingDir)
 		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "更新签名信任根不可用", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
 		return
 	}
-	signature, err := downloadSmallReleaseAsset(ctx, signatureAsset, 4096)
+	signature, err := downloadSmallReleaseAssetWithProxy(ctx, signatureAsset, 4096, downloadProxy)
 	if err != nil {
 		_ = os.RemoveAll(stagingDir)
 		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "下载更新签名失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
@@ -315,6 +339,34 @@ func (s *Service) runDownload(parent context.Context, currentVersion string, lat
 			time.Sleep(500 * time.Millisecond)
 			exitHandler()
 		}()
+	}
+}
+
+func (s *Service) startProgressNotifier(ctx context.Context) func() {
+	progress, ok := UpgradeProgressFromContext(ctx)
+	if !ok {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				state := s.CurrentState()
+				if state.Status != UpgradeStatusDownloading && state.Status != UpgradeStatusRestarting {
+					return
+				}
+				progress(state)
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		progress(s.CurrentState())
 	}
 }
 

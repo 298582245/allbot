@@ -16,7 +16,10 @@ type UpgradeNotification struct {
 	StartedAtNS int64  `json:"startedAtNs,omitempty"`
 }
 
+type UpgradeProgressFunc func(UpgradeState)
+
 type upgradeNotificationContextKey struct{}
+type upgradeProgressContextKey struct{}
 
 func WithUpgradeNotification(ctx context.Context, notification UpgradeNotification) context.Context {
 	if ctx == nil {
@@ -31,6 +34,21 @@ func UpgradeNotificationFromContext(ctx context.Context) (UpgradeNotification, b
 	}
 	notification, ok := ctx.Value(upgradeNotificationContextKey{}).(UpgradeNotification)
 	return notification, ok
+}
+
+func WithUpgradeProgress(ctx context.Context, progress UpgradeProgressFunc) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, upgradeProgressContextKey{}, progress)
+}
+
+func UpgradeProgressFromContext(ctx context.Context) (UpgradeProgressFunc, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	progress, ok := ctx.Value(upgradeProgressContextKey{}).(UpgradeProgressFunc)
+	return progress, ok && progress != nil
 }
 
 type ReleaseInfo struct {

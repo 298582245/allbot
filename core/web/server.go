@@ -124,6 +124,11 @@ type Server struct {
 func NewServer(port string, pluginManager *plugin.Manager, router *router.Router, adapterManager *config.AdapterManager, webFS fs.FS) *Server {
 	updateService := updater.NewService(updater.NewGitHubClient(), updater.DefaultUpgradeRunner)
 	server := &Server{port: port, pluginManager: pluginManager, router: router, adapterManager: adapterManager, logManager: NewLogManager(500), startTime: time.Now(), webFS: webFS, webAssetMode: WebAssetModeEmbedded, externalWebDir: "web", updateService: updateService, releaseClient: updater.NewGitHubClient(), upgradeRunner: updater.DefaultUpgradeRunner, upgradeState: updater.UpgradeState{Status: updater.UpgradeStatusIdle, Message: "暂无升级任务"}, runtimeInitJobs: newRuntimeProfileInitJobStore(), sessions: map[string]adminSession{}}
+	if adapterManager != nil && adapterManager.GetDatabase() != nil {
+		if settings, err := adapterManager.GetDatabase().GetSystemSettings(); err == nil {
+			updateService.SetDownloadProxy(settings.GitHubProxyURL)
+		}
+	}
 	server.initializeOpenAPIAccess()
 	server.openAPIStats = newOpenAPIStatsRecorder(server.runtimeDatabase(), server.openAPIRetentionDays)
 	return server

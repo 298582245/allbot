@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -38,6 +39,8 @@ const (
 	scriptTaskRunTimeoutSecondsDescription  = "脚本任务运行超时时间，0 表示不限制"
 	scriptTaskTimeoutNotifyAdminEnabledKey  = "script_tasks.timeout_notify_admin_enabled"
 	scriptTaskTimeoutNotifyAdminDescription = "脚本任务超时自动停止后是否通知平台管理员"
+	githubProxyURLKey                       = "update.github_proxy_url"
+	githubProxyURLDescription               = "GitHub 更新下载代理地址"
 )
 
 type AdminPasswordInitResult struct {
@@ -57,6 +60,7 @@ type SystemSettings struct {
 	AutoLoadPlugins           bool                      `json:"auto_load_plugins"`
 	ScriptTaskConcurrentLimit int                       `json:"script_task_concurrent_limit"`
 	PointsUnit                string                    `json:"points_unit"`
+	GitHubProxyURL            string                    `json:"github_proxy_url"`
 	AccessControl             types.AccessControlConfig `json:"access_control"`
 	// 安全访问码：开启后访问登录页需在 URL 携带访问码，否则返回 404
 	AccessCodeEnabled bool   `json:"access_code_enabled"`
@@ -125,6 +129,7 @@ func (d *Database) GetSystemSettings() (*SystemSettings, error) {
 		AutoLoadPlugins:           valueOrDefault(items, "plugin.auto_load", "true") == "true",
 		ScriptTaskConcurrentLimit: intValueOrDefault(items, "script_tasks.concurrent_limit", 1),
 		PointsUnit:                valueOrDefault(items, "user.points_unit", "积分"),
+		GitHubProxyURL:            strings.TrimSpace(items[githubProxyURLKey]),
 		AccessControl:             ParseAccessControlConfig(items["access_control"]),
 
 		AccessCodeEnabled: valueOrDefault(items, "security.access_code_enabled", "false") == "true",
@@ -232,6 +237,10 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 	if settings.PointsUnit == "" {
 		settings.PointsUnit = "积分"
 	}
+	githubProxyURL, err := normalizeGitHubProxyURL(settings.GitHubProxyURL)
+	if err != nil {
+		return err
+	}
 
 	items := map[string]struct {
 		value       string
@@ -245,6 +254,7 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 		"plugin.auto_load":              {boolString(settings.AutoLoadPlugins), "启动时自动加载插件"},
 		"script_tasks.concurrent_limit": {fmt.Sprintf("%d", settings.ScriptTaskConcurrentLimit), "脚本任务全局并发上限"},
 		"user.points_unit":              {settings.PointsUnit, "用户积分单位"},
+		githubProxyURLKey:               {githubProxyURL, githubProxyURLDescription},
 		"access_control":                {MarshalAccessControlConfig(settings.AccessControl), "系统访问控制配置"},
 
 		"security.access_code_enabled": {boolString(settings.AccessCodeEnabled), "是否开启安全访问入口"},
@@ -256,6 +266,19 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 		}
 	}
 	return nil
+}
+
+func normalizeGitHubProxyURL(value string) (string, error) {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	if value == "" {
+		return "", nil
+	}
+	parsedValue := strings.Replace(value, "%s", "https://github.com", 1)
+	parsed, err := url.Parse(parsedValue)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", fmt.Errorf("GitHub 下载代理必须是 HTTP/HTTPS URL 且包含 host")
+	}
+	return value, nil
 }
 
 func DefaultBackupSettings() BackupSettings {

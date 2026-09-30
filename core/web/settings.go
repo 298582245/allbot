@@ -35,6 +35,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "保存系统设置失败: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		s.ensureUpdateService().SetDownloadProxy(settings.GitHubProxyURL)
 		if s.pluginManager != nil {
 			s.pluginManager.SetScriptLimit(settings.ScriptTaskConcurrentLimit)
 		}

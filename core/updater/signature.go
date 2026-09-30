@@ -60,10 +60,15 @@ func verifyUpdateSignature(publicKey ed25519.PublicKey, encodedSignature []byte,
 }
 
 func downloadSmallReleaseAsset(ctx context.Context, asset ReleaseAsset, maxBytes int64) ([]byte, error) {
+	return downloadSmallReleaseAssetWithProxy(ctx, asset, maxBytes, "")
+}
+
+func downloadSmallReleaseAssetWithProxy(ctx context.Context, asset ReleaseAsset, maxBytes int64, proxyURL string) ([]byte, error) {
 	url := strings.TrimSpace(asset.DownloadURL)
 	if url == "" {
 		return nil, fmt.Errorf("发布资产下载地址不能为空")
 	}
+	url = ProxyDownloadURL(url, proxyURL)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

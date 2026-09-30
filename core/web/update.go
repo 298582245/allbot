@@ -71,6 +71,7 @@ func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	s.syncUpdateDownloadProxy()
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 	s.jsonResponse(w, toUpdateInfoResponse(s.ensureUpdateService().Check(ctx)))
@@ -89,6 +90,7 @@ func (s *Server) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	s.syncUpdateDownloadProxy()
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 	state, err := s.ensureUpdateService().StartUpgrade(ctx)
@@ -97,6 +99,17 @@ func (s *Server) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.jsonResponse(w, state)
+}
+
+func (s *Server) syncUpdateDownloadProxy() {
+	if s == nil || s.adapterManager == nil || s.adapterManager.GetDatabase() == nil {
+		return
+	}
+	settings, err := s.adapterManager.GetDatabase().GetSystemSettings()
+	if err != nil {
+		return
+	}
+	s.ensureUpdateService().SetDownloadProxy(settings.GitHubProxyURL)
 }
 
 func (s *Server) ensureUpdateService() *updater.Service {
