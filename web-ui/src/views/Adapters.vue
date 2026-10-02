@@ -241,7 +241,11 @@ const filteredAdapters = computed(() => {
 })
 
 const sortedAdapters = computed(() => {
-  return [...filteredAdapters.value].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
+  return [...filteredAdapters.value].sort((a, b) => {
+    const pinnedDiff = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned))
+    if (pinnedDiff !== 0) return pinnedDiff
+    return Number(Boolean(b.running)) - Number(Boolean(a.running))
+  })
 })
 
 const paginatedAdapters = computed(() => {

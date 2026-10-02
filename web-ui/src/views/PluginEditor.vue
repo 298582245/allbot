@@ -177,7 +177,7 @@
     </el-card>
 
     <el-dialog v-model="createDialogVisible" :title="createForm.type === 'directory' ? '新建文件夹' : '新建文件'" width="480px">
-      <el-form :model="createForm" label-width="90px"><el-form-item label="类型"><el-radio-group v-model="createForm.type"><el-radio-button label="file">文件</el-radio-button><el-radio-button label="directory">文件夹</el-radio-button></el-radio-group></el-form-item><el-form-item label="路径"><el-input v-model="createForm.path" :placeholder="createForm.type === 'directory' ? '例如：lib/utils' : '例如：lib/helper.js'" /><div class="field-tip">相对当前插件目录，支持输入多级目录。</div></el-form-item></el-form>
+      <el-form :model="createForm" label-width="90px"><el-form-item label="类型"><el-radio-group v-model="createForm.type"><el-radio-button value="file">文件</el-radio-button><el-radio-button value="directory">文件夹</el-radio-button></el-radio-group></el-form-item><el-form-item label="路径"><el-input v-model="createForm.path" :placeholder="createForm.type === 'directory' ? '例如：lib/utils' : '例如：lib/helper.js'" /><div class="field-tip">相对当前插件目录，支持输入多级目录。</div></el-form-item></el-form>
       <template #footer><el-button @click="createDialogVisible = false">取消</el-button><el-button type="primary" :loading="creating" @click="createEntry">创建</el-button></template>
     </el-dialog>
   </div>

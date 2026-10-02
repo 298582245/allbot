@@ -29,8 +29,8 @@
           </div>
           <div class="runtime-controls">
             <el-radio-group v-model="form.runtime" size="small">
-              <el-radio-button label="nodejs">Node.js</el-radio-button>
-              <el-radio-button label="python">Python</el-radio-button>
+              <el-radio-button value="nodejs">Node.js</el-radio-button>
+              <el-radio-button value="python">Python</el-radio-button>
             </el-radio-group>
             <el-select v-model="form.runtime_profile" clearable size="small" placeholder="使用默认运行环境" class="profile-select">
               <el-option

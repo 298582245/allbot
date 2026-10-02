@@ -35,13 +35,13 @@
             size="small"
             class="status-filter"
           >
-            <el-radio-button label="all"
+            <el-radio-button value="all"
               >全部（{{ statusCounters.all }}）</el-radio-button
             >
-            <el-radio-button label="enabled"
+            <el-radio-button value="enabled"
               >开启（{{ statusCounters.enabled }}）</el-radio-button
             >
-            <el-radio-button label="disabled"
+            <el-radio-button value="disabled"
               >关闭（{{ statusCounters.disabled }}）</el-radio-button
             >
           </el-radio-group>

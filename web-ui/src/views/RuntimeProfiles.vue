@@ -146,8 +146,8 @@
         </el-form-item>
         <el-form-item label="来源" required>
           <el-radio-group v-model="form.source">
-            <el-radio-button label="manual">手动路径</el-radio-button>
-            <el-radio-button label="managed">自动下载</el-radio-button>
+            <el-radio-button value="manual">手动路径</el-radio-button>
+            <el-radio-button value="managed">自动下载</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="版本说明">

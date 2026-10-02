@@ -188,9 +188,9 @@
         </el-form-item>
         <el-form-item label="运行语言" required>
           <el-radio-group v-model="form.runtime" :disabled="form.runtime === 'builtin'">
-            <el-radio-button label="nodejs">Node.js</el-radio-button>
-            <el-radio-button label="python">Python</el-radio-button>
-            <el-radio-button v-if="form.runtime === 'builtin'" label="builtin">内置</el-radio-button>
+            <el-radio-button value="nodejs">Node.js</el-radio-button>
+            <el-radio-button value="python">Python</el-radio-button>
+            <el-radio-button v-if="form.runtime === 'builtin'" value="builtin">内置</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item v-if="form.runtime !== 'builtin'" label="运行环境">
@@ -213,9 +213,9 @@
         </el-form-item>
         <el-form-item label="IP 白名单">
           <el-radio-group v-model="form.ipWhitelistMode">
-            <el-radio-button label="inherit">继承全局</el-radio-button>
-            <el-radio-button label="allow_all">允许全部</el-radio-button>
-            <el-radio-button label="custom">自定义</el-radio-button>
+            <el-radio-button value="inherit">继承全局</el-radio-button>
+            <el-radio-button value="allow_all">允许全部</el-radio-button>
+            <el-radio-button value="custom">自定义</el-radio-button>
           </el-radio-group>
           <el-select
             v-if="form.ipWhitelistMode === 'custom'"
@@ -261,8 +261,8 @@
         <el-form :model="settingsForm" label-width="128px" class="settings-form">
           <el-form-item label="全局白名单">
             <el-radio-group v-model="settingsForm.ipWhitelistMode">
-              <el-radio-button label="allow_all">允许全部</el-radio-button>
-              <el-radio-button label="custom">自定义白名单</el-radio-button>
+              <el-radio-button value="allow_all">允许全部</el-radio-button>
+              <el-radio-button value="custom">自定义白名单</el-radio-button>
             </el-radio-group>
           </el-form-item>
           <el-form-item v-if="settingsForm.ipWhitelistMode === 'custom'" label="IP / CIDR" required>

@@ -88,7 +88,7 @@
         :default-active="sidebarActiveMenu"
         :unique-opened="!collapsed"
         :collapse="collapsed"
-        :collapse-transition="true"
+        :collapse-transition="false"
         class="sidebar-menu"
         @open="handleMenuOpen"
         @select="handleMenuSelect"
