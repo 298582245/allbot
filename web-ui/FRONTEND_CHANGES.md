@@ -2,6 +2,22 @@
 
 本文件只记录 `web-ui/src` 下的打包前前端源码改动，不记录 `web/` 下构建产物。
 
+## 2026-10-02
+
+### `src/views/Layout.vue`、`src/views/Dashboard.vue`、`src/views/*.vue`
+
+- 时间：15:16
+- 修改范围：侧栏菜单折叠过渡、仪表盘 tooltip、Element Plus radio 选项
+- 变更摘要：关闭侧栏折叠菜单过渡以避免 Popper 重建期间点击失效；保持 tooltip 子节点有效；将 radio 选项迁移到 `value` 属性，消除 Element Plus 警告。
+- 统计：仅修复交互时序和组件 API 兼容性，不改变业务数据。
+
+### `src/views/Backups.vue`
+
+- 时间：15:16
+- 修改范围：S3 备份配置与运行状态
+- 变更摘要：新增独立的 S3 远程保留份数设置，默认保留 30 份，与本地备份保留数量分开。
+- 统计：新增 1 个远程保留数量输入项和状态展示，不改变本地保留策略。
+
 ## 2026-09-29
 ### `vite.config.js`、`src/main.js`
 
@@ -1162,12 +1178,3 @@
 - 修改范围：63-71、194、289、415
 - 变更摘要：系统设置新增 GitHub 下载代理前缀配置，并在保存、加载时同步该配置。
 - 统计：新增更新配置区，不改变其他设置项行为。
-
-## 2026-10-02
-
-### `src/views/Layout.vue`、`src/views/Dashboard.vue`、`src/views/*.vue`
-
-- 时间：当前会话
-- 修改范围：侧栏菜单折叠过渡、仪表盘 tooltip、Element Plus radio 选项
-- 变更摘要：关闭侧栏折叠菜单过渡以避免 Popper 重建期间点击失效；保持 tooltip 子节点有效；将 radio 选项迁移到 `value` 属性，消除 Element Plus 警告。
-- 统计：仅修复交互时序和组件 API 兼容性，不改变业务数据。

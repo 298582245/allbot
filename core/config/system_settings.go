@@ -88,6 +88,7 @@ type BackupSettings struct {
 
 type OSSBackupSettings struct {
 	Enabled         bool   `json:"enabled"`
+	Retention       int    `json:"retention"`
 	Provider        string `json:"provider"`
 	Bucket          string `json:"bucket"`
 	Endpoint        string `json:"endpoint"`
@@ -282,7 +283,7 @@ func normalizeGitHubProxyURL(value string) (string, error) {
 }
 
 func DefaultBackupSettings() BackupSettings {
-	return BackupSettings{Enabled: false, Cron: "0 3 * * *", Retention: 7, BackupDir: "./backups", IncludePlugins: true, IncludeData: true, IncludeImages: true, IncludeLogs: true, IncludeRuntimeEnv: true, OSS: OSSBackupSettings{Provider: "", Region: "us-east-1", AddressingStyle: "auto", Prefix: "allbot/"}}
+	return BackupSettings{Enabled: false, Cron: "0 3 * * *", Retention: 7, BackupDir: "./backups", IncludePlugins: true, IncludeData: true, IncludeImages: true, IncludeLogs: true, IncludeRuntimeEnv: true, OSS: OSSBackupSettings{Retention: 30, Provider: "", Region: "us-east-1", AddressingStyle: "auto", Prefix: "allbot/"}}
 }
 
 func (d *Database) GetBackupSettings() (BackupSettings, error) {
@@ -339,6 +340,9 @@ func NormalizeBackupSettings(settings BackupSettings) BackupSettings {
 		settings.BackupDir = defaults.BackupDir
 	}
 	settings.OSS.Provider = strings.TrimSpace(settings.OSS.Provider)
+	if settings.OSS.Retention <= 0 {
+		settings.OSS.Retention = defaults.OSS.Retention
+	}
 	settings.OSS.Bucket = strings.TrimSpace(settings.OSS.Bucket)
 	settings.OSS.Endpoint = strings.TrimSpace(settings.OSS.Endpoint)
 	settings.OSS.Region = strings.TrimSpace(settings.OSS.Region)

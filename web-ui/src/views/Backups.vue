@@ -72,6 +72,10 @@
               <el-form-item label="对象前缀">
                 <el-input v-model="form.oss.prefix" placeholder="allbot/" />
               </el-form-item>
+              <el-form-item label="远程保留">
+                <el-input-number v-model="form.oss.retention" :min="1" :max="3650" />
+                <span class="hint">S3 保留最新备份，建议多于本地保留数量</span>
+              </el-form-item>
             </template>
             <el-form-item label="保留最新">
               <el-input-number v-model="form.retention" :min="1" :max="365" />
@@ -105,6 +109,10 @@
             <div class="info-item">
               <span>本地备份</span>
               <strong>{{ files.length }} 份</strong>
+            </div>
+            <div v-if="form.oss.enabled" class="info-item">
+              <span>S3 保留</span>
+              <strong>{{ form.oss.retention }} 份</strong>
             </div>
             <div v-if="status.last_error" class="info-item wide">
               <span>最近错误</span>
@@ -352,7 +360,7 @@ function createDefaultSettings() {
     include_images: true,
     include_logs: true,
     include_runtime_env: true,
-    oss: { enabled: false, provider: '', bucket: '', endpoint: '', region: 'us-east-1', access_key: '', secret_key: '', addressing_style: 'auto', prefix: 'allbot/' }
+    oss: { enabled: false, retention: 30, provider: '', bucket: '', endpoint: '', region: 'us-east-1', access_key: '', secret_key: '', addressing_style: 'auto', prefix: 'allbot/' }
   }
 }
 
