@@ -985,7 +985,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		return plugincore.PluginUserResult{Success: true, Error: "", Data: result}
 	}
 
-	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc, paymentFunc, buttonsFunc, replyMarkdownFunc, replyRichFunc, sendRichMessageFunc, sendImageMessageFunc, deleteMessageFunc, muteFunc); err != nil {
+	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc, paymentFunc, buttonsFunc, replyMarkdownFunc, replyRichFunc, sendRichMessageFunc, sendImageMessageFunc, deleteMessageFunc, muteFunc, plugincore.PluginTaskInfo{Platform: msg.Platform, AdapterID: msg.AdapterID, UserID: msg.UserID, GroupID: msg.GroupID, UnionID: unionID, MessageID: msg.ID, Content: msg.Content}); err != nil {
 		log.Printf("Failed to execute plugin %s: %v", plugin.Name, err)
 	}
 }
@@ -1293,6 +1293,61 @@ func formatScriptTaskTimeoutNotification(item *config.ScriptRunLog, notification
 		valueOrDash(item.Runtime),
 		valueOrDash(item.RuntimeProfile),
 		valueOrDash(item.UnionID),
+		notification.TimeoutSeconds,
+		formatLocalTime(item.StartedAt),
+		formatLocalTime(notification.FinishedAt),
+		valueOrDash(notification.Error),
+	)
+}
+
+func (r *Router) NotifyPluginTaskTimeout(notification plugincore.PluginTaskTimeoutNotification) {
+	r.mu.RLock()
+	database := r.database
+	r.mu.RUnlock()
+	if database == nil {
+		log.Printf("[SYSTEM] 插件任务超时通知跳过：数据库不可用 log_id=%d", notification.LogID)
+		return
+	}
+	settings, err := database.GetPluginTaskSettings()
+	if err != nil {
+		log.Printf("[SYSTEM] 读取插件任务通知设置失败：%v", err)
+		return
+	}
+	if !settings.TimeoutNotifyAdminEnabled {
+		return
+	}
+	item, err := database.GetPluginTaskLog(notification.LogID)
+	if err != nil || item == nil {
+		log.Printf("[SYSTEM] 读取插件任务超时日志失败：log_id=%d err=%v", notification.LogID, err)
+		return
+	}
+	admins, err := r.startedPlatformAdmins("")
+	if err != nil || len(admins) == 0 {
+		log.Printf("[SYSTEM] 插件任务超时通知无可触达管理员：log_id=%d err=%v", notification.LogID, err)
+		return
+	}
+	text := formatPluginTaskTimeoutNotification(item, notification)
+	for _, admin := range admins {
+		action := plugincore.SendMessageAction{Platform: admin["platform"], AdapterID: admin["adapter_id"], UserID: admin["user_id"], Text: text}
+		if unionID := strings.TrimSpace(admin["union_id"]); unionID != "" {
+			action.UnionID = unionID
+		}
+		if err := r.sendPluginMessage(item.PluginID, action); err != nil {
+			log.Printf("[SYSTEM] 插件任务超时通知发送失败：log_id=%d platform=%s user=%s err=%v", notification.LogID, action.Platform, action.UserID, err)
+			continue
+		}
+		return
+	}
+	log.Printf("[SYSTEM] 插件任务超时通知全部发送失败：log_id=%d", notification.LogID)
+}
+
+func formatPluginTaskTimeoutNotification(item *config.PluginTaskLog, notification plugincore.PluginTaskTimeoutNotification) string {
+	return fmt.Sprintf("插件任务运行超时，已自动停止\n\n任务ID：%d\n插件：%s\n平台：%s\n用户：%s\n消息：%s\n超时时间：%d 秒\n开始时间：%s\n结束时间：%s\n错误：%s",
+		item.ID,
+		valueOrDash(item.PluginID),
+		valueOrDash(item.Platform),
+		valueOrDash(item.UserID),
+		valueOrDash(item.Content),
 		notification.TimeoutSeconds,
 		formatLocalTime(item.StartedAt),
 		formatLocalTime(notification.FinishedAt),

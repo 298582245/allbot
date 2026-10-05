@@ -132,6 +132,7 @@ func main() {
 	pluginManager.SetDatabase(configDB)
 	messageRouter.SetPluginManager(pluginManager)
 	pluginManager.SetScriptTimeoutNotifier(messageRouter.NotifyScriptTaskTimeout)
+	pluginManager.SetPluginTaskTimeoutNotifier(messageRouter.NotifyPluginTaskTimeout)
 
 	plugins, err := pluginManager.LoadAllPlugins()
 	if err != nil {

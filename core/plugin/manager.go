@@ -24,18 +24,20 @@ import (
 const pluginWebChatQuickActionFill = "fill"
 
 type Manager struct {
-	plugins               map[string]*PluginProcess
-	runningScripts        map[int64]context.CancelFunc
-	scriptDone            map[int64]chan ScriptRunResult
-	queuedScripts         map[int64]*queuedScriptRun
-	queueWake             chan struct{}
-	schedulerOnce         sync.Once
-	mu                    sync.RWMutex
-	pluginDir             string
-	depsManager           *deps.Manager
-	database              *config.Database
-	scriptLimit           int
-	scriptTimeoutNotifier ScriptTimeoutNotifier
+	plugins                   map[string]*PluginProcess
+	runningScripts            map[int64]context.CancelFunc
+	runningPluginTasks        map[int64]context.CancelFunc
+	scriptDone                map[int64]chan ScriptRunResult
+	queuedScripts             map[int64]*queuedScriptRun
+	queueWake                 chan struct{}
+	schedulerOnce             sync.Once
+	mu                        sync.RWMutex
+	pluginDir                 string
+	depsManager               *deps.Manager
+	database                  *config.Database
+	scriptLimit               int
+	scriptTimeoutNotifier     ScriptTimeoutNotifier
+	pluginTaskTimeoutNotifier PluginTaskTimeoutNotifier
 }
 
 type PluginProcess struct {
@@ -194,6 +196,16 @@ type ScriptRunResult struct {
 	FinishedAt time.Time `json:"finished_at"`
 }
 
+type PluginTaskInfo struct {
+	Platform  string
+	AdapterID string
+	UserID    string
+	GroupID   string
+	UnionID   string
+	MessageID string
+	Content   string
+}
+
 type ScriptTimeoutNotification struct {
 	LogID          int64
 	TimeoutSeconds int
@@ -203,6 +215,18 @@ type ScriptTimeoutNotification struct {
 }
 
 type ScriptTimeoutNotifier func(ScriptTimeoutNotification)
+
+type PluginTaskTimeoutNotification struct {
+	LogID          int64
+	PluginID       string
+	Info           PluginTaskInfo
+	TimeoutSeconds int
+	Output         string
+	Error          string
+	FinishedAt     time.Time
+}
+
+type PluginTaskTimeoutNotifier func(PluginTaskTimeoutNotification)
 
 type queuedScriptRun struct {
 	logID             int64
@@ -255,13 +279,19 @@ type PaymentWaitAction struct {
 }
 
 func NewManager(pluginDir string, depsManager *deps.Manager) *Manager {
-	return &Manager{plugins: make(map[string]*PluginProcess), runningScripts: make(map[int64]context.CancelFunc), scriptDone: make(map[int64]chan ScriptRunResult), pluginDir: pluginDir, depsManager: depsManager, scriptLimit: 1}
+	return &Manager{plugins: make(map[string]*PluginProcess), runningScripts: make(map[int64]context.CancelFunc), runningPluginTasks: make(map[int64]context.CancelFunc), scriptDone: make(map[int64]chan ScriptRunResult), pluginDir: pluginDir, depsManager: depsManager, scriptLimit: 1}
 }
 
 func (m *Manager) SetScriptTimeoutNotifier(notifier ScriptTimeoutNotifier) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.scriptTimeoutNotifier = notifier
+}
+
+func (m *Manager) SetPluginTaskTimeoutNotifier(notifier PluginTaskTimeoutNotifier) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pluginTaskTimeoutNotifier = notifier
 }
 
 func (m *Manager) PluginDir() string {
@@ -280,13 +310,18 @@ func IsInternalPluginDirectory(name string) bool {
 
 func (m *Manager) SetDatabase(database *config.Database) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.database = database
 	if database != nil {
 		if limit, err := database.GetSetting("script_tasks.concurrent_limit"); err == nil {
 			if parsed, parseErr := strconv.Atoi(strings.TrimSpace(limit)); parseErr == nil && parsed > 0 {
 				m.scriptLimit = parsed
 			}
+		}
+	}
+	m.mu.Unlock()
+	if database != nil {
+		if err := database.MarkRunningPluginTasksStopped(); err != nil {
+			log.Printf("[SYSTEM] 清理上次未结束的插件任务失败: %v", err)
 		}
 	}
 }
@@ -614,7 +649,7 @@ func waitPluginProcess(cmd *exec.Cmd, stderrDone <-chan struct{}) error {
 	return err
 }
 
-func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte, replyFunc func(string) error, imageFunc func(string) error, fileFunc func(string) error, listenFunc func(timeout int, retractTimeout int) string, dataViewFunc func(config.DataViewConfig) error, dbFunc func(pluginID string, action PluginDBAction) PluginDBResult, fakeMessageFunc func(pluginID string, action FakeMessageAction) error, sendMessageFunc func(pluginID string, action SendMessageAction) PluginUserResult, userFunc func() PluginUserResult, adminFunc func(platform string) PluginUserResult, configFunc func(pluginID string, action PluginConfigAction) PluginUserResult, scheduleFunc func(pluginID string, action ScheduledTaskAction) PluginUserResult, accountFunc func(pluginID string, action PluginAccountAction) PluginUserResult, authFunc func(pluginID string, action PluginAuthorizationAction) PluginUserResult, scriptFunc func(pluginID string, action ScriptRunAction) PluginUserResult, paymentFunc func(pluginID string, action PaymentWaitAction) PluginUserResult, callbacks ...interface{}) error {
+func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte, replyFunc func(string) error, imageFunc func(string) error, fileFunc func(string) error, listenFunc func(timeout int, retractTimeout int) string, dataViewFunc func(config.DataViewConfig) error, dbFunc func(pluginID string, action PluginDBAction) PluginDBResult, fakeMessageFunc func(pluginID string, action FakeMessageAction) error, sendMessageFunc func(pluginID string, action SendMessageAction) PluginUserResult, userFunc func() PluginUserResult, adminFunc func(platform string) PluginUserResult, configFunc func(pluginID string, action PluginConfigAction) PluginUserResult, scheduleFunc func(pluginID string, action ScheduledTaskAction) PluginUserResult, accountFunc func(pluginID string, action PluginAccountAction) PluginUserResult, authFunc func(pluginID string, action PluginAuthorizationAction) PluginUserResult, scriptFunc func(pluginID string, action ScriptRunAction) PluginUserResult, paymentFunc func(pluginID string, action PaymentWaitAction) PluginUserResult, callbacks ...interface{}) (returnErr error) {
 	var replyMarkdownFunc func(string) error
 	var replyRichFunc func(types.RichMessage) error
 	var sendRichMessageFunc func(string, RichMessageAction) PluginUserResult
@@ -622,8 +657,11 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 	var sendButtonsFunc func(string, [][]types.ButtonOption) error
 	var deleteMessageFunc func() PluginUserResult
 	var muteFunc func(MuteAction) PluginUserResult
+	taskInfo := PluginTaskInfo{}
 	for _, callback := range callbacks {
 		switch fn := callback.(type) {
+		case PluginTaskInfo:
+			taskInfo = fn
 		case func(string) error:
 			if replyMarkdownFunc == nil {
 				replyMarkdownFunc = fn
@@ -654,7 +692,42 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			}
 		}
 	}
-	cmd, err := m.newDirectCommand(plugin, pluginPath)
+	taskID, taskCtx, taskCancel, runTimeoutSeconds := m.startPluginTask(plugin.ID, taskInfo)
+	taskOutput := &pluginTaskOutputBuffer{}
+	defer func() {
+		if taskID == 0 {
+			taskCancel()
+			return
+		}
+		status := config.PluginTaskStatusSuccess
+		errorText := ""
+		wasTimedOut := taskCtx.Err() == context.DeadlineExceeded
+		wasStopped := taskCtx.Err() != nil && !wasTimedOut
+		if wasStopped || wasTimedOut {
+			returnErr = nil
+		}
+		if returnErr != nil {
+			status = config.PluginTaskStatusFailed
+			errorText = returnErr.Error()
+		}
+		if wasStopped {
+			status = config.PluginTaskStatusStopped
+			if errorText == "" {
+				errorText = "插件任务已手动停止"
+			}
+		}
+		if wasTimedOut {
+			status = config.PluginTaskStatusFailed
+			errorText = fmt.Sprintf("插件任务运行超过 %d 秒，已自动停止", runTimeoutSeconds)
+		}
+		finishedAt := time.Now()
+		m.finishPluginTask(taskID, status, taskOutput.String(), errorText, finishedAt)
+		if wasTimedOut {
+			m.notifyPluginTaskTimeout(PluginTaskTimeoutNotification{LogID: taskID, PluginID: plugin.ID, Info: taskInfo, TimeoutSeconds: runTimeoutSeconds, Output: taskOutput.String(), Error: errorText, FinishedAt: finishedAt})
+		}
+		taskCancel()
+	}()
+	cmd, err := m.newDirectCommandContext(taskCtx, plugin, pluginPath)
 	if err != nil {
 		return err
 	}
@@ -764,6 +837,7 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			continue
 		}
 		if action.Action == "" || !isPluginProtocolAction(action.Action) {
+			taskOutput.Add(line)
 			stdoutBatch.Add(line)
 			continue
 		}
@@ -1005,6 +1079,107 @@ func parseInt64Raw(raw json.RawMessage) (int64, error) {
 		return parsed, nil
 	}
 	return 0, fmt.Errorf("积分数量必须是整数")
+}
+
+func (m *Manager) startPluginTask(pluginID string, info PluginTaskInfo) (int64, context.Context, context.CancelFunc, int) {
+	m.mu.RLock()
+	database := m.database
+	m.mu.RUnlock()
+	runTimeoutSeconds := 0
+	if database != nil {
+		if settings, err := database.GetPluginTaskSettings(); err == nil {
+			runTimeoutSeconds = settings.RunTimeoutSeconds
+		} else {
+			log.Printf("[SYSTEM] 读取插件任务超时配置失败，使用不限制: %v", err)
+		}
+	}
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if runTimeoutSeconds > 0 {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(runTimeoutSeconds)*time.Second)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+	}
+	if database == nil {
+		return 0, ctx, cancel, runTimeoutSeconds
+	}
+	startedAt := time.Now()
+	item := config.PluginTaskLog{
+		PluginID: pluginID, Platform: info.Platform, AdapterID: info.AdapterID, UserID: info.UserID,
+		GroupID: info.GroupID, UnionID: info.UnionID, MessageID: info.MessageID, Content: info.Content,
+		Status: config.PluginTaskStatusRunning, StartedAt: startedAt, FinishedAt: startedAt,
+	}
+	id := int64(0)
+	if latest, err := database.FindLatestPluginTaskLog(item); err != nil {
+		log.Printf("[SYSTEM] 查找可复用插件任务失败，继续新增记录 %s: %v", pluginID, err)
+	} else if latest != nil && (latest.Status == config.PluginTaskStatusSuccess || latest.Status == config.PluginTaskStatusFailed) {
+		if reused, err := database.ReusePluginTaskLog(latest.ID, item); err == nil && reused {
+			id = latest.ID
+		} else if err != nil {
+			log.Printf("[SYSTEM] 复用插件任务记录 %d 失败，继续新增记录: %v", latest.ID, err)
+		}
+	}
+	if id == 0 {
+		var err error
+		id, err = database.SavePluginTaskLog(item)
+		if err != nil {
+			log.Printf("[SYSTEM] 记录插件任务失败，继续执行插件 %s: %v", pluginID, err)
+			return 0, ctx, cancel, runTimeoutSeconds
+		}
+	}
+	m.mu.Lock()
+	if m.runningPluginTasks == nil {
+		m.runningPluginTasks = make(map[int64]context.CancelFunc)
+	}
+	m.runningPluginTasks[id] = cancel
+	m.mu.Unlock()
+	return id, ctx, cancel, runTimeoutSeconds
+}
+
+func (m *Manager) finishPluginTask(id int64, status, output, errorText string, finishedAt time.Time) {
+	if id == 0 {
+		return
+	}
+	m.mu.RLock()
+	database := m.database
+	m.mu.RUnlock()
+	if database != nil {
+		if err := database.UpdatePluginTaskLog(id, status, output, errorText, finishedAt); err != nil {
+			log.Printf("[SYSTEM] 更新插件任务 %d 失败: %v", id, err)
+		}
+	}
+	m.mu.Lock()
+	delete(m.runningPluginTasks, id)
+	m.mu.Unlock()
+}
+
+func (m *Manager) notifyPluginTaskTimeout(notification PluginTaskTimeoutNotification) {
+	m.mu.RLock()
+	notifier := m.pluginTaskTimeoutNotifier
+	m.mu.RUnlock()
+	if notifier != nil {
+		go notifier(notification)
+	}
+}
+
+func (m *Manager) StopPluginTask(id int64) bool {
+	if id <= 0 {
+		return false
+	}
+	m.mu.Lock()
+	cancel := m.runningPluginTasks[id]
+	m.mu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	m.mu.RLock()
+	database := m.database
+	m.mu.RUnlock()
+	if database != nil {
+		_ = database.UpdatePluginTaskLog(id, config.PluginTaskStatusStopping, "", "正在停止插件任务", time.Time{})
+	}
+	cancel()
+	return true
 }
 
 func paymentAmountRaw(actionAmount, amountRMB json.RawMessage) json.RawMessage {
@@ -1831,6 +2006,30 @@ func (m *Manager) finishScriptRun(logID int64, status, outputText, errorText str
 type scriptOutputBuffer struct {
 	mu   sync.Mutex
 	data []byte
+}
+
+type pluginTaskOutputBuffer struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (b *pluginTaskOutputBuffer) Add(line string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.data) >= 1024*1024 {
+		return
+	}
+	b.data = append(b.data, line...)
+	b.data = append(b.data, '\n')
+	if len(b.data) > 1024*1024 {
+		b.data = b.data[:1024*1024]
+	}
+}
+
+func (b *pluginTaskOutputBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data)
 }
 
 func (b *scriptOutputBuffer) Write(data []byte) (int, error) {

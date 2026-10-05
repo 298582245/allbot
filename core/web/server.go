@@ -217,6 +217,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/scheduled-tasks/", s.handleScheduledTaskDetail)
 	mux.HandleFunc("/api/script-tasks", s.handleScriptTasks)
 	mux.HandleFunc("/api/script-tasks/", s.handleScriptTaskDetail)
+	mux.HandleFunc("/api/plugin-tasks", s.handlePluginTasks)
+	mux.HandleFunc("/api/plugin-tasks/", s.handlePluginTaskDetail)
 	mux.HandleFunc("/api/script-envs", s.handleScriptEnvs)
 	mux.HandleFunc("/api/script-envs/import", s.handleScriptEnvImport)
 	mux.HandleFunc("/api/script-envs/", s.handleScriptEnvDetail)

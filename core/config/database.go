@@ -263,6 +263,9 @@ func createTables(db *sql.DB) error {
 	if err := migrateScriptRunLogsTable(db); err != nil {
 		return err
 	}
+	if err := migratePluginTaskLogsTable(db); err != nil {
+		return err
+	}
 	if err := migrateScriptEnvVarsTable(db); err != nil {
 		return err
 	}
@@ -428,6 +431,28 @@ func createTables(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_script_run_logs_union_time ON script_run_logs(union_id, started_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_script_run_logs_status_created_at ON script_run_logs(status, created_at, id);
 	CREATE INDEX IF NOT EXISTS idx_script_run_logs_queue ON script_run_logs(status, created_at, id) WHERE status = 'queued';
+
+	CREATE TABLE IF NOT EXISTS plugin_task_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		plugin_id TEXT NOT NULL,
+		platform TEXT NOT NULL DEFAULT '',
+		adapter_id TEXT NOT NULL DEFAULT '',
+		user_id TEXT NOT NULL DEFAULT '',
+		group_id TEXT NOT NULL DEFAULT '',
+		union_id TEXT NOT NULL DEFAULT '',
+		message_id TEXT NOT NULL DEFAULT '',
+		content TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'running',
+		run_total INTEGER NOT NULL DEFAULT 1,
+		output TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '',
+		started_at DATETIME NOT NULL,
+		finished_at DATETIME NOT NULL,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_plugin_task_logs_plugin_time ON plugin_task_logs(plugin_id, started_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_plugin_task_logs_status_time ON plugin_task_logs(status, started_at DESC);
 
 	CREATE TABLE IF NOT EXISTS script_run_stats (
 		stat_date TEXT NOT NULL,
@@ -896,6 +921,9 @@ func ensureDefaultSystemSettings(db *sql.DB) error {
 		"script_tasks.retention_days":               "0",
 		"script_tasks.run_timeout_seconds":          "0",
 		"script_tasks.timeout_notify_admin_enabled": "false",
+		"plugin_tasks.retention_days":               "0",
+		"plugin_tasks.run_timeout_seconds":          "0",
+		"plugin_tasks.timeout_notify_admin_enabled": "false",
 		"user.points_unit":                          "积分",
 		"access_control":                            "{}",
 		"payment.points_per_rmb":                    "100",
@@ -913,6 +941,9 @@ func ensureDefaultSystemSettings(db *sql.DB) error {
 		"script_tasks.retention_days":               "脚本任务日志自动清理天数，0 表示不自动清理",
 		"script_tasks.run_timeout_seconds":          "脚本任务运行超时时间，0 表示不限制",
 		"script_tasks.timeout_notify_admin_enabled": "脚本任务超时自动停止后是否通知平台管理员",
+		"plugin_tasks.retention_days":               "插件任务日志自动清理天数，0 表示不自动清理",
+		"plugin_tasks.run_timeout_seconds":          "插件任务运行超时时间，0 表示不限制",
+		"plugin_tasks.timeout_notify_admin_enabled": "插件任务超时自动停止后是否通知平台管理员",
 		"user.points_unit":                          "用户积分单位",
 		"access_control":                            "系统访问控制配置",
 		"payment.points_per_rmb":                    "积分兑换比例",
@@ -1214,6 +1245,27 @@ func migrateScriptRunLogsTable(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_script_run_logs_queue ON script_run_logs(status, created_at, id) WHERE status = 'queued'`); err != nil {
 		return err
+	}
+	return nil
+}
+
+func migratePluginTaskLogsTable(db *sql.DB) error {
+	var tableName string
+	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='plugin_task_logs'`).Scan(&tableName)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	columns, err := tableColumns(db, "plugin_task_logs")
+	if err != nil {
+		return err
+	}
+	if !columns["run_total"] {
+		if _, err := db.Exec(`ALTER TABLE plugin_task_logs ADD COLUMN run_total INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return err
+		}
 	}
 	return nil
 }

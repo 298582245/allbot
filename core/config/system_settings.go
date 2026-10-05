@@ -39,6 +39,12 @@ const (
 	scriptTaskRunTimeoutSecondsDescription  = "脚本任务运行超时时间，0 表示不限制"
 	scriptTaskTimeoutNotifyAdminEnabledKey  = "script_tasks.timeout_notify_admin_enabled"
 	scriptTaskTimeoutNotifyAdminDescription = "脚本任务超时自动停止后是否通知平台管理员"
+	pluginTaskRetentionDaysKey              = "plugin_tasks.retention_days"
+	pluginTaskRetentionDaysDescription      = "插件任务日志自动清理天数，0 表示不自动清理"
+	pluginTaskRunTimeoutSecondsKey          = "plugin_tasks.run_timeout_seconds"
+	pluginTaskRunTimeoutSecondsDescription  = "插件任务运行超时时间，0 表示不限制"
+	pluginTaskTimeoutNotifyAdminEnabledKey  = "plugin_tasks.timeout_notify_admin_enabled"
+	pluginTaskTimeoutNotifyAdminDescription = "插件任务超时自动停止后是否通知平台管理员"
 	githubProxyURLKey                       = "update.github_proxy_url"
 	githubProxyURLDescription               = "GitHub 更新下载代理地址"
 )
@@ -68,6 +74,12 @@ type SystemSettings struct {
 }
 
 type ScriptTaskSettings struct {
+	RetentionDays             int  `json:"retention_days"`
+	RunTimeoutSeconds         int  `json:"run_timeout_seconds"`
+	TimeoutNotifyAdminEnabled bool `json:"timeout_notify_admin_enabled"`
+}
+
+type PluginTaskSettings struct {
 	RetentionDays             int  `json:"retention_days"`
 	RunTimeoutSeconds         int  `json:"run_timeout_seconds"`
 	TimeoutNotifyAdminEnabled bool `json:"timeout_notify_admin_enabled"`
@@ -215,6 +227,48 @@ func (d *Database) SaveScriptTaskSettings(settings ScriptTaskSettings) error {
 		scriptTaskTimeoutNotifyAdminEnabledKey: {boolString(settings.TimeoutNotifyAdminEnabled), scriptTaskTimeoutNotifyAdminDescription},
 	}
 	for key, item := range items {
+		if err := d.SetSetting(key, item.value, item.description); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func DefaultPluginTaskSettings() PluginTaskSettings {
+	return PluginTaskSettings{}
+}
+
+func (d *Database) GetPluginTaskSettings() (PluginTaskSettings, error) {
+	items, err := d.getSettingsMap()
+	if err != nil {
+		return DefaultPluginTaskSettings(), err
+	}
+	days := intValueAllowZeroOrDefault(items, pluginTaskRetentionDaysKey, 0)
+	timeout := intValueAllowZeroOrDefault(items, pluginTaskRunTimeoutSecondsKey, 0)
+	if days < 0 || days > 3650 {
+		return DefaultPluginTaskSettings(), fmt.Errorf("插件任务日志保留天数必须在 0 到 3650 之间")
+	}
+	if timeout < 0 || timeout > 86400 {
+		return DefaultPluginTaskSettings(), fmt.Errorf("插件任务运行超时时间必须在 0 到 86400 秒之间")
+	}
+	return PluginTaskSettings{RetentionDays: days, RunTimeoutSeconds: timeout, TimeoutNotifyAdminEnabled: valueOrDefault(items, pluginTaskTimeoutNotifyAdminEnabledKey, "false") == "true"}, nil
+}
+
+func (d *Database) SavePluginTaskSettings(settings PluginTaskSettings) error {
+	if settings.RetentionDays < 0 || settings.RetentionDays > 3650 {
+		return fmt.Errorf("插件任务日志保留天数必须在 0 到 3650 之间")
+	}
+	if settings.RunTimeoutSeconds < 0 || settings.RunTimeoutSeconds > 86400 {
+		return fmt.Errorf("插件任务运行超时时间必须在 0 到 86400 秒之间")
+	}
+	for key, item := range map[string]struct {
+		value       string
+		description string
+	}{
+		pluginTaskRetentionDaysKey:             {strconv.Itoa(settings.RetentionDays), pluginTaskRetentionDaysDescription},
+		pluginTaskRunTimeoutSecondsKey:         {strconv.Itoa(settings.RunTimeoutSeconds), pluginTaskRunTimeoutSecondsDescription},
+		pluginTaskTimeoutNotifyAdminEnabledKey: {boolString(settings.TimeoutNotifyAdminEnabled), pluginTaskTimeoutNotifyAdminDescription},
+	} {
 		if err := d.SetSetting(key, item.value, item.description); err != nil {
 			return err
 		}
