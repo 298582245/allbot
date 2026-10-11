@@ -34,7 +34,7 @@
       </div>
 
       <div class="table-area">
-        <el-table v-loading="loading" :data="items" row-key="id" stripe height="100%">
+        <el-table v-if="loading || items.length > 0" v-loading="loading" :data="items" row-key="id" stripe height="100%">
           <el-table-column prop="id" label="ID" width="74" />
           <el-table-column prop="plugin_id" label="插件" min-width="140" show-overflow-tooltip />
           <el-table-column label="触发来源" min-width="180" show-overflow-tooltip>
@@ -57,7 +57,7 @@
             </template>
           </el-table-column>
         </el-table>
-        <el-empty v-if="!loading && items.length === 0" description="暂无插件任务" />
+        <div v-else class="empty-state"><el-empty description="暂无插件任务" /></div>
       </div>
 
       <StdPagination v-model:current-page="page" v-model:page-size="pageSize" :total="total" :page-sizes="[10, 20, 50, 100]" @current-change="loadItems" @size-change="handlePageSizeChange" />
@@ -209,6 +209,7 @@ onBeforeUnmount(stopTimer)
 .search-bar .el-input { width: min(360px, 100%); }
 .search-bar .el-select { width: 150px; }
 .table-area { flex: 1; min-height: 260px; overflow: auto; }
+.empty-state { height: 100%; min-height: 260px; display: flex; align-items: center; justify-content: center; }
 .detail-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: var(--el-text-color-secondary); font-size: 13px; margin-bottom: 16px; }
 .log-section { margin-top: 14px; }
 .log-title { font-weight: 600; margin-bottom: 8px; }

@@ -24,20 +24,21 @@ import (
 const pluginWebChatQuickActionFill = "fill"
 
 type Manager struct {
-	plugins                   map[string]*PluginProcess
-	runningScripts            map[int64]context.CancelFunc
-	runningPluginTasks        map[int64]context.CancelFunc
-	scriptDone                map[int64]chan ScriptRunResult
-	queuedScripts             map[int64]*queuedScriptRun
-	queueWake                 chan struct{}
-	schedulerOnce             sync.Once
-	mu                        sync.RWMutex
-	pluginDir                 string
-	depsManager               *deps.Manager
-	database                  *config.Database
-	scriptLimit               int
-	scriptTimeoutNotifier     ScriptTimeoutNotifier
-	pluginTaskTimeoutNotifier PluginTaskTimeoutNotifier
+	plugins                     map[string]*PluginProcess
+	runningScripts              map[int64]context.CancelFunc
+	runningPluginTasks          map[int64]context.CancelFunc
+	scriptDone                  map[int64]chan ScriptRunResult
+	queuedScripts               map[int64]*queuedScriptRun
+	queueWake                   chan struct{}
+	schedulerOnce               sync.Once
+	mu                          sync.RWMutex
+	pluginDir                   string
+	depsManager                 *deps.Manager
+	database                    *config.Database
+	scriptLimit                 int
+	pluginTaskRunTimeoutSeconds int
+	scriptTimeoutNotifier       ScriptTimeoutNotifier
+	pluginTaskTimeoutNotifier   PluginTaskTimeoutNotifier
 }
 
 type PluginProcess struct {
@@ -309,8 +310,15 @@ func IsInternalPluginDirectory(name string) bool {
 }
 
 func (m *Manager) SetDatabase(database *config.Database) {
+	pluginTaskRunTimeoutSeconds := 0
+	if database != nil {
+		if settings, err := database.GetPluginTaskSettings(); err == nil {
+			pluginTaskRunTimeoutSeconds = settings.RunTimeoutSeconds
+		}
+	}
 	m.mu.Lock()
 	m.database = database
+	m.pluginTaskRunTimeoutSeconds = pluginTaskRunTimeoutSeconds
 	if database != nil {
 		if limit, err := database.GetSetting("script_tasks.concurrent_limit"); err == nil {
 			if parsed, parseErr := strconv.Atoi(strings.TrimSpace(limit)); parseErr == nil && parsed > 0 {
@@ -324,6 +332,15 @@ func (m *Manager) SetDatabase(database *config.Database) {
 			log.Printf("[SYSTEM] 清理上次未结束的插件任务失败: %v", err)
 		}
 	}
+}
+
+func (m *Manager) SetPluginTaskRunTimeoutSeconds(seconds int) {
+	if seconds < 0 {
+		seconds = 0
+	}
+	m.mu.Lock()
+	m.pluginTaskRunTimeoutSeconds = seconds
+	m.mu.Unlock()
 }
 
 func (m *Manager) SetScriptLimit(limit int) {
@@ -692,13 +709,9 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			}
 		}
 	}
-	taskID, taskCtx, taskCancel, runTimeoutSeconds := m.startPluginTask(plugin.ID, taskInfo)
+	taskIDCh, taskCtx, taskCancel, runTimeoutSeconds := m.startPluginTask(plugin.ID, taskInfo)
 	taskOutput := &pluginTaskOutputBuffer{}
 	defer func() {
-		if taskID == 0 {
-			taskCancel()
-			return
-		}
 		status := config.PluginTaskStatusSuccess
 		errorText := ""
 		wasTimedOut := taskCtx.Err() == context.DeadlineExceeded
@@ -721,9 +734,13 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			errorText = fmt.Sprintf("插件任务运行超过 %d 秒，已自动停止", runTimeoutSeconds)
 		}
 		finishedAt := time.Now()
-		m.finishPluginTask(taskID, status, taskOutput.String(), errorText, finishedAt)
-		if wasTimedOut {
-			m.notifyPluginTaskTimeout(PluginTaskTimeoutNotification{LogID: taskID, PluginID: plugin.ID, Info: taskInfo, TimeoutSeconds: runTimeoutSeconds, Output: taskOutput.String(), Error: errorText, FinishedAt: finishedAt})
+		output := taskOutput.String()
+		taskID := <-taskIDCh
+		if taskID > 0 {
+			m.finishPluginTask(taskID, status, output, errorText, finishedAt)
+			if wasTimedOut {
+				m.notifyPluginTaskTimeout(PluginTaskTimeoutNotification{LogID: taskID, PluginID: plugin.ID, Info: taskInfo, TimeoutSeconds: runTimeoutSeconds, Output: output, Error: errorText, FinishedAt: finishedAt})
+			}
 		}
 		taskCancel()
 	}()
@@ -1081,18 +1098,11 @@ func parseInt64Raw(raw json.RawMessage) (int64, error) {
 	return 0, fmt.Errorf("积分数量必须是整数")
 }
 
-func (m *Manager) startPluginTask(pluginID string, info PluginTaskInfo) (int64, context.Context, context.CancelFunc, int) {
+func (m *Manager) startPluginTask(pluginID string, info PluginTaskInfo) (<-chan int64, context.Context, context.CancelFunc, int) {
 	m.mu.RLock()
 	database := m.database
+	runTimeoutSeconds := m.pluginTaskRunTimeoutSeconds
 	m.mu.RUnlock()
-	runTimeoutSeconds := 0
-	if database != nil {
-		if settings, err := database.GetPluginTaskSettings(); err == nil {
-			runTimeoutSeconds = settings.RunTimeoutSeconds
-		} else {
-			log.Printf("[SYSTEM] 读取插件任务超时配置失败，使用不限制: %v", err)
-		}
-	}
 	ctx := context.Background()
 	var cancel context.CancelFunc
 	if runTimeoutSeconds > 0 {
@@ -1100,8 +1110,10 @@ func (m *Manager) startPluginTask(pluginID string, info PluginTaskInfo) (int64, 
 	} else {
 		ctx, cancel = context.WithCancel(ctx)
 	}
+	idCh := make(chan int64, 1)
 	if database == nil {
-		return 0, ctx, cancel, runTimeoutSeconds
+		idCh <- 0
+		return idCh, ctx, cancel, runTimeoutSeconds
 	}
 	startedAt := time.Now()
 	item := config.PluginTaskLog{
@@ -1109,31 +1121,36 @@ func (m *Manager) startPluginTask(pluginID string, info PluginTaskInfo) (int64, 
 		GroupID: info.GroupID, UnionID: info.UnionID, MessageID: info.MessageID, Content: info.Content,
 		Status: config.PluginTaskStatusRunning, StartedAt: startedAt, FinishedAt: startedAt,
 	}
-	id := int64(0)
-	if latest, err := database.FindLatestPluginTaskLog(item); err != nil {
-		log.Printf("[SYSTEM] 查找可复用插件任务失败，继续新增记录 %s: %v", pluginID, err)
-	} else if latest != nil && (latest.Status == config.PluginTaskStatusSuccess || latest.Status == config.PluginTaskStatusFailed) {
-		if reused, err := database.ReusePluginTaskLog(latest.ID, item); err == nil && reused {
-			id = latest.ID
-		} else if err != nil {
-			log.Printf("[SYSTEM] 复用插件任务记录 %d 失败，继续新增记录: %v", latest.ID, err)
+	go func() {
+		defer close(idCh)
+		id := int64(0)
+		if latest, err := database.FindLatestPluginTaskLog(item); err != nil {
+			log.Printf("[SYSTEM] 查找可复用插件任务失败，继续新增记录 %s: %v", pluginID, err)
+		} else if latest != nil && (latest.Status == config.PluginTaskStatusSuccess || latest.Status == config.PluginTaskStatusFailed) {
+			if reused, err := database.ReusePluginTaskLog(latest.ID, item); err == nil && reused {
+				id = latest.ID
+			} else if err != nil {
+				log.Printf("[SYSTEM] 复用插件任务记录 %d 失败，继续新增记录: %v", latest.ID, err)
+			}
 		}
-	}
-	if id == 0 {
-		var err error
-		id, err = database.SavePluginTaskLog(item)
-		if err != nil {
-			log.Printf("[SYSTEM] 记录插件任务失败，继续执行插件 %s: %v", pluginID, err)
-			return 0, ctx, cancel, runTimeoutSeconds
+		if id == 0 {
+			var err error
+			id, err = database.SavePluginTaskLog(item)
+			if err != nil {
+				log.Printf("[SYSTEM] 记录插件任务失败，继续执行插件 %s: %v", pluginID, err)
+				idCh <- 0
+				return
+			}
 		}
-	}
-	m.mu.Lock()
-	if m.runningPluginTasks == nil {
-		m.runningPluginTasks = make(map[int64]context.CancelFunc)
-	}
-	m.runningPluginTasks[id] = cancel
-	m.mu.Unlock()
-	return id, ctx, cancel, runTimeoutSeconds
+		m.mu.Lock()
+		if m.runningPluginTasks == nil {
+			m.runningPluginTasks = make(map[int64]context.CancelFunc)
+		}
+		m.runningPluginTasks[id] = cancel
+		m.mu.Unlock()
+		idCh <- id
+	}()
+	return idCh, ctx, cancel, runTimeoutSeconds
 }
 
 func (m *Manager) finishPluginTask(id int64, status, output, errorText string, finishedAt time.Time) {

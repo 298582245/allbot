@@ -49,6 +49,7 @@ func (s *Server) handlePluginTasks(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "保存插件任务设置失败: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		s.pluginManager.SetPluginTaskRunTimeoutSeconds(settings.RunTimeoutSeconds)
 		saved, err := database.GetPluginTaskSettings()
 		if err != nil {
 			s.jsonError(w, "读取插件任务设置失败: "+err.Error(), http.StatusInternalServerError)
