@@ -1022,7 +1022,8 @@ func (r *Router) RefreshPluginSchedules(pluginID string) error {
 			templateName = strings.TrimSpace(value)
 		}
 	}
-	if templateName != "nodejs_account_ql" && templateName != "python_account_ql" {
+	_, hasScheduleState := plugin.UserConfig[plugincore.PluginScheduleRegisteredConfigKey]
+	if templateName != "nodejs_account_ql" && templateName != "python_account_ql" && !hasScheduleState {
 		return nil
 	}
 	log.Printf("[SYSTEM] Refreshing account plugin schedules: plugin=%s template=%s", pluginID, templateName)

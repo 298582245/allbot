@@ -66,6 +66,11 @@ func TestAccountSchedulesPersistSkipAndForceRefresh(t *testing.T) {
 	if err := r.RegisterPlugin(m.GetPlugin("demo").Plugin); err != nil {
 		t.Fatal(err)
 	}
+	registeredOrder := r.GetPlugin("demo").Order
+	// File operations can reload the manager before the router is registered again.
+	if err := m.ReloadPlugin("demo"); err != nil {
+		t.Fatal(err)
+	}
 	msg := &types.Message{Platform: "qq", UserID: "user", Content: "演示管理"}
 	if err := r.callPlugin(r.GetPlugin("demo"), msg); err != nil {
 		t.Fatal(err)
@@ -80,6 +85,13 @@ func TestAccountSchedulesPersistSkipAndForceRefresh(t *testing.T) {
 	}
 	if r.GetPlugin("demo").UserConfig["schedule_is_register"] != true {
 		t.Fatal("router still holds stale user config")
+	}
+	matched := r.FilterPluginsForMessage(msg, true)
+	if len(matched) != 1 || matched[0].ID != "demo" {
+		t.Fatalf("plugin stopped matching after schedule config writeback: %#v", matched)
+	}
+	if matched[0].Order != registeredOrder {
+		t.Fatal("schedule config writeback changed plugin order")
 	}
 	// Removing administrators makes any unexpected registration visible.
 	settings.PlatformAdmins = nil
@@ -120,5 +132,21 @@ func TestAccountSchedulesPersistSkipAndForceRefresh(t *testing.T) {
 	tasks, err = db.ListScheduledTasks()
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("force refresh did not recreate task: tasks=%#v error=%v", tasks, err)
+	}
+	legacy := *r.GetPlugin("demo")
+	legacy.Template = ""
+	legacy.TemplateSource = nil
+	if err := r.RegisterPlugin(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeleteScheduledTask(tasks[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RefreshPluginSchedules("demo"); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err = db.ListScheduledTasks()
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("legacy plugin refresh did not recreate task: tasks=%#v error=%v", tasks, err)
 	}
 }

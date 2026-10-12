@@ -494,6 +494,9 @@ func (m *Manager) ReloadPlugin(pluginID string) error {
 	}
 	m.mu.Lock()
 	if process, ok := m.plugins[pluginID]; ok {
+		if process.Plugin != nil {
+			plugin.Order = process.Plugin.Order
+		}
 		process.Plugin = plugin
 		process.Status = "ready"
 	} else {
@@ -2313,7 +2316,8 @@ func (m *Manager) ValidatePluginConfig(pluginPath, pluginID string) (*types.Plug
 	if err != nil {
 		return nil, fmt.Errorf("插件入口文件无效: %w", err)
 	}
-	if _, err := regexp.Compile(config.Trigger); err != nil {
+	triggerRegex, err := regexp.Compile(config.Trigger)
+	if err != nil {
 		return nil, fmt.Errorf("插件触发规则无效: %w", err)
 	}
 	return &types.Plugin{
@@ -2328,6 +2332,7 @@ func (m *Manager) ValidatePluginConfig(pluginPath, pluginID string) (*types.Plug
 		Priority:          config.Priority,
 		Pinned:            config.Pinned,
 		Trigger:           config.Trigger,
+		TriggerRegex:      triggerRegex,
 		Enabled:           config.Enabled,
 		UserConfig:        config.UserConfig,
 		AccessControl:     pluginAccessControl(config.AccessControl),
