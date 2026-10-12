@@ -1004,7 +1004,13 @@ func (r *Router) RefreshPluginSchedules(pluginID string) error {
 	if plugin == nil {
 		return fmt.Errorf("插件不存在: %s", pluginID)
 	}
-	if plugin.Template != "nodejs_account_ql" && plugin.Template != "python_account_ql" {
+	templateName := strings.TrimSpace(plugin.Template)
+	if templateName == "" && plugin.TemplateSource != nil {
+		if value, ok := plugin.TemplateSource["template"].(string); ok {
+			templateName = strings.TrimSpace(value)
+		}
+	}
+	if templateName != "nodejs_account_ql" && templateName != "python_account_ql" {
 		return nil
 	}
 	message := &types.Message{Metadata: map[string]string{"allbot_schedule_refresh": "true"}}
