@@ -13,9 +13,9 @@ docker compose build --no-cache "$SERVICE"
 echo "[2/4] 停止旧容器"
 docker compose stop "$SERVICE" 2>/dev/null || true
 
-echo "[3/4] 清理持久化目录中的旧程序"
+echo "[3/4] 清理持久化目录中的旧程序和 SDK"
 docker compose run --rm --no-deps --entrypoint sh "$SERVICE" -c \
-  'rm -f /data/allbot /data/.allbot-image-sha256'
+  'data_dir=${ALLBOT_DATA_DIR:-/data}; rm -f "$data_dir/allbot" "$data_dir/.allbot-image-sha256" "$data_dir/.allbot-sdk-image-sha256"; rm -rf "$data_dir/sdk" "$data_dir/.allbot-sdk-base"'
 
 echo "[4/4] 使用当前镜像启动端口 ${PORT}"
 ALLBOT_WEB_PORT="$PORT" docker compose up -d --force-recreate "$SERVICE"
