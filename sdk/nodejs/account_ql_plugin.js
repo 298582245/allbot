@@ -81,6 +81,7 @@ class AccountQLPlugin {
 
   async handle(ctx) {
     await this.ensureSchedules(ctx);
+    if (String(ctx.meta('allbot_schedule_refresh', '')).toLowerCase() === 'true') return;
     const content = String(ctx.content || '').trim();
     if (!content.startsWith(this.prefix)) return ctx.reply(this.helpText());
     const suffix = content.slice(this.prefix.length).trim() || '帮助';
@@ -479,6 +480,10 @@ class AccountQLPlugin {
   }
 
   async ensureSchedules(ctx) {
+    const forceRefresh = String(ctx.meta('allbot_schedule_refresh', '')).toLowerCase() === 'true';
+    const registered = ctx.config('schedule_is_register', false) === true || String(ctx.config('schedule_is_register', '')).toLowerCase() === 'true';
+    if (!forceRefresh && registered) return;
+
     let admins = [];
     try {
       admins = await ctx.listPlatformAdmins();
@@ -493,6 +498,7 @@ class AccountQLPlugin {
     }
     const normalizedSchedules = normalizeSchedules(this.prefix, this.schedules);
     const defaultMaxCount = Math.max(3, normalizedSchedules.length);
+    let registeredAll = true;
     for (const schedule of normalizedSchedules) {
       try {
         await ctx.setScheduledTask({
@@ -508,7 +514,15 @@ class AccountQLPlugin {
           maxCount: Math.max(schedule.maxCount || 0, defaultMaxCount)
         });
       } catch (error) {
+        registeredAll = false;
         console.log(`声明${schedule.name}失败：${error.message}`);
+      }
+    }
+    if (registeredAll) {
+      try {
+        await ctx.setConfig('schedule_is_register', true);
+      } catch (error) {
+        console.log(`记录${this.prefix}定时任务状态失败：${error.message}`);
       }
     }
   }

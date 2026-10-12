@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
+const readline = require('node:readline');
 const { Context, PAY, WebRequest, WebResponse } = require('./allbot_direct');
 
 function makeContext(data = {}) {
@@ -78,6 +79,65 @@ test('listen sends retract time and returns the waited message', async () => {
     ctx._send = (action) => actions.push(action) || true;
     assert.equal(await ctx.listen(30, 5), 'answer');
     assert.deepEqual(actions, [{ action: 'listen', timeout: 30, retract_time: 5 }]);
+});
+
+test('points consumption failures can be handled and have an uncaught reply fallback', async (t) => {
+    const errorText = '积分不足，当前 0，需要 30';
+    const cases = [
+        { name: 'uncaught failure', success: false, caught: false, status: 1, reply: errorText },
+        { name: 'caught failure', success: false, caught: true, status: 0, reply: `充值失败：${errorText}，余额：0` },
+        { name: 'successful consumption', success: true, caught: false, status: 0, reply: '充值成功：70' }
+    ];
+    for (const scenario of cases) {
+        await t.test(scenario.name, async () => {
+            const source = `
+                const { runDirect, PointsConsumeError } = require('./allbot_direct');
+                runDirect(async (ctx) => {
+                    try {
+                        const balance = await ctx.consume_points(30);
+                        await ctx.reply('充值成功：' + balance);
+                    } catch (error) {
+                        if (!${scenario.caught}) throw error;
+                        if (!(error instanceof PointsConsumeError)) throw error;
+                        await ctx.reply('充值失败：' + error.message + '，余额：' + ctx.points);
+                    }
+                });
+            `;
+            const child = spawn(process.execPath, ['-e', source], { cwd: __dirname });
+            const actions = [];
+            let stderr = '';
+            child.stderr.on('data', (chunk) => { stderr += chunk; });
+            const lines = readline.createInterface({ input: child.stdout });
+            lines.on('line', (line) => {
+                const action = JSON.parse(line);
+                actions.push(action);
+                if (action.action === 'points_consume') {
+                    child.stdin.write(JSON.stringify({
+                        action: 'auth_response', request_id: action.request_id,
+                        success: scenario.success, error: scenario.success ? '' : errorText,
+                        data: { points: scenario.success ? 70 : 0 }
+                    }) + '\n');
+                }
+            });
+            const timer = setTimeout(() => child.kill(), 5000);
+            const finished = new Promise((resolve, reject) => {
+                child.on('error', reject);
+                child.on('close', resolve);
+            });
+            child.stdin.write(JSON.stringify({ plugin_id: 'points-test', union_id: 'u1', points: 100 }) + '\n');
+            let status;
+            try {
+                status = await finished;
+            } finally {
+                clearTimeout(timer);
+                lines.close();
+            }
+            assert.equal(status, scenario.status, stderr);
+            assert.deepEqual(actions.map((action) => action.action), ['points_consume', 'reply', 'done']);
+            assert.equal(actions[1].text, scenario.reply);
+            assert.equal(actions[2].success, scenario.status === 0);
+        });
+    }
 });
 
 test('deleteMessage and mute send current-message control requests', async () => {

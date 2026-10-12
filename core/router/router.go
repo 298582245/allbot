@@ -604,14 +604,14 @@ func (r *Router) supportsAdapter(plugin *types.Plugin, adapterID string) bool {
 	return false
 }
 
-func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
+func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 	if !plugin.Enabled {
 		log.Printf("Plugin %s is disabled, skipping", plugin.Name)
-		return
+		return nil
 	}
 	if r.pluginManager == nil {
 		log.Printf("Plugin manager not set")
-		return
+		return nil
 	}
 
 	r.mu.RLock()
@@ -653,7 +653,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 	})
 	if err != nil {
 		log.Printf("Failed to marshal message: %v", err)
-		return
+		return err
 	}
 
 	adp := r.getAdapterForMessage(msg)
@@ -824,6 +824,13 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		return plugincore.PluginUserResult{Success: true, Data: items}
 	}
 	configFunc := func(pluginID string, action plugincore.PluginConfigAction) plugincore.PluginUserResult {
+		if action.UserConfigKey != "" {
+			data, err := r.pluginManager.SavePluginUserConfig(pluginID, action.UserConfigKey, action.UserConfigValue)
+			if err != nil {
+				return plugincore.PluginUserResult{Success: false, Error: err.Error()}
+			}
+			return plugincore.PluginUserResult{Success: true, Data: data}
+		}
 		if err := r.pluginManager.SavePluginAccessControl(pluginID, action.AccessControl); err != nil {
 			return plugincore.PluginUserResult{Success: false, Error: err.Error()}
 		}
@@ -987,7 +994,21 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 
 	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc, paymentFunc, buttonsFunc, replyMarkdownFunc, replyRichFunc, sendRichMessageFunc, sendImageMessageFunc, deleteMessageFunc, muteFunc, plugincore.PluginTaskInfo{Platform: msg.Platform, AdapterID: msg.AdapterID, UserID: msg.UserID, GroupID: msg.GroupID, UnionID: unionID, MessageID: msg.ID, Content: msg.Content}); err != nil {
 		log.Printf("Failed to execute plugin %s: %v", plugin.Name, err)
+		return err
 	}
+	return nil
+}
+
+func (r *Router) RefreshPluginSchedules(pluginID string) error {
+	plugin := r.GetPlugin(pluginID)
+	if plugin == nil {
+		return fmt.Errorf("插件不存在: %s", pluginID)
+	}
+	if plugin.Template != "nodejs_account_ql" && plugin.Template != "python_account_ql" {
+		return nil
+	}
+	message := &types.Message{Metadata: map[string]string{"allbot_schedule_refresh": "true"}}
+	return r.callPlugin(plugin, message)
 }
 
 func resolveReplyTarget(adp adapter.Adapter, msg *types.Message) string {

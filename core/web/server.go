@@ -711,6 +711,10 @@ func (s *Server) handlePluginAction(w http.ResponseWriter, pluginID, action stri
 				s.jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			if err := s.router.RefreshPluginSchedules(pluginID); err != nil {
+				s.jsonError(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 	case "pin":
 		if err := s.pluginManager.SetPluginPinned(pluginID, true); err != nil {

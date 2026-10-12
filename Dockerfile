@@ -36,6 +36,7 @@ ENV ALLBOT_WEB_PORT=3000 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    diffutils \
     nodejs \
     npm \
     python3 \

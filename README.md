@@ -212,7 +212,7 @@ volumes:
   - ./data:/data
 ```
 
-`/data/sdk` 是持久化的插件 SDK 目录。镜像重新构建后，容器入口脚本会对比镜像 SDK 指纹和 `/data/sdk` 当前内容：如果确认 `/data/sdk` 未被用户修改，会自动同步镜像内新版 SDK；如果检测到用户修改过 `/data/sdk`，会跳过覆盖并在日志中提示。首次引入该同步机制时，如果已有 `/data/sdk` 与镜像内容不一致，也会保守跳过覆盖。如需强制使用镜像新版 SDK，请先备份 `/data/sdk`，再删除 `/data/sdk` 并重启容器。
+`/data/sdk` 是持久化的插件 SDK 目录。镜像重新构建后，容器入口脚本会保存上一版官方 SDK 基线，并将当前文件与官方旧版、官方新版做三方合并：用户未修改的文件会直接更新，用户与官方修改不同位置时会自动合并；同一位置发生冲突时保留用户文件，并在对应路径生成 `.update` 文件供处理。官方基线保存在 `/data/.allbot-sdk-base`，不需要用户手动维护。
 
 如果执行 `git pull` 后发现容器内 SDK 仍然是旧版本，这是因为 Docker 镜像中的 SDK 位于 `/opt/allbot/sdk`，而实际运行时优先使用持久化卷中的 `/data/sdk`。`docker compose up -d --build` 不会直接覆盖这个持久化目录。可以先检查入口脚本日志：
 
@@ -220,11 +220,11 @@ volumes:
 docker compose logs --tail=200 allbot | grep -i sdk
 ```
 
-如果日志中出现“检测到 `/data/sdk` 可能已被用户修改”或“缺少历史指纹，跳过自动覆盖”，请先备份并删除持久化 SDK 目录，再重新创建容器：
+如果首次迁移时日志提示 SDK 缺少可用的官方基线，入口脚本会保留当前文件，并为有差异的官方文件生成 `.update` 副本。请先备份 `/data/sdk`，确认这些差异后再处理；后续启动会使用新的官方基线继续合并：
 
 ```bash
 docker compose exec allbot sh -c \
-  'cp -a /data/sdk /data/sdk.backup && rm -rf /data/sdk /data/.allbot-sdk-image-sha256'
+  'cp -a /data/sdk /data/sdk.backup'
 
 docker compose up -d --build
 ```
@@ -260,7 +260,7 @@ ALLBOT_WEB_PORT=3000 docker compose up -d
 
 如果 SSH 会话不稳定，可在 `tmux` 或 `screen` 中执行构建；这只能避免终端断线终止任务，无法解决服务器 OOM、磁盘不足或镜像仓库网络异常。
 
-重新构建镜像时，未被用户修改的 `/data/sdk` 会随镜像内 SDK 自动更新；如果日志提示 `/data/sdk` 已被修改，需要手动备份并删除 `/data/sdk` 后重启容器，才会重新初始化为镜像新版 SDK。
+重新构建镜像时，`/data/sdk` 会按文件自动合并镜像内 SDK 更新；只有同一文件同一位置发生冲突时才会保留用户版本并生成 `.update` 文件。
 
 ## 在线升级
 

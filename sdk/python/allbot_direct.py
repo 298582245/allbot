@@ -19,6 +19,10 @@ _current_context = None
 _protocol_stdout = sys.stdout
 
 
+class PointsConsumeError(RuntimeError):
+    pass
+
+
 def write_protocol_action(action: Dict[str, Any]) -> None:
     _protocol_stdout.write(json.dumps(action, ensure_ascii=False) + "\n")
     _protocol_stdout.flush()
@@ -395,11 +399,19 @@ class Context:
         return await self.get_union_id()
 
     async def consume_points(self, amount: int, **options: Any) -> int:
-        data = self._request({
-            "action": "points_consume",
-            "union_id": str(options.get("union_id") or options.get("unionId") or self.union_id),
-            "amount": int(amount or 0),
-        }, "auth_response")
+        try:
+            data = self._request({
+                "action": "points_consume",
+                "union_id": str(options.get("union_id") or options.get("unionId") or self.union_id),
+                "amount": int(amount or 0),
+            }, "auth_response")
+        except RuntimeError as error:
+            error_data = getattr(error, "data", {})
+            if isinstance(error_data, dict) and "points" in error_data:
+                self.points = int(error_data["points"] or 0)
+            consume_error = PointsConsumeError(str(error))
+            consume_error.data = error_data
+            raise consume_error from error
         self.points = int(data.get("points", 0) or 0)
         return self.points
 
@@ -428,6 +440,19 @@ class Context:
     async def setAccessControl(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """set_access_control 的 camelCase 别名。"""
         return await self.set_access_control(config)
+
+    async def set_config(self, key: str, value: Any) -> Dict[str, Any]:
+        config_key = str(key or "").strip()
+        if not config_key:
+            raise RuntimeError("配置键不能为空")
+        data = self._request({"action": "set_user_config", "key": config_key, "value": value}, "user_config_response")
+        if isinstance(data, dict) and "key" in data:
+            self.user_config[data["key"]] = data.get("value")
+            self.userConfig = self.user_config
+        return data
+
+    async def setConfig(self, key: str, value: Any) -> Dict[str, Any]:
+        return await self.set_config(key, value)
 
     async def list_platform_admins(self, **options: Any) -> List[Dict[str, Any]]:
         """获取已启动平台上的管理员身份列表。"""
@@ -545,7 +570,9 @@ class Context:
         if response.get("request_id") != request_id:
             raise RuntimeError("响应 ID 不匹配")
         if not response.get("success") and not allow_failure:
-            raise RuntimeError(response.get("error") or "请求失败")
+            request_error = RuntimeError(response.get("error") or "请求失败")
+            request_error.data = response.get("data") or {}
+            raise request_error
         data = response.get("data")
         if allow_failure and not response.get("success"):
             if not isinstance(data, dict):
@@ -1036,6 +1063,7 @@ if __name__ == "__main__" and len(sys.argv) >= 3 and sys.argv[1] == "openapi":
 
 def run_direct(handler: Callable[[Context], Any]) -> None:
     """启动 Direct 插件。"""
+    ctx = None
     try:
         input_line = sys.stdin.readline()
         if not input_line:
@@ -1050,5 +1078,7 @@ def run_direct(handler: Callable[[Context], Any]) -> None:
                 asyncio.run(result)
             write_protocol_action({"action": "done", "success": True})
     except Exception as error:
+        if ctx is not None and isinstance(error, PointsConsumeError):
+            write_protocol_action({"action": "reply", "text": str(error)})
         write_protocol_action({"action": "done", "success": False, "error": str(error)})
         sys.exit(1)

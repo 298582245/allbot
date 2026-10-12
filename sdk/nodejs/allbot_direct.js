@@ -64,6 +64,8 @@ function normalizeRichParts(parts) {
 
 let currentContext = null;
 
+class PointsConsumeError extends Error {}
+
 class Context {
     constructor(data, rl) {
         this.pluginId = data.plugin_id || '';
@@ -353,11 +355,21 @@ class Context {
     }
 
     async consumePoints(amount, options = {}) {
-        const data = await this._request({
-            action: 'points_consume',
-            union_id: String(options.unionId || options.union_id || this.unionId || ''),
-            amount: Number(amount || 0)
-        }, 'auth_response');
+        let data;
+        try {
+            data = await this._request({
+                action: 'points_consume',
+                union_id: String(options.unionId || options.union_id || this.unionId || ''),
+                amount: Number(amount || 0)
+            }, 'auth_response');
+        } catch (error) {
+            if (error.data && Object.prototype.hasOwnProperty.call(error.data, 'points')) {
+                this.points = Number(error.data.points);
+            }
+            const consumeError = new PointsConsumeError(error.message || '积分扣除失败');
+            consumeError.data = error.data;
+            throw consumeError;
+        }
         this.points = Number(data.points || 0);
         return this.points;
     }
@@ -385,6 +397,21 @@ class Context {
         this.accessControl = data || {};
         this.access_control = this.accessControl;
         return this.accessControl;
+    }
+
+    async setConfig(key, value) {
+        const configKey = String(key || '').trim();
+        if (!configKey) throw new Error('配置键不能为空');
+        const data = await this._request({ action: 'set_user_config', key: configKey, value }, 'user_config_response');
+        if (data && Object.prototype.hasOwnProperty.call(data, 'key')) {
+            this.userConfig[data.key] = data.value;
+            this.user_config = this.userConfig;
+        }
+        return data;
+    }
+
+    async set_config(key, value) {
+        return this.setConfig(key, value);
     }
 
     async set_access_control(config = {}) {
@@ -908,18 +935,22 @@ function runDirect(handler) {
         if (!firstLine) return;
         firstLine = false;
 
+        let ctx;
         try {
             const messageData = JSON.parse(line);
             if (messageData.event_type === 'web_api') {
                 const action = await runWebAPIAction(handler, messageData, rl);
                 writeProtocolAction(action);
             } else {
-                const ctx = new Context(messageData, rl);
+                ctx = new Context(messageData, rl);
                 await handler(ctx);
                 writeProtocolAction({ action: 'done', success: true });
             }
             process.exit(0);
         } catch (error) {
+            if (ctx && error instanceof PointsConsumeError) {
+                writeProtocolAction({ action: 'reply', text: error.message });
+            }
             writeProtocolAction({ action: 'done', success: false, error: error.message });
             process.exit(1);
         }
@@ -942,4 +973,4 @@ if (require.main === module && process.argv[2] === 'openapi') {
     });
 }
 
-module.exports = { Context, Database, PAY, HTTPResponse, WebRouter, WebRequest, WebResponse, runDirect, runOpenAPI };
+module.exports = { Context, PointsConsumeError, Database, PAY, HTTPResponse, WebRouter, WebRequest, WebResponse, runDirect, runOpenAPI };

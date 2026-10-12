@@ -143,7 +143,10 @@ func writePluginUserResult(writer io.Writer, action, requestID string, result Pl
 }
 
 type PluginConfigAction struct {
-	AccessControl types.AccessControlConfig
+	Action          string
+	AccessControl   types.AccessControlConfig
+	UserConfigKey   string
+	UserConfigValue interface{}
 }
 
 type ScheduledTaskAction struct {
@@ -521,6 +524,39 @@ func (m *Manager) SavePluginAccessControl(pluginID string, accessControl types.A
 	return m.ReloadPlugin(pluginID)
 }
 
+func (m *Manager) SavePluginUserConfig(pluginID, key string, value interface{}) (map[string]interface{}, error) {
+	pluginID = strings.TrimSpace(pluginID)
+	key = strings.TrimSpace(key)
+	if pluginID == "" || key != PluginScheduleRegisteredConfigKey {
+		return nil, fmt.Errorf("不支持的插件配置: %s", key)
+	}
+	pluginPath := filepath.Join(m.pluginDir, pluginID)
+	pluginConfig, _, err := readPluginConfigWithData(pluginPath)
+	if err != nil {
+		return nil, err
+	}
+	if pluginConfig.UserConfig == nil {
+		pluginConfig.UserConfig = make(map[string]interface{})
+	}
+	pluginConfig.UserConfig[key] = value
+	if err := SavePluginData(pluginPath, pluginConfig.UserConfigSchema, pluginConfig.UserConfig); err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	if process, ok := m.plugins[pluginID]; ok && process.Plugin != nil {
+		updated := *process.Plugin
+		updated.UserConfig = make(map[string]interface{}, len(process.Plugin.UserConfig)+1)
+		for configKey, configValue := range process.Plugin.UserConfig {
+			updated.UserConfig[configKey] = configValue
+		}
+		updated.UserConfig[key] = value
+		process.Plugin = &updated
+	}
+	m.mu.Unlock()
+	return map[string]interface{}{"key": key, "value": value}, nil
+}
+
 func (m *Manager) StopPlugin(pluginID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -539,8 +575,9 @@ func (m *Manager) StartPluginByID(pluginID string) error {
 }
 
 const (
-	pluginOutputMaxLineBytes = 4 * 1024 * 1024
-	pluginLogMergeWindow     = 30 * time.Millisecond
+	pluginOutputMaxLineBytes          = 4 * 1024 * 1024
+	pluginLogMergeWindow              = 30 * time.Millisecond
+	PluginScheduleRegisteredConfigKey = "schedule_is_register"
 )
 
 func newPluginOutputScanner(reader io.Reader) *bufio.Scanner {
@@ -577,7 +614,7 @@ func (b *pluginProcessLogBatch) Flush() {
 
 func isPluginProtocolAction(action string) bool {
 	switch action {
-	case "reply", "send_markdown", "send_rich", "send_buttons", "send_image", "send_file", "listen", "delete_message", "mute", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "send_rich_message", "send_image_message", "get_union_id", "list_platform_admins", "set_access_control", "set_scheduled_task", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "web_response", "done":
+	case "reply", "send_markdown", "send_rich", "send_buttons", "send_image", "send_file", "listen", "delete_message", "mute", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "send_rich_message", "send_image_message", "get_union_id", "list_platform_admins", "set_access_control", "set_user_config", "set_scheduled_task", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "web_response", "done":
 		return true
 	default:
 		return false
@@ -822,6 +859,8 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			RowID          int64                      `json:"row_id"`
 			Query          config.PluginDBQuery       `json:"query"`
 			AccessControl  types.AccessControlConfig  `json:"access_control"`
+			ConfigKey      string                     `json:"key"`
+			ConfigValue    interface{}                `json:"value"`
 			TaskKey        string                     `json:"task_key"`
 			Name           string                     `json:"name"`
 			Subject        string                     `json:"subject"`
@@ -1014,9 +1053,17 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 		case "set_access_control":
 			result := PluginUserResult{Success: false, Error: "插件配置执行器不可用"}
 			if configFunc != nil {
-				result = configFunc(plugin.ID, PluginConfigAction{AccessControl: action.AccessControl})
+				result = configFunc(plugin.ID, PluginConfigAction{Action: action.Action, AccessControl: action.AccessControl})
 			}
 			response, _ := json.Marshal(map[string]interface{}{"action": "access_control_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
+			response = append(response, '\n')
+			_, _ = stdin.Write(response)
+		case "set_user_config":
+			result := PluginUserResult{Success: false, Error: "插件配置执行器不可用"}
+			if configFunc != nil {
+				result = configFunc(plugin.ID, PluginConfigAction{Action: action.Action, UserConfigKey: action.ConfigKey, UserConfigValue: action.ConfigValue})
+			}
+			response, _ := json.Marshal(map[string]interface{}{"action": "user_config_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
 			response = append(response, '\n')
 			_, _ = stdin.Write(response)
 		case "set_scheduled_task":
@@ -2410,6 +2457,7 @@ func pluginUserConfigFieldKeys(config types.PluginConfig) map[string]struct{} {
 			keys[key] = struct{}{}
 		}
 	}
+	keys[PluginScheduleRegisteredConfigKey] = struct{}{}
 	return keys
 }
 

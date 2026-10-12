@@ -820,7 +820,10 @@ func (s *Server) reloadAndRegisterPlugin(pluginID string) error {
 	if process == nil || process.Plugin == nil {
 		return fmt.Errorf("插件重载后不存在")
 	}
-	return s.router.RegisterPlugin(process.Plugin)
+	if err := s.router.RegisterPlugin(process.Plugin); err != nil {
+		return err
+	}
+	return s.router.RefreshPluginSchedules(pluginID)
 }
 
 func (s *Server) currentTemplateMetadata(pluginID string) (*config.PluginTemplateMetadata, error) {
