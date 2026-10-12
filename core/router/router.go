@@ -736,7 +736,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 		}
 	}
 
-	pluginPath := filepath.Join("plugins", plugin.ID)
+	pluginPath := r.pluginManager.PluginPath(plugin.ID)
 	r.mu.RLock()
 	dataViewSaver := r.dataViewSaver
 	r.mu.RUnlock()
@@ -823,11 +823,20 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 		}
 		return plugincore.PluginUserResult{Success: true, Data: items}
 	}
+	scheduleRegistrationCompleted := false
 	configFunc := func(pluginID string, action plugincore.PluginConfigAction) plugincore.PluginUserResult {
-		if action.UserConfigKey != "" {
+		if action.Action == "set_user_config" {
 			data, err := r.pluginManager.SavePluginUserConfig(pluginID, action.UserConfigKey, action.UserConfigValue)
 			if err != nil {
 				return plugincore.PluginUserResult{Success: false, Error: err.Error()}
+			}
+			if process := r.pluginManager.GetPlugin(pluginID); process != nil && process.Plugin != nil {
+				r.mu.Lock()
+				r.plugins[pluginID] = process.Plugin
+				r.mu.Unlock()
+			}
+			if action.UserConfigKey == plugincore.PluginScheduleRegisteredConfigKey && action.UserConfigValue == true {
+				scheduleRegistrationCompleted = true
 			}
 			return plugincore.PluginUserResult{Success: true, Data: data}
 		}
@@ -996,6 +1005,9 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 		log.Printf("Failed to execute plugin %s: %v", plugin.Name, err)
 		return err
 	}
+	if msg.Metadata["allbot_schedule_refresh"] == "true" && !scheduleRegistrationCompleted {
+		return fmt.Errorf("插件 %s 定时任务刷新未完成，未收到 schedule_is_register=true 回写，请查看插件注册错误日志", plugin.ID)
+	}
 	return nil
 }
 
@@ -1013,6 +1025,7 @@ func (r *Router) RefreshPluginSchedules(pluginID string) error {
 	if templateName != "nodejs_account_ql" && templateName != "python_account_ql" {
 		return nil
 	}
+	log.Printf("[SYSTEM] Refreshing account plugin schedules: plugin=%s template=%s", pluginID, templateName)
 	message := &types.Message{Metadata: map[string]string{"allbot_schedule_refresh": "true"}}
 	return r.callPlugin(plugin, message)
 }

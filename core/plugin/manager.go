@@ -531,6 +531,7 @@ func (m *Manager) SavePluginUserConfig(pluginID, key string, value interface{}) 
 		return nil, fmt.Errorf("不支持的插件配置: %s", key)
 	}
 	pluginPath := filepath.Join(m.pluginDir, pluginID)
+	log.Printf("[SYSTEM] Saving plugin user config: plugin=%s key=%s path=%s", pluginID, key, filepath.Join(pluginPath, PluginDataFileName))
 	pluginConfig, _, err := readPluginConfigWithData(pluginPath)
 	if err != nil {
 		return nil, err

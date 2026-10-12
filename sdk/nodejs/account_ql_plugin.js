@@ -523,6 +523,7 @@ class AccountQLPlugin {
         await ctx.setConfig('schedule_is_register', true);
       } catch (error) {
         console.log(`记录${this.prefix}定时任务状态失败：${error.message}`);
+        if (forceRefresh) throw error;
       }
     }
   }

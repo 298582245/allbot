@@ -545,6 +545,8 @@ class AccountQLPlugin:
                 await ctx.set_config("schedule_is_register", True)
             except Exception as error:
                 print(f"记录{self.prefix}定时任务状态失败：{error}", file=sys.stderr)
+                if force_refresh:
+                    raise
 
     def account_name(self, account: Dict[str, Any]) -> str:
         return str(account.get("account_name") or account.get("remark") or account.get("env_value", "")[:8] or "未知账号")
