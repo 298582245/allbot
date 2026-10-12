@@ -28,6 +28,7 @@ import (
 	"github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/router"
 	"github.com/allbot/allbot/core/session"
+	"github.com/allbot/allbot/core/types"
 	"github.com/allbot/allbot/core/updater"
 	"github.com/allbot/allbot/core/utils"
 )
@@ -424,13 +425,8 @@ func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		pluginID := entry.Name()
-		configData, err := os.ReadFile(filepath.Join(pluginDir, pluginID, "plugin.json"))
+		config, err := plugin.ReadPluginConfigDocument(filepath.Join(pluginDir, pluginID))
 		if err != nil {
-			result = append(result, pluginError(pluginID, "配置文件不存在或读取失败"))
-			continue
-		}
-		var config map[string]interface{}
-		if err := json.Unmarshal(configData, &config); err != nil {
 			result = append(result, pluginError(pluginID, "配置文件解析失败"))
 			continue
 		}
@@ -966,15 +962,11 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, "插件 ID 不能为空", http.StatusBadRequest)
 		return
 	}
-	configPath := filepath.Join("plugins", pluginID, "plugin.json")
+	pluginPath := s.pluginManager.PluginPath(pluginID)
+	configPath := filepath.Join(pluginPath, "plugin.json")
 	if r.Method == http.MethodGet {
-		data, err := os.ReadFile(configPath)
+		config, err := plugin.ReadPluginConfigDocument(pluginPath)
 		if err != nil {
-			s.jsonError(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		var config map[string]interface{}
-		if err := json.Unmarshal(data, &config); err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1017,6 +1009,32 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "Invalid request", http.StatusBadRequest)
 			return
 		}
+		var typedConfig types.PluginConfig
+		rawConfig, err := json.Marshal(config)
+		if err != nil {
+			s.jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := json.Unmarshal(rawConfig, &typedConfig); err != nil {
+			s.jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_, hasUserConfig := config["user_config"]
+		originalData, err := os.ReadFile(configPath)
+		if err != nil {
+			s.jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		var original map[string]interface{}
+		if err := json.Unmarshal(originalData, &original); err != nil {
+			s.jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if defaults, exists := original["user_config"]; exists {
+			config["user_config"] = defaults
+		} else {
+			delete(config, "user_config")
+		}
 		data, err := json.MarshalIndent(config, "", "  ")
 		if err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
@@ -1025,6 +1043,13 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 		if err := os.WriteFile(configPath, data, 0644); err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if hasUserConfig {
+			if err := plugin.SavePluginData(pluginPath, typedConfig.UserConfigSchema, typedConfig.UserConfig); err != nil {
+				_ = os.WriteFile(configPath, originalData, 0644)
+				s.jsonError(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		if err := s.pluginManager.ReloadPlugin(pluginID); err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)

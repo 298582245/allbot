@@ -21,7 +21,10 @@ import (
 	"github.com/allbot/allbot/core/types"
 )
 
-const pluginWebChatQuickActionFill = "fill"
+const (
+	pluginWebChatQuickActionFill = "fill"
+	PluginDataFileName           = "plugin.data"
+)
 
 type Manager struct {
 	plugins                     map[string]*PluginProcess
@@ -366,6 +369,9 @@ func (m *Manager) LoadPlugin(pluginPath string) (*types.Plugin, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := migrateLegacyPluginData(pluginPath); err != nil {
+		return nil, err
+	}
 
 	m.installDeps(plugin)
 
@@ -478,6 +484,9 @@ func (m *Manager) ReloadPlugin(pluginID string) error {
 	pluginPath := filepath.Join(m.pluginDir, pluginID)
 	plugin, err := m.loadPluginConfig(pluginPath)
 	if err != nil {
+		return err
+	}
+	if err := migrateLegacyPluginData(pluginPath); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -2243,13 +2252,8 @@ func pluginEntryPath(root, runtimeName, entry string) (string, error) {
 
 // ValidatePluginConfig 解析并校验指定目录中的插件配置，不安装依赖或修改 Manager 状态。
 func (m *Manager) ValidatePluginConfig(pluginPath, pluginID string) (*types.Plugin, error) {
-	configPath := filepath.Join(pluginPath, "plugin.json")
-	data, err := os.ReadFile(configPath)
+	config, _, err := readPluginConfigWithData(pluginPath)
 	if err != nil {
-		return nil, err
-	}
-	var config types.PluginConfig
-	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, err
 	}
 	pluginID = strings.TrimSpace(pluginID)
@@ -2292,6 +2296,121 @@ func (m *Manager) ValidatePluginConfig(pluginPath, pluginID string) (*types.Plug
 
 func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
 	return m.ValidatePluginConfig(pluginPath, filepath.Base(pluginPath))
+}
+
+func readPluginConfigWithData(pluginPath string) (types.PluginConfig, bool, error) {
+	var config types.PluginConfig
+	data, err := os.ReadFile(filepath.Join(pluginPath, "plugin.json"))
+	if err != nil {
+		return config, false, err
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return config, false, err
+	}
+	hasData, err := mergePluginData(pluginPath, &config)
+	if err != nil {
+		return config, false, err
+	}
+	return config, hasData, nil
+}
+
+// ReadPluginConfigDocument reads plugin.json and overlays persisted user_config values.
+func ReadPluginConfigDocument(pluginPath string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(filepath.Join(pluginPath, "plugin.json"))
+	if err != nil {
+		return nil, err
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	var config types.PluginConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+	if _, err := mergePluginData(pluginPath, &config); err != nil {
+		return nil, err
+	}
+	if config.UserConfig != nil {
+		raw["user_config"] = config.UserConfig
+	}
+	return raw, nil
+}
+
+// SavePluginData persists only user-configured values that still have a field in plugin.json.
+func SavePluginData(pluginPath string, schema []types.PluginUserConfigField, values map[string]interface{}) error {
+	config := types.PluginConfig{UserConfigSchema: schema, UserConfig: values}
+	filtered := filterPluginUserConfig(config)
+	data, err := json.MarshalIndent(map[string]interface{}{"user_config": filtered}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(pluginPath, PluginDataFileName), data, 0644)
+}
+
+func mergePluginData(pluginPath string, config *types.PluginConfig) (bool, error) {
+	allowed := pluginUserConfigFieldKeys(*config)
+	filtered := filterPluginUserConfig(*config)
+	for _, field := range config.UserConfigSchema {
+		if _, exists := filtered[field.Key]; !exists && field.Key != "" && field.Type != "divider" {
+			filtered[field.Key] = field.Default
+		}
+	}
+	config.UserConfig = filtered
+	data, err := os.ReadFile(filepath.Join(pluginPath, PluginDataFileName))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var saved struct {
+		UserConfig map[string]interface{} `json:"user_config"`
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return false, fmt.Errorf("plugin.data 无效: %w", err)
+	}
+	for key, value := range saved.UserConfig {
+		if _, ok := allowed[key]; ok {
+			config.UserConfig[key] = value
+		}
+	}
+	return true, nil
+}
+
+func migrateLegacyPluginData(pluginPath string) error {
+	config, hasData, err := readPluginConfigWithData(pluginPath)
+	if err != nil || hasData || len(config.UserConfig) == 0 {
+		return err
+	}
+	return SavePluginData(pluginPath, config.UserConfigSchema, config.UserConfig)
+}
+
+func filterPluginUserConfig(config types.PluginConfig) map[string]interface{} {
+	filtered := make(map[string]interface{})
+	keys := pluginUserConfigFieldKeys(config)
+	for key, value := range config.UserConfig {
+		if _, ok := keys[key]; ok {
+			filtered[key] = value
+		}
+	}
+	return filtered
+}
+
+func pluginUserConfigFieldKeys(config types.PluginConfig) map[string]struct{} {
+	keys := make(map[string]struct{})
+	for _, field := range config.UserConfigSchema {
+		key := strings.TrimSpace(field.Key)
+		if key != "" && field.Type != "divider" {
+			keys[key] = struct{}{}
+		}
+	}
+	if len(config.UserConfigSchema) == 0 {
+		for key := range config.UserConfig {
+			keys[key] = struct{}{}
+		}
+	}
+	return keys
 }
 
 func normalizePluginRuntime(runtime string) string {
