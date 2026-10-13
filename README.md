@@ -78,6 +78,14 @@ Linux：
 http://localhost:3000
 ```
 
+## 在线演示
+
+在线演示地址：<https://298582245.github.io/allbot/>
+
+演示站使用 GitHub Pages 发布前端静态文件，内置浏览器模拟数据，不连接真实 AllBot 后端、数据库或平台适配器。页面中的插件、适配器、任务、日志和 WebChat 操作只在当前浏览器内生效，刷新后恢复初始数据。请不要填写真实密码、Token、Cookie 或平台配置。
+
+在线演示不会随代码提交自动发布。需要更新演示站时，在 GitHub Actions 手动运行 `Publish AllBot Demo` workflow。完整部署步骤见 [`docs/ONLINE_DEMO.md`](docs/ONLINE_DEMO.md)。
+
 首次启动会自动生成后台管理员密码，并输出到控制台。默认管理员账号为 `admin`。
 
 如需修改端口，可设置环境变量 `ALLBOT_WEB_PORT`：
