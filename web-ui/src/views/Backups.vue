@@ -190,6 +190,7 @@ import { InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { createBackup, deleteBackup, getBackups, importBackup, restoreBackup, saveBackupSettings } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { isDemoMode } from '@/demo/mockApi'
 
 const authStore = useAuthStore()
 const loading = ref(false)
@@ -319,6 +320,10 @@ const handleDeleteBackup = async (row) => {
 }
 
 const downloadBackup = async (row) => {
+  if (isDemoMode) {
+    ElMessage.info('演示环境不提供真实备份文件下载')
+    return
+  }
   const response = await fetch(`/api/backups/${encodeURIComponent(row.name)}/download`, {
     headers: { Authorization: `Bearer ${authStore.token}` }
   })

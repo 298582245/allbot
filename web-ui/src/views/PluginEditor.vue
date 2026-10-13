@@ -192,6 +192,7 @@ import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Document, Folder } from '@el
 import request from '@/utils/request'
 import { convertPluginTemplateEditor, getPluginTemplateEditor, updatePluginTemplateEditor } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { isDemoMode } from '@/demo/mockApi'
 import {
   accountQLTriggerPreview,
   createEmptyAccountQLConfig,
@@ -992,6 +993,10 @@ function errorMessage(error) {
 }
 
 const exportPluginDirectory = async () => {
+  if (isDemoMode) {
+    ElMessage.info('演示环境不提供真实插件压缩包导出')
+    return
+  }
   exporting.value = true
   try {
     const fileName = `${pluginId.value}.zip`

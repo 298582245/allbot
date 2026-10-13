@@ -2,6 +2,15 @@
 
 本文件只记录 `web-ui/src` 下的打包前前端源码改动，不记录 `web/` 下构建产物。
 
+## 2026-10-13
+
+### `src/demo/mockApi.js`、`src/utils/request.js`、`src/api/index.js`、`src/router/index.js`、`src/stores/auth.js`、`src/App.vue`、`src/views/Login.vue`、`src/views/WebChat.vue`
+
+- 时间：14:16
+- 修改范围：新增 Demo 模拟 API、GitHub Pages 路径和演示状态提示
+- 变更摘要：增加仅在 Demo 构建启用的浏览器内模拟请求和种子数据，覆盖后台管理页与 WebChat；Demo 登录不持久化真实凭据，WebChat 不建立真实 EventSource 连接；正式构建继续使用真实后端接口。
+- 统计：新增 Demo 模拟数据与请求分发模块，补充路由 base 路径、演示提示和登录行为。
+
 ## 2026-10-05
 
 ### `src/router/index.js`、`src/views/Layout.vue`、`src/views/PluginTasks.vue`

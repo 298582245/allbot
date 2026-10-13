@@ -333,6 +333,7 @@ import {
   sendWebChatMessage,
   sendWebChatPlatformCode
 } from '@/api'
+import { isDemoMode } from '@/demo/mockApi'
 import { escapeAttribute, escapeHTML, formatMarkdownInline, formatTextLinks } from '@/utils/webChatText'
 
 const privateSessionId = '__private__'
@@ -992,6 +993,7 @@ function copyByFallback(text) {
 
 function openEvents() {
   closeEvents()
+  if (isDemoMode) return
   eventSource = new EventSource('/api/open/web-chat/events')
   eventSource.addEventListener('message', (event) => {
     const msg = JSON.parse(event.data)
