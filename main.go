@@ -411,12 +411,15 @@ func saveRestartContext(request router.RestartRequest) error {
 			return err
 		}
 	}
-	return nil
+	return saveRestartContextFile(values)
 }
 
 func restartContextValues(request router.RestartRequest) (map[string]string, error) {
 	if strings.TrimSpace(request.MessageKey) == "" {
 		return nil, errors.New("重启消息唯一标识为空")
+	}
+	if request.StartedAt.IsZero() {
+		return nil, errors.New("重启开始时间为空")
 	}
 	return map[string]string{
 		"ALLBOT_IGNORE_RESTART_MESSAGE_KEY": request.MessageKey,
@@ -427,6 +430,45 @@ func restartContextValues(request router.RestartRequest) (map[string]string, err
 		"ALLBOT_RESTART_NOTIFY_TARGET":      request.Target,
 		"ALLBOT_RESTART_STARTED_AT_NS":      strconv.FormatInt(request.StartedAt.UnixNano(), 10),
 	}, nil
+}
+
+func restartContextFilePath() string {
+	if path := strings.TrimSpace(os.Getenv("ALLBOT_RESTART_CONTEXT_PATH")); path != "" {
+		return path
+	}
+	return filepath.Join("runtime", "restart", "context.json")
+}
+
+func saveRestartContextFile(values map[string]string) error {
+	path := restartContextFilePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(values, "", "  ")
+	if err != nil {
+		return err
+	}
+	temporaryPath := path + ".tmp"
+	if err := os.WriteFile(temporaryPath, data, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		_ = os.Remove(temporaryPath)
+		return err
+	}
+	return nil
+}
+
+func readRestartStartedAtFromContextFile() string {
+	data, err := os.ReadFile(restartContextFilePath())
+	if err != nil {
+		return ""
+	}
+	var values map[string]string
+	if err := json.Unmarshal(data, &values); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(values["ALLBOT_RESTART_STARTED_AT_NS"])
 }
 
 func saveDockerRestartRequest(request router.RestartRequest) error {
@@ -506,12 +548,19 @@ func notifyCompletedMessage(adapterManager *config.AdapterManager, prefix string
 		log.Printf("完成通知发送失败：适配器不存在 platform=%s adapter_id=%s", platform, adapterID)
 		return true
 	}
-	text, durationErr := build(os.Getenv("ALLBOT_"+prefix+"_STARTED_AT_NS"), time.Now())
+	startedAtValue := os.Getenv("ALLBOT_" + prefix + "_STARTED_AT_NS")
+	if prefix == "RESTART_NOTIFY" && strings.TrimSpace(startedAtValue) == "" {
+		startedAtValue = readRestartStartedAtFromContextFile()
+	}
+	text, durationErr := build(startedAtValue, time.Now())
 	if durationErr != nil {
 		log.Printf("完成耗时计算失败: %v", durationErr)
 	}
 	if err := sendRestartCompletedMessage(adp, target, text); err != nil {
 		log.Printf("完成通知发送失败: %v", err)
+	}
+	if prefix == "RESTART_NOTIFY" {
+		_ = os.Remove(restartContextFilePath())
 	}
 	return true
 }
