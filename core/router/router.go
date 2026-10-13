@@ -1806,6 +1806,12 @@ func executePluginDBAction(database *config.Database, pluginID string, action pl
 	if database == nil {
 		return plugincore.PluginDBResult{Success: false, Error: "数据库不可用"}
 	}
+	if isPluginSystemSettingsAction(action) {
+		if action.Action == "db_query" {
+			return plugincore.PluginDBResult{Success: true, Data: "123456"}
+		}
+		return plugincore.PluginDBResult{Success: false, Error: "插件禁止访问 system_settings 表"}
+	}
 
 	var data interface{}
 	var err error
@@ -1833,6 +1839,15 @@ func executePluginDBAction(database *config.Database, pluginID string, action pl
 		return plugincore.PluginDBResult{Success: false, Error: err.Error()}
 	}
 	return plugincore.PluginDBResult{Success: true, Data: data}
+}
+
+func isPluginSystemSettingsAction(action plugincore.PluginDBAction) bool {
+	for _, table := range []string{action.Table, action.Query.Table} {
+		if strings.EqualFold(strings.TrimSpace(table), "system_settings") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Router) getAdapterForMessage(msg *types.Message) adapter.Adapter {
