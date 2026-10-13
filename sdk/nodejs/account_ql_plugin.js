@@ -498,6 +498,7 @@ class AccountQLPlugin {
     }
     const normalizedSchedules = normalizeSchedules(this.prefix, this.schedules);
     const defaultMaxCount = Math.max(3, normalizedSchedules.length);
+    const taskKeys = normalizedSchedules.map((schedule) => schedule.taskKey);
     let registeredAll = true;
     for (const schedule of normalizedSchedules) {
       try {
@@ -516,6 +517,14 @@ class AccountQLPlugin {
       } catch (error) {
         registeredAll = false;
         console.log(`声明${schedule.name}失败：${error.message}`);
+      }
+    }
+    if (registeredAll) {
+      try {
+        await ctx.syncScheduledTasks(taskKeys);
+      } catch (error) {
+        registeredAll = false;
+        console.log(`同步${this.prefix}定时任务失败：${error.message}`);
       }
     }
     if (registeredAll) {

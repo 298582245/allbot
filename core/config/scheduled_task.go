@@ -142,11 +142,6 @@ func (d *Database) UpsertPluginScheduledTask(pluginID string, item *ScheduledTas
 	if err != nil {
 		return nil, err
 	}
-	if maxCount > 0 {
-		if err := d.TrimPluginScheduledTasks(item.PluginID, maxCount); err != nil {
-			return nil, err
-		}
-	}
 	return d.GetScheduledTask(item.ID)
 }
 
@@ -187,6 +182,41 @@ func (d *Database) UpdateScheduledTaskNextRun(id int64, nextRunAt *time.Time) er
 func (d *Database) DeleteScheduledTask(id int64) error {
 	_, err := d.db.Exec(`DELETE FROM scheduled_tasks WHERE id = ?`, id)
 	return err
+}
+
+func (d *Database) DeletePluginScheduledTasksExcept(pluginID string, taskKeys []string) (int64, error) {
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" {
+		return 0, fmt.Errorf("插件 ID 不能为空")
+	}
+	keys := make([]string, 0, len(taskKeys))
+	seen := make(map[string]struct{}, len(taskKeys))
+	for _, key := range taskKeys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	query := `DELETE FROM scheduled_tasks WHERE plugin_id = ? AND source = 'plugin'`
+	args := []interface{}{pluginID}
+	if len(keys) > 0 {
+		placeholders := make([]string, len(keys))
+		for index, key := range keys {
+			placeholders[index] = "?"
+			args = append(args, key)
+		}
+		query += " AND task_key NOT IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	result, err := d.db.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (d *Database) DisablePluginScheduledTasks(pluginID string) (int64, error) {

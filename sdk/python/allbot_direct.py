@@ -494,6 +494,16 @@ class Context:
         """set_scheduled_task 的 camelCase 别名。"""
         return await self.set_scheduled_task(**options)
 
+    async def sync_scheduled_tasks(self, task_keys: Any = None) -> Dict[str, Any]:
+        keys = task_keys if isinstance(task_keys, list) else []
+        return await self._request(
+            {"action": "sync_scheduled_tasks", "task_keys": [str(key or "").strip() for key in keys if str(key or "").strip()]},
+            "scheduled_task_response",
+        )
+
+    async def syncScheduledTasks(self, task_keys: Any = None) -> Dict[str, Any]:
+        return await self.sync_scheduled_tasks(task_keys)
+
     async def fake_message(self, platform: str = "", user_id: str = "", group_id: str = "", content: str = "", adapter_id: str = "") -> bool:
         """伪造一条收到的用户消息，让系统按正常消息路由重新匹配插件。"""
         self._request({

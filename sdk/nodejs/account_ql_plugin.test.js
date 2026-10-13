@@ -29,7 +29,7 @@ function makePlugin(ql = {}, account = {}) {
 }
 
 function makeCtx(options = {}) {
-  const calls = { replies: [], buttons: [], runQLScripts: [], listens: [], scheduledTasks: [] };
+  const calls = { replies: [], buttons: [], runQLScripts: [], listens: [], scheduledTasks: [], syncedSchedules: [] };
   const listens = [...(options.listens || [])];
   return {
     content: '测试一键运行',
@@ -54,6 +54,10 @@ function makeCtx(options = {}) {
     setScheduledTask: async (payload) => {
       calls.scheduledTasks.push(payload);
       return payload;
+    },
+    syncScheduledTasks: async (taskKeys) => {
+      calls.syncedSchedules.push(taskKeys);
+      return taskKeys;
     },
     _request: async () => options.accounts || [],
     calls
@@ -110,6 +114,7 @@ test('ensureSchedules uses task count as default maxCount', async () => {
 
   assert.equal(ctx.calls.scheduledTasks.length, 4);
   assert.deepEqual(new Set(ctx.calls.scheduledTasks.map((item) => item.maxCount)), new Set([4]));
+  assert.deepEqual(ctx.calls.syncedSchedules, [['task-1', 'task-2', 'task-3', 'task-4']]);
 });
 
 test('fake scheduled run submits script task by default and skips afterRun', async () => {

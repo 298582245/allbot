@@ -533,6 +533,7 @@ class AccountQLPlugin:
             return
         normalized_schedules = normalize_schedules(self.prefix, self.schedules)
         default_max_count = max(3, len(normalized_schedules))
+        task_keys = [item["task_key"] for item in normalized_schedules]
         registered_all = True
         for item in normalized_schedules:
             try:
@@ -540,6 +541,12 @@ class AccountQLPlugin:
             except Exception as error:
                 registered_all = False
                 print(f"声明定时任务失败：{item.get('task_key')} {error}", file=sys.stderr)
+        if registered_all:
+            try:
+                await ctx.sync_scheduled_tasks(task_keys)
+            except Exception as error:
+                registered_all = False
+                print(f"同步{self.prefix}定时任务失败：{error}", file=sys.stderr)
         if registered_all:
             try:
                 await ctx.set_config("schedule_is_register", True)

@@ -150,7 +150,9 @@ type PluginConfigAction struct {
 }
 
 type ScheduledTaskAction struct {
+	Action      string
 	TaskKey     string
+	TaskKeys    []string
 	Name        string
 	Description string
 	Enabled     bool
@@ -618,7 +620,7 @@ func (b *pluginProcessLogBatch) Flush() {
 
 func isPluginProtocolAction(action string) bool {
 	switch action {
-	case "reply", "send_markdown", "send_rich", "send_buttons", "send_image", "send_file", "listen", "delete_message", "mute", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "send_rich_message", "send_image_message", "get_union_id", "list_platform_admins", "set_access_control", "set_user_config", "set_scheduled_task", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "web_response", "done":
+	case "reply", "send_markdown", "send_rich", "send_buttons", "send_image", "send_file", "listen", "delete_message", "mute", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "send_rich_message", "send_image_message", "get_union_id", "list_platform_admins", "set_access_control", "set_user_config", "set_scheduled_task", "sync_scheduled_tasks", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "web_response", "done":
 		return true
 	default:
 		return false
@@ -866,6 +868,7 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			ConfigKey      string                     `json:"key"`
 			ConfigValue    interface{}                `json:"value"`
 			TaskKey        string                     `json:"task_key"`
+			TaskKeys       []string                   `json:"task_keys"`
 			Name           string                     `json:"name"`
 			Subject        string                     `json:"subject"`
 			Enabled        bool                       `json:"enabled"`
@@ -1070,10 +1073,10 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			response, _ := json.Marshal(map[string]interface{}{"action": "user_config_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
 			response = append(response, '\n')
 			_, _ = stdin.Write(response)
-		case "set_scheduled_task":
+		case "set_scheduled_task", "sync_scheduled_tasks":
 			result := PluginUserResult{Success: false, Error: "定时任务执行器不可用"}
 			if scheduleFunc != nil {
-				result = scheduleFunc(plugin.ID, ScheduledTaskAction{TaskKey: action.TaskKey, Name: action.Name, Description: action.Description, Enabled: action.Enabled, Pinned: action.Pinned, Cron: action.Cron, Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, Content: action.Content, MaxCount: action.MaxCount})
+				result = scheduleFunc(plugin.ID, ScheduledTaskAction{Action: action.Action, TaskKey: action.TaskKey, TaskKeys: action.TaskKeys, Name: action.Name, Description: action.Description, Enabled: action.Enabled, Pinned: action.Pinned, Cron: action.Cron, Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, Content: action.Content, MaxCount: action.MaxCount})
 			}
 			response, _ := json.Marshal(map[string]interface{}{"action": "scheduled_task_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
 			response = append(response, '\n')

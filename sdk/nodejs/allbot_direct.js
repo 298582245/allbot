@@ -460,6 +460,15 @@ class Context {
         return this.setScheduledTask(options);
     }
 
+    async syncScheduledTasks(taskKeys = []) {
+        const keys = Array.isArray(taskKeys) ? taskKeys : [];
+        return this._request({ action: 'sync_scheduled_tasks', task_keys: keys.map((key) => String(key || '').trim()).filter(Boolean) }, 'scheduled_task_response');
+    }
+
+    async sync_scheduled_tasks(taskKeys = []) {
+        return this.syncScheduledTasks(taskKeys);
+    }
+
     
     async fakeMessage(options = {}) {
         await this._request({

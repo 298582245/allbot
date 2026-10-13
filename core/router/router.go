@@ -849,6 +849,13 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 		if database == nil {
 			return plugincore.PluginUserResult{Success: false, Error: "数据库不可用"}
 		}
+		if action.Action == "sync_scheduled_tasks" {
+			removed, err := database.DeletePluginScheduledTasksExcept(pluginID, action.TaskKeys)
+			if err != nil {
+				return plugincore.PluginUserResult{Success: false, Error: err.Error()}
+			}
+			return plugincore.PluginUserResult{Success: true, Data: map[string]interface{}{"removed": removed}}
+		}
 		task := &config.ScheduledTask{TaskKey: action.TaskKey, Name: action.Name, Description: action.Description, Enabled: action.Enabled, Pinned: action.Pinned, Cron: action.Cron, Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, Content: action.Content}
 		if task.Platform == "" {
 			task.Platform = msg.Platform
