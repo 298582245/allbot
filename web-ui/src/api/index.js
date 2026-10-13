@@ -1,6 +1,8 @@
 import request from '@/utils/request'
+import { demoWebChatRequest, isDemoMode } from '@/demo/mockApi'
 
 const webChatRequest = async (path, options = {}) => {
+  if (isDemoMode) return demoWebChatRequest(path, options)
   const response = await fetch(`/api/open/web-chat${path}`, {
     credentials: 'include',
     headers: options.body instanceof FormData ? options.headers : { 'Content-Type': 'application/json', ...(options.headers || {}) },

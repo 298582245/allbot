@@ -97,3 +97,33 @@ func TestUpsertPluginScheduledTaskDoesNotOverwriteExistingTask(t *testing.T) {
 		t.Fatalf("existing task was overwritten: %#v", second)
 	}
 }
+
+func TestDeletePluginScheduledTasksExceptKeepsDeclaredAndUserTasks(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	for _, item := range []*ScheduledTask{
+		{PluginID: "demo", TaskKey: "keep", Name: "保留", Enabled: true, Cron: "0 8 * * *", Platform: "qq", UserID: "admin", Content: "保留", Source: "plugin"},
+		{PluginID: "demo", TaskKey: "remove", Name: "删除", Enabled: true, Cron: "0 9 * * *", Platform: "qq", UserID: "admin", Content: "删除", Source: "plugin"},
+		{PluginID: "demo", TaskKey: "user-task", Name: "用户任务", Enabled: true, Cron: "0 10 * * *", Platform: "qq", UserID: "admin", Content: "用户", Source: "user"},
+	} {
+		if err := db.SaveScheduledTask(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed, err := db.DeletePluginScheduledTasksExcept("demo", []string{"keep"})
+	if err != nil || removed != 1 {
+		t.Fatalf("removed=%d error=%v", removed, err)
+	}
+	items, err := db.ListScheduledTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items=%#v", items)
+	}
+}

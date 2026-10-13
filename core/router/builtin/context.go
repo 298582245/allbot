@@ -44,6 +44,7 @@ type Context struct {
 	ListenUntil       ListenUntilFunc
 	AdminCheck        func(platform, userID string) bool
 	Reply             func(text string) error
+	ReplyUser         func(text string) error
 	ReplyButtons      func(text string, buttons [][]types.ButtonOption) error
 	SendImage         func(imageURL string) error
 	SendRich          func(message types.RichMessage) error
@@ -59,6 +60,16 @@ func (c *Context) SendText(text string) error {
 		return nil
 	}
 	return c.Reply(text)
+}
+
+func (c *Context) SendUserText(text string) error {
+	if c == nil {
+		return nil
+	}
+	if c.ReplyUser != nil {
+		return c.ReplyUser(text)
+	}
+	return c.SendText(text)
 }
 
 func (c *Context) IsAdmin() bool {

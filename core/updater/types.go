@@ -6,6 +6,51 @@ type ReleaseClient interface {
 	LatestRelease(ctx context.Context) (*ReleaseInfo, error)
 }
 
+type UpgradeNotification struct {
+	MessageKey  string `json:"messageKey,omitempty"`
+	Platform    string `json:"platform,omitempty"`
+	AdapterID   string `json:"adapterId,omitempty"`
+	UserID      string `json:"userId,omitempty"`
+	GroupID     string `json:"groupId,omitempty"`
+	Target      string `json:"target,omitempty"`
+	StartedAtNS int64  `json:"startedAtNs,omitempty"`
+}
+
+type UpgradeProgressFunc func(UpgradeState)
+
+type upgradeNotificationContextKey struct{}
+type upgradeProgressContextKey struct{}
+
+func WithUpgradeNotification(ctx context.Context, notification UpgradeNotification) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, upgradeNotificationContextKey{}, notification)
+}
+
+func UpgradeNotificationFromContext(ctx context.Context) (UpgradeNotification, bool) {
+	if ctx == nil {
+		return UpgradeNotification{}, false
+	}
+	notification, ok := ctx.Value(upgradeNotificationContextKey{}).(UpgradeNotification)
+	return notification, ok
+}
+
+func WithUpgradeProgress(ctx context.Context, progress UpgradeProgressFunc) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, upgradeProgressContextKey{}, progress)
+}
+
+func UpgradeProgressFromContext(ctx context.Context) (UpgradeProgressFunc, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	progress, ok := ctx.Value(upgradeProgressContextKey{}).(UpgradeProgressFunc)
+	return progress, ok && progress != nil
+}
+
 type ReleaseInfo struct {
 	Version string         `json:"version"`
 	Name    string         `json:"name"`

@@ -24,12 +24,13 @@ class FakeContext:
         self.buttons = []
         self.run_ql_scripts = []
         self.scheduled_tasks = []
+        self.synced_schedules = []
         self.union_id = "union-1"
         self.platform = "test"
         self.user_id = "user-1"
 
-    def meta(self, key):
-        return "true" if key == "fake" and self.fake else ""
+    def meta(self, key, default=""):
+        return "true" if key == "fake" and self.fake else default
 
     def config(self, _key, default=None):
         return default
@@ -57,6 +58,10 @@ class FakeContext:
     async def set_scheduled_task(self, **payload):
         self.scheduled_tasks.append(payload)
         return payload
+
+    async def sync_scheduled_tasks(self, task_keys=None):
+        self.synced_schedules = list(task_keys or [])
+        return self.synced_schedules
 
     def _request(self, action, _expected_action="account_response"):
         self.requests.append(action)
@@ -102,6 +107,7 @@ class AccountQLPluginScheduleTest(unittest.TestCase):
 
         self.assertEqual(len(ctx.scheduled_tasks), 4)
         self.assertEqual({item["max_count"] for item in ctx.scheduled_tasks}, {4})
+        self.assertEqual(ctx.synced_schedules, ["task-1", "task-2", "task-3", "task-4"])
 
     def test_expiration_day_zero_does_not_repeat_after_expiration(self):
         account = {

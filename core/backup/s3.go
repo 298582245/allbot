@@ -6,13 +6,16 @@ import (
 	"net/url"
 	"os"
 	pathpkg "path"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/allbot/allbot/core/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 type S3Uploader struct{}
@@ -59,28 +62,10 @@ func (u *S3Uploader) Upload(ctx context.Context, file BackupFile, settings confi
 	}
 	defer object.Close()
 
-	region := strings.TrimSpace(settings.Region)
-	if region == "" {
-		region = "us-east-1"
-	}
-	awsSettings, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	client, err := newS3Client(ctx, settings)
 	if err != nil {
-		return fmt.Errorf("加载 S3 客户端配置失败: %w", err)
+		return err
 	}
-	awsSettings.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
-	if settings.AccessKey != "" || settings.SecretKey != "" {
-		awsSettings.Credentials = credentials.NewStaticCredentialsProvider(settings.AccessKey, settings.SecretKey, settings.SessionToken)
-	}
-
-	client := s3.NewFromConfig(awsSettings, func(options *s3.Options) {
-		if endpoint := strings.TrimSpace(settings.Endpoint); endpoint != "" {
-			options.BaseEndpoint = aws.String(endpoint)
-		}
-		if normalizeAddressingStyle(settings.AddressingStyle) == "path" {
-			options.UsePathStyle = true
-		}
-		options.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
-	})
 
 	input := &s3.PutObjectInput{
 		Bucket:      aws.String(settings.Bucket),
@@ -95,6 +80,98 @@ func (u *S3Uploader) Upload(ctx context.Context, file BackupFile, settings confi
 		return fmt.Errorf("上传 S3 备份失败: %w", err)
 	}
 	return nil
+}
+
+func (u *S3Uploader) Cleanup(ctx context.Context, settings config.OSSBackupSettings) error {
+	if err := ValidateS3BackupSettings(settings); err != nil {
+		return err
+	}
+	if !settings.Enabled || settings.Retention <= 0 {
+		return nil
+	}
+
+	client, err := newS3Client(ctx, settings)
+	if err != nil {
+		return err
+	}
+	prefix := s3ObjectKey(settings.Prefix, backupFilePrefix)
+	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(settings.Bucket),
+		Prefix: aws.String(prefix),
+	})
+	objects := make([]remoteBackupObject, 0)
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("列出 S3 备份失败: %w", err)
+		}
+		for _, object := range page.Contents {
+			key := aws.ToString(object.Key)
+			if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(strings.ToLower(key), ".zip") {
+				continue
+			}
+			modifiedAt := time.Time{}
+			if object.LastModified != nil {
+				modifiedAt = *object.LastModified
+			}
+			objects = append(objects, remoteBackupObject{key: key, modifiedAt: modifiedAt})
+		}
+	}
+	if len(objects) <= settings.Retention {
+		return nil
+	}
+	sort.Slice(objects, func(i, j int) bool {
+		if objects[i].modifiedAt.Equal(objects[j].modifiedAt) {
+			return objects[i].key > objects[j].key
+		}
+		return objects[i].modifiedAt.After(objects[j].modifiedAt)
+	})
+	for start := settings.Retention; start < len(objects); start += 1000 {
+		end := start + 1000
+		if end > len(objects) {
+			end = len(objects)
+		}
+		identifiers := make([]types.ObjectIdentifier, 0, end-start)
+		for _, object := range objects[start:end] {
+			identifiers = append(identifiers, types.ObjectIdentifier{Key: aws.String(object.key)})
+		}
+		if _, err := client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(settings.Bucket),
+			Delete: &types.Delete{Objects: identifiers, Quiet: aws.Bool(true)},
+		}); err != nil {
+			return fmt.Errorf("删除 S3 旧备份失败: %w", err)
+		}
+	}
+	return nil
+}
+
+type remoteBackupObject struct {
+	key        string
+	modifiedAt time.Time
+}
+
+func newS3Client(ctx context.Context, settings config.OSSBackupSettings) (*s3.Client, error) {
+	region := strings.TrimSpace(settings.Region)
+	if region == "" {
+		region = "us-east-1"
+	}
+	awsSettings, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("加载 S3 客户端配置失败: %w", err)
+	}
+	awsSettings.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+	if settings.AccessKey != "" || settings.SecretKey != "" {
+		awsSettings.Credentials = credentials.NewStaticCredentialsProvider(settings.AccessKey, settings.SecretKey, settings.SessionToken)
+	}
+	return s3.NewFromConfig(awsSettings, func(options *s3.Options) {
+		if endpoint := strings.TrimSpace(settings.Endpoint); endpoint != "" {
+			options.BaseEndpoint = aws.String(endpoint)
+		}
+		if normalizeAddressingStyle(settings.AddressingStyle) == "path" {
+			options.UsePathStyle = true
+		}
+		options.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+	}), nil
 }
 
 func normalizeAddressingStyle(style string) string {

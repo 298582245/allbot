@@ -1,9 +1,38 @@
 <template>
   <router-view />
+  <div v-if="isDemoMode" class="demo-banner">AllBot 在线演示 · 使用浏览器模拟数据，刷新后恢复初始状态</div>
 </template>
 
 <script setup>
+import { isDemoMode } from '@/demo/mockApi'
 </script>
+
+<style>
+.demo-banner {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 3000;
+  max-width: calc(100vw - 36px);
+  padding: 9px 13px;
+  border: 1px solid rgba(37, 99, 235, 0.22);
+  border-radius: 8px;
+  background: rgba(239, 246, 255, 0.96);
+  color: #1d4ed8;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+@media (max-width: 600px) {
+  .demo-banner {
+    right: 10px;
+    bottom: 10px;
+    max-width: calc(100vw - 20px);
+  }
+}
+</style>
 
 <style>
 * {

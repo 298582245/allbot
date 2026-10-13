@@ -9,26 +9,28 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
 
 type ApplyUpdateRequest struct {
-	ParentPID       int      `json:"parentPid"`
-	CurrentPath     string   `json:"currentPath"`
-	NewPath         string   `json:"newPath"`
-	BackupPath      string   `json:"backupPath"`
-	UpdateRoot      string   `json:"updateRoot"`
-	ExpectedSHA256  string   `json:"expectedSha256"`
-	AssetName       string   `json:"assetName"`
-	ChecksumPayload string   `json:"checksumPayload"`
-	UpdateSignature string   `json:"updateSignature"`
-	WorkDir         string   `json:"workDir"`
-	Args            []string `json:"args"`
-	FromVersion     string   `json:"fromVersion"`
-	ToVersion       string   `json:"toVersion"`
-	RestartDelay    string   `json:"restartDelay"`
-	RestartedFlag   string   `json:"restartedFlag"`
+	ParentPID       int                 `json:"parentPid"`
+	CurrentPath     string              `json:"currentPath"`
+	NewPath         string              `json:"newPath"`
+	BackupPath      string              `json:"backupPath"`
+	UpdateRoot      string              `json:"updateRoot"`
+	ExpectedSHA256  string              `json:"expectedSha256"`
+	AssetName       string              `json:"assetName"`
+	ChecksumPayload string              `json:"checksumPayload"`
+	UpdateSignature string              `json:"updateSignature"`
+	WorkDir         string              `json:"workDir"`
+	Args            []string            `json:"args"`
+	FromVersion     string              `json:"fromVersion"`
+	ToVersion       string              `json:"toVersion"`
+	RestartDelay    string              `json:"restartDelay"`
+	RestartedFlag   string              `json:"restartedFlag"`
+	Notification    UpgradeNotification `json:"notification,omitempty"`
 }
 
 func SaveApplyUpdateRequest(path string, request ApplyUpdateRequest) error {
@@ -260,6 +262,27 @@ func startUpdatedProcess(request ApplyUpdateRequest) error {
 	}
 	if strings.TrimSpace(request.RestartedFlag) != "" {
 		env = append(env, "ALLBOT_RESTARTED="+request.RestartedFlag)
+	}
+	if notification := request.Notification; notification.MessageKey != "" {
+		env = append(env, "ALLBOT_IGNORE_UPDATE_MESSAGE_KEY="+notification.MessageKey)
+	}
+	if notification := request.Notification; notification.Platform != "" {
+		env = append(env, "ALLBOT_UPDATE_NOTIFY_PLATFORM="+notification.Platform)
+	}
+	if notification := request.Notification; notification.AdapterID != "" {
+		env = append(env, "ALLBOT_UPDATE_NOTIFY_ADAPTER_ID="+notification.AdapterID)
+	}
+	if notification := request.Notification; notification.UserID != "" {
+		env = append(env, "ALLBOT_UPDATE_NOTIFY_USER_ID="+notification.UserID)
+	}
+	if notification := request.Notification; notification.GroupID != "" {
+		env = append(env, "ALLBOT_UPDATE_NOTIFY_GROUP_ID="+notification.GroupID)
+	}
+	if notification := request.Notification; notification.Target != "" {
+		env = append(env, "ALLBOT_UPDATE_NOTIFY_TARGET="+notification.Target)
+	}
+	if notification := request.Notification; notification.StartedAtNS > 0 {
+		env = append(env, "ALLBOT_UPDATE_NOTIFY_STARTED_AT_NS="+strconv.FormatInt(notification.StartedAtNS, 10))
 	}
 	cmd.Env = env
 	cmd.Stdin = os.Stdin

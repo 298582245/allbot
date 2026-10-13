@@ -2,11 +2,14 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '@/router'
 import { useAuthStore } from '@/stores/auth'
+import { demoRequest, isDemoMode } from '@/demo/mockApi'
 
 const request = axios.create({
   baseURL: '/api',
   timeout: 30000
 })
+
+if (isDemoMode) request.defaults.adapter = demoRequest
 
 let isRefreshing = false
 

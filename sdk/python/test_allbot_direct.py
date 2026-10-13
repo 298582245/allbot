@@ -55,6 +55,45 @@ class PluginStdoutRedirectTest(unittest.TestCase):
 
 
 class PaySdkTest(unittest.TestCase):
+    def test_points_consumption_failure_is_catchable_and_has_uncaught_reply_fallback(self):
+        error_text = "积分不足，当前 0，需要 30"
+        cases = [
+            ("uncaught failure", False, False, 1, error_text),
+            ("caught failure", False, True, 0, f"充值失败：{error_text}，余额：0"),
+            ("successful consumption", True, False, 0, "充值成功：70"),
+        ]
+        for name, success, caught, status, reply in cases:
+            with self.subTest(name=name):
+                source = f"""
+                from allbot_direct import run_direct, PointsConsumeError
+                async def handle(ctx):
+                    try:
+                        balance = await ctx.consumePoints(30)
+                        await ctx.reply(f'充值成功：{{balance}}')
+                    except PointsConsumeError as error:
+                        if not {caught!r}:
+                            raise
+                        await ctx.reply(f'充值失败：{{error}}，余额：{{ctx.points}}')
+                run_direct(handle)
+                """
+                payload = [
+                    {"plugin_id": "points-test", "union_id": "u1", "points": 100},
+                    {"action": "auth_response", "request_id": "1", "success": success,
+                     "error": "" if success else error_text, "data": {"points": 70 if success else 0}},
+                ]
+                result = subprocess.run(
+                    [sys.executable, "-c", textwrap.dedent(source)],
+                    cwd=os.path.dirname(__file__),
+                    env={**os.environ, "PYTHONUTF8": "1"},
+                    input="".join(json.dumps(item, ensure_ascii=False) + "\n" for item in payload),
+                    encoding="utf-8", capture_output=True, timeout=5, check=False,
+                )
+                self.assertEqual(result.returncode, status, result.stderr)
+                actions = [json.loads(line) for line in result.stdout.splitlines()]
+                self.assertEqual([action["action"] for action in actions], ["points_consume", "reply", "done"])
+                self.assertEqual(actions[1]["text"], reply)
+                self.assertEqual(actions[2]["success"], status == 0)
+
     def make_context(self, data=None):
         payload = {"plugin_id": "plugin-sdk", "union_id": "union-sdk"}
         if data:

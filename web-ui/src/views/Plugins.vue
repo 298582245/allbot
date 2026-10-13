@@ -422,8 +422,8 @@
     >
       <div class="create-mode-switch">
         <el-radio-group v-model="createMode" size="small">
-          <el-radio-button label="template">从模板创建</el-radio-button>
-          <el-radio-button label="import">导入插件</el-radio-button>
+          <el-radio-button value="template">从模板创建</el-radio-button>
+          <el-radio-button value="import">导入插件</el-radio-button>
         </el-radio-group>
       </div>
       <div v-if="createMode === 'template'" class="create-dialog-body">
@@ -433,7 +433,7 @@
               <el-form :model="createForm" label-width="120px">
                 <el-form-item label="插件模板" required>
                   <el-radio-group v-model="createForm.template">
-                    <el-radio-button v-for="template in pluginTemplates" :key="template.id" :label="template.id">
+                    <el-radio-button v-for="template in pluginTemplates" :key="template.id" :value="template.id">
                       {{ template.name }}
                     </el-radio-button>
                   </el-radio-group>

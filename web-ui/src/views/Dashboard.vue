@@ -12,7 +12,7 @@
             </el-tooltip>
             <div class="stat-title">{{ stat.title }}</div>
             <el-tooltip :disabled="!stat.subtextTooltip" :content="stat.subtextTooltip" placement="top">
-              <div v-if="stat.subtext" class="stat-subtext">{{ stat.subtext }}</div>
+              <div v-show="stat.subtext" class="stat-subtext">{{ stat.subtext }}</div>
             </el-tooltip>
           </div>
         </el-card>
@@ -27,8 +27,8 @@
               <span>消息分布图</span>
               <div class="chart-filters">
                 <el-radio-group v-model="chartDimension" size="small" @change="renderMessageChart">
-                  <el-radio-button label="platform">不同平台</el-radio-button>
-                  <el-radio-button label="adapter">不同机器人</el-radio-button>
+                  <el-radio-button value="platform">不同平台</el-radio-button>
+                  <el-radio-button value="adapter">不同机器人</el-radio-button>
                 </el-radio-group>
                 <el-select v-model="selectedSeriesName" size="small" class="series-select" @change="renderMessageChart">
                   <el-option label="全部显示" value="" />
@@ -40,8 +40,8 @@
                   />
                 </el-select>
                 <el-radio-group v-model="statsMode" size="small" @change="handleStatsModeChange">
-                  <el-radio-button label="date">按日期</el-radio-button>
-                  <el-radio-button label="total">总计</el-radio-button>
+                  <el-radio-button value="date">按日期</el-radio-button>
+                  <el-radio-button value="total">总计</el-radio-button>
                 </el-radio-group>
                 <el-date-picker
                   v-model="statsDate"

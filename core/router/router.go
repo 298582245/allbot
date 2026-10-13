@@ -604,14 +604,14 @@ func (r *Router) supportsAdapter(plugin *types.Plugin, adapterID string) bool {
 	return false
 }
 
-func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
+func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 	if !plugin.Enabled {
 		log.Printf("Plugin %s is disabled, skipping", plugin.Name)
-		return
+		return nil
 	}
 	if r.pluginManager == nil {
 		log.Printf("Plugin manager not set")
-		return
+		return nil
 	}
 
 	r.mu.RLock()
@@ -653,7 +653,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 	})
 	if err != nil {
 		log.Printf("Failed to marshal message: %v", err)
-		return
+		return err
 	}
 
 	adp := r.getAdapterForMessage(msg)
@@ -736,7 +736,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		}
 	}
 
-	pluginPath := filepath.Join("plugins", plugin.ID)
+	pluginPath := r.pluginManager.PluginPath(plugin.ID)
 	r.mu.RLock()
 	dataViewSaver := r.dataViewSaver
 	r.mu.RUnlock()
@@ -823,7 +823,23 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		}
 		return plugincore.PluginUserResult{Success: true, Data: items}
 	}
+	scheduleRegistrationCompleted := false
 	configFunc := func(pluginID string, action plugincore.PluginConfigAction) plugincore.PluginUserResult {
+		if action.Action == "set_user_config" {
+			data, err := r.pluginManager.SavePluginUserConfig(pluginID, action.UserConfigKey, action.UserConfigValue)
+			if err != nil {
+				return plugincore.PluginUserResult{Success: false, Error: err.Error()}
+			}
+			if process := r.pluginManager.GetPlugin(pluginID); process != nil && process.Plugin != nil {
+				r.mu.Lock()
+				r.plugins[pluginID] = process.Plugin
+				r.mu.Unlock()
+			}
+			if action.UserConfigKey == plugincore.PluginScheduleRegisteredConfigKey && action.UserConfigValue == true {
+				scheduleRegistrationCompleted = true
+			}
+			return plugincore.PluginUserResult{Success: true, Data: data}
+		}
 		if err := r.pluginManager.SavePluginAccessControl(pluginID, action.AccessControl); err != nil {
 			return plugincore.PluginUserResult{Success: false, Error: err.Error()}
 		}
@@ -832,6 +848,13 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 	scheduleFunc := func(pluginID string, action plugincore.ScheduledTaskAction) plugincore.PluginUserResult {
 		if database == nil {
 			return plugincore.PluginUserResult{Success: false, Error: "数据库不可用"}
+		}
+		if action.Action == "sync_scheduled_tasks" {
+			removed, err := database.DeletePluginScheduledTasksExcept(pluginID, action.TaskKeys)
+			if err != nil {
+				return plugincore.PluginUserResult{Success: false, Error: err.Error()}
+			}
+			return plugincore.PluginUserResult{Success: true, Data: map[string]interface{}{"removed": removed}}
 		}
 		task := &config.ScheduledTask{TaskKey: action.TaskKey, Name: action.Name, Description: action.Description, Enabled: action.Enabled, Pinned: action.Pinned, Cron: action.Cron, Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, Content: action.Content}
 		if task.Platform == "" {
@@ -985,9 +1008,34 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) {
 		return plugincore.PluginUserResult{Success: true, Error: "", Data: result}
 	}
 
-	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc, paymentFunc, buttonsFunc, replyMarkdownFunc, replyRichFunc, sendRichMessageFunc, sendImageMessageFunc, deleteMessageFunc, muteFunc); err != nil {
+	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc, paymentFunc, buttonsFunc, replyMarkdownFunc, replyRichFunc, sendRichMessageFunc, sendImageMessageFunc, deleteMessageFunc, muteFunc, plugincore.PluginTaskInfo{Platform: msg.Platform, AdapterID: msg.AdapterID, UserID: msg.UserID, GroupID: msg.GroupID, UnionID: unionID, MessageID: msg.ID, Content: msg.Content}); err != nil {
 		log.Printf("Failed to execute plugin %s: %v", plugin.Name, err)
+		return err
 	}
+	if msg.Metadata["allbot_schedule_refresh"] == "true" && !scheduleRegistrationCompleted {
+		return fmt.Errorf("插件 %s 定时任务刷新未完成，未收到 schedule_is_register=true 回写，请查看插件注册错误日志", plugin.ID)
+	}
+	return nil
+}
+
+func (r *Router) RefreshPluginSchedules(pluginID string) error {
+	plugin := r.GetPlugin(pluginID)
+	if plugin == nil {
+		return fmt.Errorf("插件不存在: %s", pluginID)
+	}
+	templateName := strings.TrimSpace(plugin.Template)
+	if templateName == "" && plugin.TemplateSource != nil {
+		if value, ok := plugin.TemplateSource["template"].(string); ok {
+			templateName = strings.TrimSpace(value)
+		}
+	}
+	_, hasScheduleState := plugin.UserConfig[plugincore.PluginScheduleRegisteredConfigKey]
+	if templateName != "nodejs_account_ql" && templateName != "python_account_ql" && !hasScheduleState {
+		return nil
+	}
+	log.Printf("[SYSTEM] Refreshing account plugin schedules: plugin=%s template=%s", pluginID, templateName)
+	message := &types.Message{Metadata: map[string]string{"allbot_schedule_refresh": "true"}}
+	return r.callPlugin(plugin, message)
 }
 
 func resolveReplyTarget(adp adapter.Adapter, msg *types.Message) string {
@@ -1293,6 +1341,61 @@ func formatScriptTaskTimeoutNotification(item *config.ScriptRunLog, notification
 		valueOrDash(item.Runtime),
 		valueOrDash(item.RuntimeProfile),
 		valueOrDash(item.UnionID),
+		notification.TimeoutSeconds,
+		formatLocalTime(item.StartedAt),
+		formatLocalTime(notification.FinishedAt),
+		valueOrDash(notification.Error),
+	)
+}
+
+func (r *Router) NotifyPluginTaskTimeout(notification plugincore.PluginTaskTimeoutNotification) {
+	r.mu.RLock()
+	database := r.database
+	r.mu.RUnlock()
+	if database == nil {
+		log.Printf("[SYSTEM] 插件任务超时通知跳过：数据库不可用 log_id=%d", notification.LogID)
+		return
+	}
+	settings, err := database.GetPluginTaskSettings()
+	if err != nil {
+		log.Printf("[SYSTEM] 读取插件任务通知设置失败：%v", err)
+		return
+	}
+	if !settings.TimeoutNotifyAdminEnabled {
+		return
+	}
+	item, err := database.GetPluginTaskLog(notification.LogID)
+	if err != nil || item == nil {
+		log.Printf("[SYSTEM] 读取插件任务超时日志失败：log_id=%d err=%v", notification.LogID, err)
+		return
+	}
+	admins, err := r.startedPlatformAdmins("")
+	if err != nil || len(admins) == 0 {
+		log.Printf("[SYSTEM] 插件任务超时通知无可触达管理员：log_id=%d err=%v", notification.LogID, err)
+		return
+	}
+	text := formatPluginTaskTimeoutNotification(item, notification)
+	for _, admin := range admins {
+		action := plugincore.SendMessageAction{Platform: admin["platform"], AdapterID: admin["adapter_id"], UserID: admin["user_id"], Text: text}
+		if unionID := strings.TrimSpace(admin["union_id"]); unionID != "" {
+			action.UnionID = unionID
+		}
+		if err := r.sendPluginMessage(item.PluginID, action); err != nil {
+			log.Printf("[SYSTEM] 插件任务超时通知发送失败：log_id=%d platform=%s user=%s err=%v", notification.LogID, action.Platform, action.UserID, err)
+			continue
+		}
+		return
+	}
+	log.Printf("[SYSTEM] 插件任务超时通知全部发送失败：log_id=%d", notification.LogID)
+}
+
+func formatPluginTaskTimeoutNotification(item *config.PluginTaskLog, notification plugincore.PluginTaskTimeoutNotification) string {
+	return fmt.Sprintf("插件任务运行超时，已自动停止\n\n任务ID：%d\n插件：%s\n平台：%s\n用户：%s\n消息：%s\n超时时间：%d 秒\n开始时间：%s\n结束时间：%s\n错误：%s",
+		item.ID,
+		valueOrDash(item.PluginID),
+		valueOrDash(item.Platform),
+		valueOrDash(item.UserID),
+		valueOrDash(item.Content),
 		notification.TimeoutSeconds,
 		formatLocalTime(item.StartedAt),
 		formatLocalTime(notification.FinishedAt),
@@ -1703,6 +1806,12 @@ func executePluginDBAction(database *config.Database, pluginID string, action pl
 	if database == nil {
 		return plugincore.PluginDBResult{Success: false, Error: "数据库不可用"}
 	}
+	if isPluginSystemSettingsAction(action) {
+		if action.Action == "db_query" {
+			return plugincore.PluginDBResult{Success: true, Data: "123456"}
+		}
+		return plugincore.PluginDBResult{Success: false, Error: "插件禁止访问 system_settings 表"}
+	}
 
 	var data interface{}
 	var err error
@@ -1730,6 +1839,15 @@ func executePluginDBAction(database *config.Database, pluginID string, action pl
 		return plugincore.PluginDBResult{Success: false, Error: err.Error()}
 	}
 	return plugincore.PluginDBResult{Success: true, Data: data}
+}
+
+func isPluginSystemSettingsAction(action plugincore.PluginDBAction) bool {
+	for _, table := range []string{action.Table, action.Query.Table} {
+		if strings.EqualFold(strings.TrimSpace(table), "system_settings") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Router) getAdapterForMessage(msg *types.Message) adapter.Adapter {

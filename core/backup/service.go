@@ -34,6 +34,10 @@ type OSSUploader interface {
 	Upload(ctx context.Context, file BackupFile, settings config.OSSBackupSettings) error
 }
 
+type OSSRetentionCleaner interface {
+	Cleanup(ctx context.Context, settings config.OSSBackupSettings) error
+}
+
 type RuntimeEnvironmentManager interface {
 	ExportRuntimeEnvironment() (deps.RuntimeEnvironmentBackup, error)
 	ImportRuntimeEnvironment(snapshot deps.RuntimeEnvironmentBackup) ([]string, error)
@@ -317,6 +321,11 @@ func (s *Service) createWithSettings(ctx context.Context, trigger string, settin
 		}
 		if err := s.uploader.Upload(ctx, file, settings.OSS); err != nil {
 			return BackupFile{}, err
+		}
+		if cleaner, ok := s.uploader.(OSSRetentionCleaner); ok {
+			if err := cleaner.Cleanup(ctx, settings.OSS); err != nil {
+				log.Printf("[SYSTEM] 清理 S3 旧备份失败: %v", err)
+			}
 		}
 	}
 	if cleanup {

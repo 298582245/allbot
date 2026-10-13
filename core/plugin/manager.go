@@ -21,21 +21,27 @@ import (
 	"github.com/allbot/allbot/core/types"
 )
 
-const pluginWebChatQuickActionFill = "fill"
+const (
+	pluginWebChatQuickActionFill = "fill"
+	PluginDataFileName           = "plugin.data"
+)
 
 type Manager struct {
-	plugins               map[string]*PluginProcess
-	runningScripts        map[int64]context.CancelFunc
-	scriptDone            map[int64]chan ScriptRunResult
-	queuedScripts         map[int64]*queuedScriptRun
-	queueWake             chan struct{}
-	schedulerOnce         sync.Once
-	mu                    sync.RWMutex
-	pluginDir             string
-	depsManager           *deps.Manager
-	database              *config.Database
-	scriptLimit           int
-	scriptTimeoutNotifier ScriptTimeoutNotifier
+	plugins                     map[string]*PluginProcess
+	runningScripts              map[int64]context.CancelFunc
+	runningPluginTasks          map[int64]context.CancelFunc
+	scriptDone                  map[int64]chan ScriptRunResult
+	queuedScripts               map[int64]*queuedScriptRun
+	queueWake                   chan struct{}
+	schedulerOnce               sync.Once
+	mu                          sync.RWMutex
+	pluginDir                   string
+	depsManager                 *deps.Manager
+	database                    *config.Database
+	scriptLimit                 int
+	pluginTaskRunTimeoutSeconds int
+	scriptTimeoutNotifier       ScriptTimeoutNotifier
+	pluginTaskTimeoutNotifier   PluginTaskTimeoutNotifier
 }
 
 type PluginProcess struct {
@@ -137,11 +143,16 @@ func writePluginUserResult(writer io.Writer, action, requestID string, result Pl
 }
 
 type PluginConfigAction struct {
-	AccessControl types.AccessControlConfig
+	Action          string
+	AccessControl   types.AccessControlConfig
+	UserConfigKey   string
+	UserConfigValue interface{}
 }
 
 type ScheduledTaskAction struct {
+	Action      string
 	TaskKey     string
+	TaskKeys    []string
 	Name        string
 	Description string
 	Enabled     bool
@@ -194,6 +205,16 @@ type ScriptRunResult struct {
 	FinishedAt time.Time `json:"finished_at"`
 }
 
+type PluginTaskInfo struct {
+	Platform  string
+	AdapterID string
+	UserID    string
+	GroupID   string
+	UnionID   string
+	MessageID string
+	Content   string
+}
+
 type ScriptTimeoutNotification struct {
 	LogID          int64
 	TimeoutSeconds int
@@ -203,6 +224,18 @@ type ScriptTimeoutNotification struct {
 }
 
 type ScriptTimeoutNotifier func(ScriptTimeoutNotification)
+
+type PluginTaskTimeoutNotification struct {
+	LogID          int64
+	PluginID       string
+	Info           PluginTaskInfo
+	TimeoutSeconds int
+	Output         string
+	Error          string
+	FinishedAt     time.Time
+}
+
+type PluginTaskTimeoutNotifier func(PluginTaskTimeoutNotification)
 
 type queuedScriptRun struct {
 	logID             int64
@@ -255,13 +288,19 @@ type PaymentWaitAction struct {
 }
 
 func NewManager(pluginDir string, depsManager *deps.Manager) *Manager {
-	return &Manager{plugins: make(map[string]*PluginProcess), runningScripts: make(map[int64]context.CancelFunc), scriptDone: make(map[int64]chan ScriptRunResult), pluginDir: pluginDir, depsManager: depsManager, scriptLimit: 1}
+	return &Manager{plugins: make(map[string]*PluginProcess), runningScripts: make(map[int64]context.CancelFunc), runningPluginTasks: make(map[int64]context.CancelFunc), scriptDone: make(map[int64]chan ScriptRunResult), pluginDir: pluginDir, depsManager: depsManager, scriptLimit: 1}
 }
 
 func (m *Manager) SetScriptTimeoutNotifier(notifier ScriptTimeoutNotifier) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.scriptTimeoutNotifier = notifier
+}
+
+func (m *Manager) SetPluginTaskTimeoutNotifier(notifier PluginTaskTimeoutNotifier) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pluginTaskTimeoutNotifier = notifier
 }
 
 func (m *Manager) PluginDir() string {
@@ -279,9 +318,15 @@ func IsInternalPluginDirectory(name string) bool {
 }
 
 func (m *Manager) SetDatabase(database *config.Database) {
+	pluginTaskRunTimeoutSeconds := 0
+	if database != nil {
+		if settings, err := database.GetPluginTaskSettings(); err == nil {
+			pluginTaskRunTimeoutSeconds = settings.RunTimeoutSeconds
+		}
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.database = database
+	m.pluginTaskRunTimeoutSeconds = pluginTaskRunTimeoutSeconds
 	if database != nil {
 		if limit, err := database.GetSetting("script_tasks.concurrent_limit"); err == nil {
 			if parsed, parseErr := strconv.Atoi(strings.TrimSpace(limit)); parseErr == nil && parsed > 0 {
@@ -289,6 +334,21 @@ func (m *Manager) SetDatabase(database *config.Database) {
 			}
 		}
 	}
+	m.mu.Unlock()
+	if database != nil {
+		if err := database.MarkRunningPluginTasksStopped(); err != nil {
+			log.Printf("[SYSTEM] 清理上次未结束的插件任务失败: %v", err)
+		}
+	}
+}
+
+func (m *Manager) SetPluginTaskRunTimeoutSeconds(seconds int) {
+	if seconds < 0 {
+		seconds = 0
+	}
+	m.mu.Lock()
+	m.pluginTaskRunTimeoutSeconds = seconds
+	m.mu.Unlock()
 }
 
 func (m *Manager) SetScriptLimit(limit int) {
@@ -312,6 +372,9 @@ func (m *Manager) PluginPath(pluginID string) string {
 func (m *Manager) LoadPlugin(pluginPath string) (*types.Plugin, error) {
 	plugin, err := m.loadPluginConfig(pluginPath)
 	if err != nil {
+		return nil, err
+	}
+	if err := migrateLegacyPluginData(pluginPath); err != nil {
 		return nil, err
 	}
 
@@ -428,8 +491,14 @@ func (m *Manager) ReloadPlugin(pluginID string) error {
 	if err != nil {
 		return err
 	}
+	if err := migrateLegacyPluginData(pluginPath); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	if process, ok := m.plugins[pluginID]; ok {
+		if process.Plugin != nil {
+			plugin.Order = process.Plugin.Order
+		}
 		process.Plugin = plugin
 		process.Status = "ready"
 	} else {
@@ -460,6 +529,40 @@ func (m *Manager) SavePluginAccessControl(pluginID string, accessControl types.A
 	return m.ReloadPlugin(pluginID)
 }
 
+func (m *Manager) SavePluginUserConfig(pluginID, key string, value interface{}) (map[string]interface{}, error) {
+	pluginID = strings.TrimSpace(pluginID)
+	key = strings.TrimSpace(key)
+	if pluginID == "" || key != PluginScheduleRegisteredConfigKey {
+		return nil, fmt.Errorf("不支持的插件配置: %s", key)
+	}
+	pluginPath := filepath.Join(m.pluginDir, pluginID)
+	log.Printf("[SYSTEM] Saving plugin user config: plugin=%s key=%s path=%s", pluginID, key, filepath.Join(pluginPath, PluginDataFileName))
+	pluginConfig, _, err := readPluginConfigWithData(pluginPath)
+	if err != nil {
+		return nil, err
+	}
+	if pluginConfig.UserConfig == nil {
+		pluginConfig.UserConfig = make(map[string]interface{})
+	}
+	pluginConfig.UserConfig[key] = value
+	if err := SavePluginData(pluginPath, pluginConfig.UserConfigSchema, pluginConfig.UserConfig); err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	if process, ok := m.plugins[pluginID]; ok && process.Plugin != nil {
+		updated := *process.Plugin
+		updated.UserConfig = make(map[string]interface{}, len(process.Plugin.UserConfig)+1)
+		for configKey, configValue := range process.Plugin.UserConfig {
+			updated.UserConfig[configKey] = configValue
+		}
+		updated.UserConfig[key] = value
+		process.Plugin = &updated
+	}
+	m.mu.Unlock()
+	return map[string]interface{}{"key": key, "value": value}, nil
+}
+
 func (m *Manager) StopPlugin(pluginID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -478,8 +581,9 @@ func (m *Manager) StartPluginByID(pluginID string) error {
 }
 
 const (
-	pluginOutputMaxLineBytes = 4 * 1024 * 1024
-	pluginLogMergeWindow     = 30 * time.Millisecond
+	pluginOutputMaxLineBytes          = 4 * 1024 * 1024
+	pluginLogMergeWindow              = 30 * time.Millisecond
+	PluginScheduleRegisteredConfigKey = "schedule_is_register"
 )
 
 func newPluginOutputScanner(reader io.Reader) *bufio.Scanner {
@@ -516,7 +620,7 @@ func (b *pluginProcessLogBatch) Flush() {
 
 func isPluginProtocolAction(action string) bool {
 	switch action {
-	case "reply", "send_markdown", "send_rich", "send_buttons", "send_image", "send_file", "listen", "delete_message", "mute", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "send_rich_message", "send_image_message", "get_union_id", "list_platform_admins", "set_access_control", "set_scheduled_task", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "web_response", "done":
+	case "reply", "send_markdown", "send_rich", "send_buttons", "send_image", "send_file", "listen", "delete_message", "mute", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "send_rich_message", "send_image_message", "get_union_id", "list_platform_admins", "set_access_control", "set_user_config", "set_scheduled_task", "sync_scheduled_tasks", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "web_response", "done":
 		return true
 	default:
 		return false
@@ -614,7 +718,7 @@ func waitPluginProcess(cmd *exec.Cmd, stderrDone <-chan struct{}) error {
 	return err
 }
 
-func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte, replyFunc func(string) error, imageFunc func(string) error, fileFunc func(string) error, listenFunc func(timeout int, retractTimeout int) string, dataViewFunc func(config.DataViewConfig) error, dbFunc func(pluginID string, action PluginDBAction) PluginDBResult, fakeMessageFunc func(pluginID string, action FakeMessageAction) error, sendMessageFunc func(pluginID string, action SendMessageAction) PluginUserResult, userFunc func() PluginUserResult, adminFunc func(platform string) PluginUserResult, configFunc func(pluginID string, action PluginConfigAction) PluginUserResult, scheduleFunc func(pluginID string, action ScheduledTaskAction) PluginUserResult, accountFunc func(pluginID string, action PluginAccountAction) PluginUserResult, authFunc func(pluginID string, action PluginAuthorizationAction) PluginUserResult, scriptFunc func(pluginID string, action ScriptRunAction) PluginUserResult, paymentFunc func(pluginID string, action PaymentWaitAction) PluginUserResult, callbacks ...interface{}) error {
+func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, messageJSON []byte, replyFunc func(string) error, imageFunc func(string) error, fileFunc func(string) error, listenFunc func(timeout int, retractTimeout int) string, dataViewFunc func(config.DataViewConfig) error, dbFunc func(pluginID string, action PluginDBAction) PluginDBResult, fakeMessageFunc func(pluginID string, action FakeMessageAction) error, sendMessageFunc func(pluginID string, action SendMessageAction) PluginUserResult, userFunc func() PluginUserResult, adminFunc func(platform string) PluginUserResult, configFunc func(pluginID string, action PluginConfigAction) PluginUserResult, scheduleFunc func(pluginID string, action ScheduledTaskAction) PluginUserResult, accountFunc func(pluginID string, action PluginAccountAction) PluginUserResult, authFunc func(pluginID string, action PluginAuthorizationAction) PluginUserResult, scriptFunc func(pluginID string, action ScriptRunAction) PluginUserResult, paymentFunc func(pluginID string, action PaymentWaitAction) PluginUserResult, callbacks ...interface{}) (returnErr error) {
 	var replyMarkdownFunc func(string) error
 	var replyRichFunc func(types.RichMessage) error
 	var sendRichMessageFunc func(string, RichMessageAction) PluginUserResult
@@ -622,8 +726,11 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 	var sendButtonsFunc func(string, [][]types.ButtonOption) error
 	var deleteMessageFunc func() PluginUserResult
 	var muteFunc func(MuteAction) PluginUserResult
+	taskInfo := PluginTaskInfo{}
 	for _, callback := range callbacks {
 		switch fn := callback.(type) {
+		case PluginTaskInfo:
+			taskInfo = fn
 		case func(string) error:
 			if replyMarkdownFunc == nil {
 				replyMarkdownFunc = fn
@@ -654,7 +761,42 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			}
 		}
 	}
-	cmd, err := m.newDirectCommand(plugin, pluginPath)
+	taskIDCh, taskCtx, taskCancel, runTimeoutSeconds := m.startPluginTask(plugin.ID, taskInfo)
+	taskOutput := &pluginTaskOutputBuffer{}
+	defer func() {
+		status := config.PluginTaskStatusSuccess
+		errorText := ""
+		wasTimedOut := taskCtx.Err() == context.DeadlineExceeded
+		wasStopped := taskCtx.Err() != nil && !wasTimedOut
+		if wasStopped || wasTimedOut {
+			returnErr = nil
+		}
+		if returnErr != nil {
+			status = config.PluginTaskStatusFailed
+			errorText = returnErr.Error()
+		}
+		if wasStopped {
+			status = config.PluginTaskStatusStopped
+			if errorText == "" {
+				errorText = "插件任务已手动停止"
+			}
+		}
+		if wasTimedOut {
+			status = config.PluginTaskStatusFailed
+			errorText = fmt.Sprintf("插件任务运行超过 %d 秒，已自动停止", runTimeoutSeconds)
+		}
+		finishedAt := time.Now()
+		output := taskOutput.String()
+		taskID := <-taskIDCh
+		if taskID > 0 {
+			m.finishPluginTask(taskID, status, output, errorText, finishedAt)
+			if wasTimedOut {
+				m.notifyPluginTaskTimeout(PluginTaskTimeoutNotification{LogID: taskID, PluginID: plugin.ID, Info: taskInfo, TimeoutSeconds: runTimeoutSeconds, Output: output, Error: errorText, FinishedAt: finishedAt})
+			}
+		}
+		taskCancel()
+	}()
+	cmd, err := m.newDirectCommandContext(taskCtx, plugin, pluginPath)
 	if err != nil {
 		return err
 	}
@@ -723,7 +865,10 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			RowID          int64                      `json:"row_id"`
 			Query          config.PluginDBQuery       `json:"query"`
 			AccessControl  types.AccessControlConfig  `json:"access_control"`
+			ConfigKey      string                     `json:"key"`
+			ConfigValue    interface{}                `json:"value"`
 			TaskKey        string                     `json:"task_key"`
+			TaskKeys       []string                   `json:"task_keys"`
 			Name           string                     `json:"name"`
 			Subject        string                     `json:"subject"`
 			Enabled        bool                       `json:"enabled"`
@@ -764,6 +909,7 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			continue
 		}
 		if action.Action == "" || !isPluginProtocolAction(action.Action) {
+			taskOutput.Add(line)
 			stdoutBatch.Add(line)
 			continue
 		}
@@ -914,15 +1060,23 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 		case "set_access_control":
 			result := PluginUserResult{Success: false, Error: "插件配置执行器不可用"}
 			if configFunc != nil {
-				result = configFunc(plugin.ID, PluginConfigAction{AccessControl: action.AccessControl})
+				result = configFunc(plugin.ID, PluginConfigAction{Action: action.Action, AccessControl: action.AccessControl})
 			}
 			response, _ := json.Marshal(map[string]interface{}{"action": "access_control_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
 			response = append(response, '\n')
 			_, _ = stdin.Write(response)
-		case "set_scheduled_task":
+		case "set_user_config":
+			result := PluginUserResult{Success: false, Error: "插件配置执行器不可用"}
+			if configFunc != nil {
+				result = configFunc(plugin.ID, PluginConfigAction{Action: action.Action, UserConfigKey: action.ConfigKey, UserConfigValue: action.ConfigValue})
+			}
+			response, _ := json.Marshal(map[string]interface{}{"action": "user_config_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
+			response = append(response, '\n')
+			_, _ = stdin.Write(response)
+		case "set_scheduled_task", "sync_scheduled_tasks":
 			result := PluginUserResult{Success: false, Error: "定时任务执行器不可用"}
 			if scheduleFunc != nil {
-				result = scheduleFunc(plugin.ID, ScheduledTaskAction{TaskKey: action.TaskKey, Name: action.Name, Description: action.Description, Enabled: action.Enabled, Pinned: action.Pinned, Cron: action.Cron, Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, Content: action.Content, MaxCount: action.MaxCount})
+				result = scheduleFunc(plugin.ID, ScheduledTaskAction{Action: action.Action, TaskKey: action.TaskKey, TaskKeys: action.TaskKeys, Name: action.Name, Description: action.Description, Enabled: action.Enabled, Pinned: action.Pinned, Cron: action.Cron, Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, Content: action.Content, MaxCount: action.MaxCount})
 			}
 			response, _ := json.Marshal(map[string]interface{}{"action": "scheduled_task_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
 			response = append(response, '\n')
@@ -1005,6 +1159,107 @@ func parseInt64Raw(raw json.RawMessage) (int64, error) {
 		return parsed, nil
 	}
 	return 0, fmt.Errorf("积分数量必须是整数")
+}
+
+func (m *Manager) startPluginTask(pluginID string, info PluginTaskInfo) (<-chan int64, context.Context, context.CancelFunc, int) {
+	m.mu.RLock()
+	database := m.database
+	runTimeoutSeconds := m.pluginTaskRunTimeoutSeconds
+	m.mu.RUnlock()
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if runTimeoutSeconds > 0 {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(runTimeoutSeconds)*time.Second)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+	}
+	idCh := make(chan int64, 1)
+	if database == nil {
+		idCh <- 0
+		return idCh, ctx, cancel, runTimeoutSeconds
+	}
+	startedAt := time.Now()
+	item := config.PluginTaskLog{
+		PluginID: pluginID, Platform: info.Platform, AdapterID: info.AdapterID, UserID: info.UserID,
+		GroupID: info.GroupID, UnionID: info.UnionID, MessageID: info.MessageID, Content: info.Content,
+		Status: config.PluginTaskStatusRunning, StartedAt: startedAt, FinishedAt: startedAt,
+	}
+	go func() {
+		defer close(idCh)
+		id := int64(0)
+		if latest, err := database.FindLatestPluginTaskLog(item); err != nil {
+			log.Printf("[SYSTEM] 查找可复用插件任务失败，继续新增记录 %s: %v", pluginID, err)
+		} else if latest != nil && (latest.Status == config.PluginTaskStatusSuccess || latest.Status == config.PluginTaskStatusFailed) {
+			if reused, err := database.ReusePluginTaskLog(latest.ID, item); err == nil && reused {
+				id = latest.ID
+			} else if err != nil {
+				log.Printf("[SYSTEM] 复用插件任务记录 %d 失败，继续新增记录: %v", latest.ID, err)
+			}
+		}
+		if id == 0 {
+			var err error
+			id, err = database.SavePluginTaskLog(item)
+			if err != nil {
+				log.Printf("[SYSTEM] 记录插件任务失败，继续执行插件 %s: %v", pluginID, err)
+				idCh <- 0
+				return
+			}
+		}
+		m.mu.Lock()
+		if m.runningPluginTasks == nil {
+			m.runningPluginTasks = make(map[int64]context.CancelFunc)
+		}
+		m.runningPluginTasks[id] = cancel
+		m.mu.Unlock()
+		idCh <- id
+	}()
+	return idCh, ctx, cancel, runTimeoutSeconds
+}
+
+func (m *Manager) finishPluginTask(id int64, status, output, errorText string, finishedAt time.Time) {
+	if id == 0 {
+		return
+	}
+	m.mu.RLock()
+	database := m.database
+	m.mu.RUnlock()
+	if database != nil {
+		if err := database.UpdatePluginTaskLog(id, status, output, errorText, finishedAt); err != nil {
+			log.Printf("[SYSTEM] 更新插件任务 %d 失败: %v", id, err)
+		}
+	}
+	m.mu.Lock()
+	delete(m.runningPluginTasks, id)
+	m.mu.Unlock()
+}
+
+func (m *Manager) notifyPluginTaskTimeout(notification PluginTaskTimeoutNotification) {
+	m.mu.RLock()
+	notifier := m.pluginTaskTimeoutNotifier
+	m.mu.RUnlock()
+	if notifier != nil {
+		go notifier(notification)
+	}
+}
+
+func (m *Manager) StopPluginTask(id int64) bool {
+	if id <= 0 {
+		return false
+	}
+	m.mu.Lock()
+	cancel := m.runningPluginTasks[id]
+	m.mu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	m.mu.RLock()
+	database := m.database
+	m.mu.RUnlock()
+	if database != nil {
+		_ = database.UpdatePluginTaskLog(id, config.PluginTaskStatusStopping, "", "正在停止插件任务", time.Time{})
+	}
+	cancel()
+	return true
 }
 
 func paymentAmountRaw(actionAmount, amountRMB json.RawMessage) json.RawMessage {
@@ -1833,6 +2088,30 @@ type scriptOutputBuffer struct {
 	data []byte
 }
 
+type pluginTaskOutputBuffer struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (b *pluginTaskOutputBuffer) Add(line string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.data) >= 1024*1024 {
+		return
+	}
+	b.data = append(b.data, line...)
+	b.data = append(b.data, '\n')
+	if len(b.data) > 1024*1024 {
+		b.data = b.data[:1024*1024]
+	}
+}
+
+func (b *pluginTaskOutputBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data)
+}
+
 func (b *scriptOutputBuffer) Write(data []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -2027,13 +2306,8 @@ func pluginEntryPath(root, runtimeName, entry string) (string, error) {
 
 // ValidatePluginConfig 解析并校验指定目录中的插件配置，不安装依赖或修改 Manager 状态。
 func (m *Manager) ValidatePluginConfig(pluginPath, pluginID string) (*types.Plugin, error) {
-	configPath := filepath.Join(pluginPath, "plugin.json")
-	data, err := os.ReadFile(configPath)
+	config, _, err := readPluginConfigWithData(pluginPath)
 	if err != nil {
-		return nil, err
-	}
-	var config types.PluginConfig
-	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, err
 	}
 	pluginID = strings.TrimSpace(pluginID)
@@ -2045,7 +2319,8 @@ func (m *Manager) ValidatePluginConfig(pluginPath, pluginID string) (*types.Plug
 	if err != nil {
 		return nil, fmt.Errorf("插件入口文件无效: %w", err)
 	}
-	if _, err := regexp.Compile(config.Trigger); err != nil {
+	triggerRegex, err := regexp.Compile(config.Trigger)
+	if err != nil {
 		return nil, fmt.Errorf("插件触发规则无效: %w", err)
 	}
 	return &types.Plugin{
@@ -2060,6 +2335,7 @@ func (m *Manager) ValidatePluginConfig(pluginPath, pluginID string) (*types.Plug
 		Priority:          config.Priority,
 		Pinned:            config.Pinned,
 		Trigger:           config.Trigger,
+		TriggerRegex:      triggerRegex,
 		Enabled:           config.Enabled,
 		UserConfig:        config.UserConfig,
 		AccessControl:     pluginAccessControl(config.AccessControl),
@@ -2076,6 +2352,122 @@ func (m *Manager) ValidatePluginConfig(pluginPath, pluginID string) (*types.Plug
 
 func (m *Manager) loadPluginConfig(pluginPath string) (*types.Plugin, error) {
 	return m.ValidatePluginConfig(pluginPath, filepath.Base(pluginPath))
+}
+
+func readPluginConfigWithData(pluginPath string) (types.PluginConfig, bool, error) {
+	var config types.PluginConfig
+	data, err := os.ReadFile(filepath.Join(pluginPath, "plugin.json"))
+	if err != nil {
+		return config, false, err
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return config, false, err
+	}
+	hasData, err := mergePluginData(pluginPath, &config)
+	if err != nil {
+		return config, false, err
+	}
+	return config, hasData, nil
+}
+
+// ReadPluginConfigDocument reads plugin.json and overlays persisted user_config values.
+func ReadPluginConfigDocument(pluginPath string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(filepath.Join(pluginPath, "plugin.json"))
+	if err != nil {
+		return nil, err
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	var config types.PluginConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+	if _, err := mergePluginData(pluginPath, &config); err != nil {
+		return nil, err
+	}
+	if config.UserConfig != nil {
+		raw["user_config"] = config.UserConfig
+	}
+	return raw, nil
+}
+
+// SavePluginData persists only user-configured values that still have a field in plugin.json.
+func SavePluginData(pluginPath string, schema []types.PluginUserConfigField, values map[string]interface{}) error {
+	config := types.PluginConfig{UserConfigSchema: schema, UserConfig: values}
+	filtered := filterPluginUserConfig(config)
+	data, err := json.MarshalIndent(map[string]interface{}{"user_config": filtered}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(pluginPath, PluginDataFileName), data, 0644)
+}
+
+func mergePluginData(pluginPath string, config *types.PluginConfig) (bool, error) {
+	allowed := pluginUserConfigFieldKeys(*config)
+	filtered := filterPluginUserConfig(*config)
+	for _, field := range config.UserConfigSchema {
+		if _, exists := filtered[field.Key]; !exists && field.Key != "" && field.Type != "divider" {
+			filtered[field.Key] = field.Default
+		}
+	}
+	config.UserConfig = filtered
+	data, err := os.ReadFile(filepath.Join(pluginPath, PluginDataFileName))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var saved struct {
+		UserConfig map[string]interface{} `json:"user_config"`
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return false, fmt.Errorf("plugin.data 无效: %w", err)
+	}
+	for key, value := range saved.UserConfig {
+		if _, ok := allowed[key]; ok {
+			config.UserConfig[key] = value
+		}
+	}
+	return true, nil
+}
+
+func migrateLegacyPluginData(pluginPath string) error {
+	config, hasData, err := readPluginConfigWithData(pluginPath)
+	if err != nil || hasData || len(config.UserConfig) == 0 {
+		return err
+	}
+	return SavePluginData(pluginPath, config.UserConfigSchema, config.UserConfig)
+}
+
+func filterPluginUserConfig(config types.PluginConfig) map[string]interface{} {
+	filtered := make(map[string]interface{})
+	keys := pluginUserConfigFieldKeys(config)
+	for key, value := range config.UserConfig {
+		if _, ok := keys[key]; ok {
+			filtered[key] = value
+		}
+	}
+	return filtered
+}
+
+func pluginUserConfigFieldKeys(config types.PluginConfig) map[string]struct{} {
+	keys := make(map[string]struct{})
+	for _, field := range config.UserConfigSchema {
+		key := strings.TrimSpace(field.Key)
+		if key != "" && field.Type != "divider" {
+			keys[key] = struct{}{}
+		}
+	}
+	if len(config.UserConfigSchema) == 0 {
+		for key := range config.UserConfig {
+			keys[key] = struct{}{}
+		}
+	}
+	keys[PluginScheduleRegisteredConfigKey] = struct{}{}
+	return keys
 }
 
 func normalizePluginRuntime(runtime string) string {

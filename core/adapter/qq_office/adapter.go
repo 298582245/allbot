@@ -32,18 +32,19 @@ type UserInfo = contract.UserInfo
 type GroupInfo = contract.GroupInfo
 
 const (
-	qqOfficePlatform            = "qq_office"
-	qqOfficeDefaultAPIBaseURL   = "https://api.sgroup.qq.com"
-	qqOfficeDefaultTokenURL     = "https://bots.qq.com/app/getAppAccessToken"
-	qqOfficeIntentGuilds        = 1 << 0
-	qqOfficeIntentGuildMessages = 1 << 9
-	qqOfficeIntentDirectMessage = 1 << 12
-	qqOfficeIntentGroupMember   = 1 << 24
-	qqOfficeIntentGroupAndC2C   = 1 << 25
-	qqOfficeIntentInteraction   = 1 << 26
-	qqOfficeTokenRefreshBefore  = 60 * time.Second
-	qqOfficeReplySeqTTL         = 10 * time.Minute
-	qqOfficeMaxMuteDuration     = 30 * 24 * time.Hour
+	qqOfficePlatform                  = "qq_office"
+	qqOfficeDefaultAPIBaseURL         = "https://api.sgroup.qq.com"
+	qqOfficeDefaultTokenURL           = "https://bots.qq.com/app/getAppAccessToken"
+	qqOfficeIntentGuilds              = 1 << 0
+	qqOfficeIntentGuildMessages       = 1 << 9
+	qqOfficeIntentDirectMessage       = 1 << 12
+	qqOfficeIntentGroupMember         = 1 << 24
+	qqOfficeIntentGroupAndC2C         = 1 << 25
+	qqOfficeIntentInteraction         = 1 << 26
+	qqOfficeIntentPublicGuildMessages = 1 << 30
+	qqOfficeTokenRefreshBefore        = 60 * time.Second
+	qqOfficeReplySeqTTL               = 10 * time.Minute
+	qqOfficeMaxMuteDuration           = 30 * 24 * time.Hour
 )
 
 type QQOfficeAdapter struct {
@@ -51,6 +52,7 @@ type QQOfficeAdapter struct {
 	clientSecret string
 	apiBaseURL   string
 	tokenURL     string
+	botType      string
 	httpClient   *http.Client
 
 	messageHandler func(*types.Message)
@@ -92,7 +94,7 @@ type qqOfficeGatewayPayload struct {
 }
 
 // NewQQOfficeAdapter 创建 QQ 官方机器人适配器。
-func NewQQOfficeAdapter(appID, clientSecret, apiBaseURL, tokenURL string) *QQOfficeAdapter {
+func NewQQOfficeAdapter(appID, clientSecret, apiBaseURL, tokenURL string, botTypes ...string) *QQOfficeAdapter {
 	apiBaseURL = strings.TrimSpace(apiBaseURL)
 	tokenURL = strings.TrimSpace(tokenURL)
 	if apiBaseURL == "" {
@@ -101,11 +103,16 @@ func NewQQOfficeAdapter(appID, clientSecret, apiBaseURL, tokenURL string) *QQOff
 	if tokenURL == "" {
 		tokenURL = qqOfficeDefaultTokenURL
 	}
+	botType := "public"
+	if len(botTypes) > 0 && strings.EqualFold(strings.TrimSpace(botTypes[0]), "private") {
+		botType = "private"
+	}
 	return &QQOfficeAdapter{
 		appID:        strings.TrimSpace(appID),
 		clientSecret: strings.TrimSpace(clientSecret),
 		apiBaseURL:   strings.TrimRight(apiBaseURL, "/"),
 		tokenURL:     tokenURL,
+		botType:      botType,
 		httpClient:   &http.Client{Timeout: 15 * time.Second},
 		stopChan:     make(chan struct{}),
 		replySeqs:    make(map[string]qqOfficeReplySeq),
@@ -812,7 +819,7 @@ func (a *QQOfficeAdapter) sendIdentify() error {
 	}
 	return a.sendGatewayPayload(2, map[string]interface{}{
 		"token":   "QQBot " + token,
-		"intents": qqOfficeIntentGuilds | qqOfficeIntentGuildMessages | qqOfficeIntentDirectMessage | qqOfficeIntentGroupMember | qqOfficeIntentGroupAndC2C | qqOfficeIntentInteraction,
+		"intents": a.gatewayIntents(),
 		"shard":   []int{0, 1},
 		"properties": map[string]string{
 			"$os":      runtime.GOOS,
@@ -820,6 +827,14 @@ func (a *QQOfficeAdapter) sendIdentify() error {
 			"$device":  "allbot",
 		},
 	})
+}
+
+func (a *QQOfficeAdapter) gatewayIntents() int {
+	guildMessagesIntent := qqOfficeIntentPublicGuildMessages
+	if a.botType == "private" {
+		guildMessagesIntent = qqOfficeIntentGuildMessages
+	}
+	return qqOfficeIntentGuilds | guildMessagesIntent | qqOfficeIntentDirectMessage | qqOfficeIntentGroupMember | qqOfficeIntentGroupAndC2C | qqOfficeIntentInteraction
 }
 
 func (a *QQOfficeAdapter) heartbeatLoop(interval time.Duration, done <-chan struct{}) {

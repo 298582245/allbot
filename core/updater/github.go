@@ -14,6 +14,7 @@ const DefaultLatestReleaseURL = "https://api.github.com/repos/298582245/allbot/r
 type GitHubClient struct {
 	HTTPClient *http.Client
 	APIURL     string
+	ProxyURL   string
 }
 
 func NewGitHubClient() *GitHubClient {
@@ -28,6 +29,7 @@ func (c *GitHubClient) LatestRelease(ctx context.Context) (*ReleaseInfo, error) 
 	if apiURL == "" {
 		apiURL = DefaultLatestReleaseURL
 	}
+	apiURL = ProxyDownloadURL(apiURL, c.ProxyURL)
 	httpClient := c.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
@@ -65,6 +67,18 @@ func (c *GitHubClient) LatestRelease(ctx context.Context) (*ReleaseInfo, error) 
 		assets = append(assets, ReleaseAsset{Name: item.Name, DownloadURL: item.BrowserDownloadURL, Size: item.Size})
 	}
 	return &ReleaseInfo{Version: version, Name: payload.Name, Body: payload.Body, URL: payload.HTMLURL, Assets: assets}, nil
+}
+
+func ProxyDownloadURL(rawURL, proxyURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	proxyURL = strings.TrimSpace(proxyURL)
+	if rawURL == "" || proxyURL == "" {
+		return rawURL
+	}
+	if strings.Contains(proxyURL, "%s") {
+		return strings.Replace(proxyURL, "%s", rawURL, 1)
+	}
+	return strings.TrimRight(proxyURL, "/") + "/" + strings.TrimLeft(rawURL, "/")
 }
 
 type githubReleasePayload struct {

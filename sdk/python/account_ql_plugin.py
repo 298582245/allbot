@@ -49,6 +49,8 @@ class AccountQLPlugin:
 
     async def handle(self, ctx: Context) -> None:
         await self.ensure_schedules(ctx)
+        if str(ctx.meta("allbot_schedule_refresh", "")).lower() == "true":
+            return
         content = str(ctx.content or "").strip()
         if not content.startswith(self.prefix):
             await ctx.reply(self.help_text())
@@ -514,6 +516,12 @@ class AccountQLPlugin:
         await ctx.reply(f"✅{self.prefix}过期检测完成：账号 {result.get('accounts')} 个，通知 {result.get('notified')} 个，删除 {result.get('deleted')} 个，跳过 {result.get('skipped')} 个。")
 
     async def ensure_schedules(self, ctx: Context) -> None:
+        force_refresh = str(ctx.meta("allbot_schedule_refresh", "")).lower() == "true"
+        registered_value = ctx.config("schedule_is_register", False)
+        registered = registered_value is True or str(registered_value).lower() == "true"
+        if not force_refresh and registered:
+            return
+
         try:
             admins = await ctx.list_platform_admins()
         except Exception as error:
@@ -525,11 +533,27 @@ class AccountQLPlugin:
             return
         normalized_schedules = normalize_schedules(self.prefix, self.schedules)
         default_max_count = max(3, len(normalized_schedules))
+        task_keys = [item["task_key"] for item in normalized_schedules]
+        registered_all = True
         for item in normalized_schedules:
             try:
                 await ctx.set_scheduled_task(task_key=item["task_key"], name=item["name"], description=item["description"], cron=str(ctx.config(item["cron_config"], item["cron"])), platform=str(admin.get("platform") or ""), adapter_id=str(admin.get("adapter_id") or ""), user_id=str(admin.get("user_id") or ""), group_id="", content=item["content"], max_count=max(item.get("max_count") or 0, default_max_count))
             except Exception as error:
+                registered_all = False
                 print(f"声明定时任务失败：{item.get('task_key')} {error}", file=sys.stderr)
+        if registered_all:
+            try:
+                await ctx.sync_scheduled_tasks(task_keys)
+            except Exception as error:
+                registered_all = False
+                print(f"同步{self.prefix}定时任务失败：{error}", file=sys.stderr)
+        if registered_all:
+            try:
+                await ctx.set_config("schedule_is_register", True)
+            except Exception as error:
+                print(f"记录{self.prefix}定时任务状态失败：{error}", file=sys.stderr)
+                if force_refresh:
+                    raise
 
     def account_name(self, account: Dict[str, Any]) -> str:
         return str(account.get("account_name") or account.get("remark") or account.get("env_value", "")[:8] or "未知账号")

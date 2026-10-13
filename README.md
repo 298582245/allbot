@@ -78,6 +78,14 @@ Linux：
 http://localhost:3000
 ```
 
+## 在线演示
+
+在线演示地址：<https://298582245.github.io/allbot/>
+
+演示站使用 GitHub Pages 发布前端静态文件，内置浏览器模拟数据，不连接真实 AllBot 后端、数据库或平台适配器。页面中的插件、适配器、任务、日志和 WebChat 操作只在当前浏览器内生效，刷新后恢复初始数据。请不要填写真实密码、Token、Cookie 或平台配置。
+
+在线演示不会随代码提交自动发布。需要更新演示站时，在 GitHub Actions 手动运行 `Publish AllBot Demo` workflow。完整部署步骤见 [`docs/ONLINE_DEMO.md`](docs/ONLINE_DEMO.md)。
+
 首次启动会自动生成后台管理员密码，并输出到控制台。默认管理员账号为 `admin`。
 
 如需修改端口，可设置环境变量 `ALLBOT_WEB_PORT`：
@@ -212,7 +220,7 @@ volumes:
   - ./data:/data
 ```
 
-`/data/sdk` 是持久化的插件 SDK 目录。镜像重新构建后，容器入口脚本会对比镜像 SDK 指纹和 `/data/sdk` 当前内容：如果确认 `/data/sdk` 未被用户修改，会自动同步镜像内新版 SDK；如果检测到用户修改过 `/data/sdk`，会跳过覆盖并在日志中提示。首次引入该同步机制时，如果已有 `/data/sdk` 与镜像内容不一致，也会保守跳过覆盖。如需强制使用镜像新版 SDK，请先备份 `/data/sdk`，再删除 `/data/sdk` 并重启容器。
+`/data/sdk` 是持久化的插件 SDK 目录。镜像重新构建后，容器入口脚本会保存上一版官方 SDK 基线，并将当前文件与官方旧版、官方新版做三方合并：用户未修改的文件会直接更新，用户与官方修改不同位置时会自动合并；同一位置发生冲突时保留用户文件，并在对应路径生成 `.update` 文件供处理。官方基线保存在 `/data/.allbot-sdk-base`，不需要用户手动维护。
 
 如果执行 `git pull` 后发现容器内 SDK 仍然是旧版本，这是因为 Docker 镜像中的 SDK 位于 `/opt/allbot/sdk`，而实际运行时优先使用持久化卷中的 `/data/sdk`。`docker compose up -d --build` 不会直接覆盖这个持久化目录。可以先检查入口脚本日志：
 
@@ -220,11 +228,11 @@ volumes:
 docker compose logs --tail=200 allbot | grep -i sdk
 ```
 
-如果日志中出现“检测到 `/data/sdk` 可能已被用户修改”或“缺少历史指纹，跳过自动覆盖”，请先备份并删除持久化 SDK 目录，再重新创建容器：
+如果首次迁移时日志提示 SDK 缺少可用的官方基线，入口脚本会保留当前文件，并为有差异的官方文件生成 `.update` 副本。请先备份 `/data/sdk`，确认这些差异后再处理；后续启动会使用新的官方基线继续合并：
 
 ```bash
 docker compose exec allbot sh -c \
-  'cp -a /data/sdk /data/sdk.backup && rm -rf /data/sdk /data/.allbot-sdk-image-sha256'
+  'cp -a /data/sdk /data/sdk.backup'
 
 docker compose up -d --build
 ```
@@ -242,12 +250,25 @@ git pull
 docker pull golang:1.26-alpine
 docker pull debian:bookworm-slim
 docker compose build --progress=plain allbot
-docker compose up -d allbot
+ALLBOT_WEB_PORT=3000 docker compose up -d --build
 ```
+
+如果此前使用 Docker 内的一键升级更新过程序，升级后再重启却回到旧版本，请先拉取包含修复的代码并重建镜像，再清除旧版入口脚本写错的镜像指纹标记：
+
+```bash
+git pull
+docker compose build --no-cache allbot
+docker compose run --rm --entrypoint sh allbot -c 'rm -f /data/.allbot-image-sha256'
+ALLBOT_WEB_PORT=3000 docker compose up -d
+```
+
+清除该标记不会删除 `/data/allbot`、配置数据库或其他持久化数据；后续容器重启会保留 Docker 一键升级安装的版本。不要使用 `docker compose down -v`，以免删除 `allbot_data` 命名卷。默认 Web 端口为 `3000`；若修改了端口，启动命令中的 `ALLBOT_WEB_PORT` 也要使用相同值。
+
+旧版 Docker 镜像也可以直接从后台执行在线更新。兼容版本启动时会自动把旧入口脚本写错的镜像指纹修正为镜像自身指纹，因此不需要先手动运行下载的 `allbot-v版本号-linux-amd64` 文件；更新完成后仍由容器入口脚本管理 `/data/allbot`。如果旧容器没有设置 `ALLBOT_UPDATE_MODE=docker`，则不会走 Docker 更新流程，应先按上面的方式重建一次镜像。
 
 如果 SSH 会话不稳定，可在 `tmux` 或 `screen` 中执行构建；这只能避免终端断线终止任务，无法解决服务器 OOM、磁盘不足或镜像仓库网络异常。
 
-重新构建镜像时，未被用户修改的 `/data/sdk` 会随镜像内 SDK 自动更新；如果日志提示 `/data/sdk` 已被修改，需要手动备份并删除 `/data/sdk` 后重启容器，才会重新初始化为镜像新版 SDK。
+重新构建镜像时，`/data/sdk` 会按文件自动合并镜像内 SDK 更新；只有同一文件同一位置发生冲突时才会保留用户版本并生成 `.update` 文件。
 
 ## 在线升级
 

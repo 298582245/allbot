@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -38,6 +39,14 @@ const (
 	scriptTaskRunTimeoutSecondsDescription  = "脚本任务运行超时时间，0 表示不限制"
 	scriptTaskTimeoutNotifyAdminEnabledKey  = "script_tasks.timeout_notify_admin_enabled"
 	scriptTaskTimeoutNotifyAdminDescription = "脚本任务超时自动停止后是否通知平台管理员"
+	pluginTaskRetentionDaysKey              = "plugin_tasks.retention_days"
+	pluginTaskRetentionDaysDescription      = "插件任务日志自动清理天数，0 表示不自动清理"
+	pluginTaskRunTimeoutSecondsKey          = "plugin_tasks.run_timeout_seconds"
+	pluginTaskRunTimeoutSecondsDescription  = "插件任务运行超时时间，0 表示不限制"
+	pluginTaskTimeoutNotifyAdminEnabledKey  = "plugin_tasks.timeout_notify_admin_enabled"
+	pluginTaskTimeoutNotifyAdminDescription = "插件任务超时自动停止后是否通知平台管理员"
+	githubProxyURLKey                       = "update.github_proxy_url"
+	githubProxyURLDescription               = "GitHub 更新下载代理地址"
 )
 
 type AdminPasswordInitResult struct {
@@ -57,6 +66,7 @@ type SystemSettings struct {
 	AutoLoadPlugins           bool                      `json:"auto_load_plugins"`
 	ScriptTaskConcurrentLimit int                       `json:"script_task_concurrent_limit"`
 	PointsUnit                string                    `json:"points_unit"`
+	GitHubProxyURL            string                    `json:"github_proxy_url"`
 	AccessControl             types.AccessControlConfig `json:"access_control"`
 	// 安全访问码：开启后访问登录页需在 URL 携带访问码，否则返回 404
 	AccessCodeEnabled bool   `json:"access_code_enabled"`
@@ -64,6 +74,12 @@ type SystemSettings struct {
 }
 
 type ScriptTaskSettings struct {
+	RetentionDays             int  `json:"retention_days"`
+	RunTimeoutSeconds         int  `json:"run_timeout_seconds"`
+	TimeoutNotifyAdminEnabled bool `json:"timeout_notify_admin_enabled"`
+}
+
+type PluginTaskSettings struct {
 	RetentionDays             int  `json:"retention_days"`
 	RunTimeoutSeconds         int  `json:"run_timeout_seconds"`
 	TimeoutNotifyAdminEnabled bool `json:"timeout_notify_admin_enabled"`
@@ -84,6 +100,7 @@ type BackupSettings struct {
 
 type OSSBackupSettings struct {
 	Enabled         bool   `json:"enabled"`
+	Retention       int    `json:"retention"`
 	Provider        string `json:"provider"`
 	Bucket          string `json:"bucket"`
 	Endpoint        string `json:"endpoint"`
@@ -125,6 +142,7 @@ func (d *Database) GetSystemSettings() (*SystemSettings, error) {
 		AutoLoadPlugins:           valueOrDefault(items, "plugin.auto_load", "true") == "true",
 		ScriptTaskConcurrentLimit: intValueOrDefault(items, "script_tasks.concurrent_limit", 1),
 		PointsUnit:                valueOrDefault(items, "user.points_unit", "积分"),
+		GitHubProxyURL:            strings.TrimSpace(items[githubProxyURLKey]),
 		AccessControl:             ParseAccessControlConfig(items["access_control"]),
 
 		AccessCodeEnabled: valueOrDefault(items, "security.access_code_enabled", "false") == "true",
@@ -216,6 +234,48 @@ func (d *Database) SaveScriptTaskSettings(settings ScriptTaskSettings) error {
 	return nil
 }
 
+func DefaultPluginTaskSettings() PluginTaskSettings {
+	return PluginTaskSettings{}
+}
+
+func (d *Database) GetPluginTaskSettings() (PluginTaskSettings, error) {
+	items, err := d.getSettingsMap()
+	if err != nil {
+		return DefaultPluginTaskSettings(), err
+	}
+	days := intValueAllowZeroOrDefault(items, pluginTaskRetentionDaysKey, 0)
+	timeout := intValueAllowZeroOrDefault(items, pluginTaskRunTimeoutSecondsKey, 0)
+	if days < 0 || days > 3650 {
+		return DefaultPluginTaskSettings(), fmt.Errorf("插件任务日志保留天数必须在 0 到 3650 之间")
+	}
+	if timeout < 0 || timeout > 86400 {
+		return DefaultPluginTaskSettings(), fmt.Errorf("插件任务运行超时时间必须在 0 到 86400 秒之间")
+	}
+	return PluginTaskSettings{RetentionDays: days, RunTimeoutSeconds: timeout, TimeoutNotifyAdminEnabled: valueOrDefault(items, pluginTaskTimeoutNotifyAdminEnabledKey, "false") == "true"}, nil
+}
+
+func (d *Database) SavePluginTaskSettings(settings PluginTaskSettings) error {
+	if settings.RetentionDays < 0 || settings.RetentionDays > 3650 {
+		return fmt.Errorf("插件任务日志保留天数必须在 0 到 3650 之间")
+	}
+	if settings.RunTimeoutSeconds < 0 || settings.RunTimeoutSeconds > 86400 {
+		return fmt.Errorf("插件任务运行超时时间必须在 0 到 86400 秒之间")
+	}
+	for key, item := range map[string]struct {
+		value       string
+		description string
+	}{
+		pluginTaskRetentionDaysKey:             {strconv.Itoa(settings.RetentionDays), pluginTaskRetentionDaysDescription},
+		pluginTaskRunTimeoutSecondsKey:         {strconv.Itoa(settings.RunTimeoutSeconds), pluginTaskRunTimeoutSecondsDescription},
+		pluginTaskTimeoutNotifyAdminEnabledKey: {boolString(settings.TimeoutNotifyAdminEnabled), pluginTaskTimeoutNotifyAdminDescription},
+	} {
+		if err := d.SetSetting(key, item.value, item.description); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 	if settings.AdminUsername == "" {
 		return fmt.Errorf("管理员用户名不能为空")
@@ -232,6 +292,10 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 	if settings.PointsUnit == "" {
 		settings.PointsUnit = "积分"
 	}
+	githubProxyURL, err := normalizeGitHubProxyURL(settings.GitHubProxyURL)
+	if err != nil {
+		return err
+	}
 
 	items := map[string]struct {
 		value       string
@@ -245,6 +309,7 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 		"plugin.auto_load":              {boolString(settings.AutoLoadPlugins), "启动时自动加载插件"},
 		"script_tasks.concurrent_limit": {fmt.Sprintf("%d", settings.ScriptTaskConcurrentLimit), "脚本任务全局并发上限"},
 		"user.points_unit":              {settings.PointsUnit, "用户积分单位"},
+		githubProxyURLKey:               {githubProxyURL, githubProxyURLDescription},
 		"access_control":                {MarshalAccessControlConfig(settings.AccessControl), "系统访问控制配置"},
 
 		"security.access_code_enabled": {boolString(settings.AccessCodeEnabled), "是否开启安全访问入口"},
@@ -258,8 +323,21 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 	return nil
 }
 
+func normalizeGitHubProxyURL(value string) (string, error) {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	if value == "" {
+		return "", nil
+	}
+	parsedValue := strings.Replace(value, "%s", "https://github.com", 1)
+	parsed, err := url.Parse(parsedValue)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", fmt.Errorf("GitHub 下载代理必须是 HTTP/HTTPS URL 且包含 host")
+	}
+	return value, nil
+}
+
 func DefaultBackupSettings() BackupSettings {
-	return BackupSettings{Enabled: false, Cron: "0 3 * * *", Retention: 7, BackupDir: "./backups", IncludePlugins: true, IncludeData: true, IncludeImages: true, IncludeLogs: true, IncludeRuntimeEnv: true, OSS: OSSBackupSettings{Provider: "", Region: "us-east-1", AddressingStyle: "auto", Prefix: "allbot/"}}
+	return BackupSettings{Enabled: false, Cron: "0 3 * * *", Retention: 7, BackupDir: "./backups", IncludePlugins: true, IncludeData: true, IncludeImages: true, IncludeLogs: true, IncludeRuntimeEnv: true, OSS: OSSBackupSettings{Retention: 30, Provider: "", Region: "us-east-1", AddressingStyle: "auto", Prefix: "allbot/"}}
 }
 
 func (d *Database) GetBackupSettings() (BackupSettings, error) {
@@ -316,6 +394,9 @@ func NormalizeBackupSettings(settings BackupSettings) BackupSettings {
 		settings.BackupDir = defaults.BackupDir
 	}
 	settings.OSS.Provider = strings.TrimSpace(settings.OSS.Provider)
+	if settings.OSS.Retention <= 0 {
+		settings.OSS.Retention = defaults.OSS.Retention
+	}
 	settings.OSS.Bucket = strings.TrimSpace(settings.OSS.Bucket)
 	settings.OSS.Endpoint = strings.TrimSpace(settings.OSS.Endpoint)
 	settings.OSS.Region = strings.TrimSpace(settings.OSS.Region)

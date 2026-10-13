@@ -88,7 +88,7 @@
         :default-active="sidebarActiveMenu"
         :unique-opened="!collapsed"
         :collapse="collapsed"
-        :collapse-transition="true"
+        :collapse-transition="false"
         class="sidebar-menu"
         @open="handleMenuOpen"
         @select="handleMenuSelect"
@@ -114,6 +114,10 @@
           <el-menu-item index="/script-tasks">
             <el-icon><Document /></el-icon>
             <span>脚本任务</span>
+          </el-menu-item>
+          <el-menu-item index="/plugin-tasks">
+            <el-icon><Cpu /></el-icon>
+            <span>插件任务</span>
           </el-menu-item>
           <el-menu-item index="/open-apis">
             <el-icon><Link /></el-icon>
@@ -537,6 +541,7 @@ const baseMoreMobileNavItems = [
   { path: "/replies/keywords", title: "关键字回复", icon: ChatDotRound },
   { path: "/scheduled-tasks", title: "定时任务", icon: Timer },
   { path: "/script-tasks", title: "脚本任务", icon: Document },
+  { path: "/plugin-tasks", title: "插件任务", icon: Cpu },
   { path: "/script-envs", title: "脚本变量", icon: Setting },
   { path: "/plugin-panels", title: "插件面板", icon: Grid },
   { path: "/data", title: "数据管理", icon: Coin },

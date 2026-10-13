@@ -109,11 +109,16 @@ func (m *KeywordReplyManager) Handle(msg *types.Message) bool {
 }
 
 func (m *KeywordReplyManager) shouldIgnoreRestartMessage(msg *types.Message) bool {
-	if strings.TrimSpace(msg.Content) != "重启" {
+	switch strings.TrimSpace(msg.Content) {
+	case "重启":
+		ignoredKey := strings.TrimSpace(os.Getenv("ALLBOT_IGNORE_RESTART_MESSAGE_KEY"))
+		return ignoredKey != "" && ignoredKey == RestartMessageKey(msg)
+	case "更新":
+		ignoredKey := strings.TrimSpace(os.Getenv("ALLBOT_IGNORE_UPDATE_MESSAGE_KEY"))
+		return ignoredKey != "" && ignoredKey == RestartMessageKey(msg)
+	default:
 		return false
 	}
-	ignoredKey := strings.TrimSpace(os.Getenv("ALLBOT_IGNORE_RESTART_MESSAGE_KEY"))
-	return ignoredKey != "" && ignoredKey == RestartMessageKey(msg)
 }
 
 func RestartMessageKey(msg *types.Message) string {
@@ -170,6 +175,13 @@ func (m *KeywordReplyManager) replyBuiltin(keyword string, msg *types.Message) e
 		AdminCheck:        m.adminCheck,
 		Reply: func(text string) error {
 			return m.sendText(adp, target, msg, text)
+		},
+		ReplyUser: func(text string) error {
+			userTarget := msg.UserID
+			if resolver, ok := adp.(adapter.SendTargetResolver); ok {
+				userTarget = resolver.SendTarget(msg.UserID, "")
+			}
+			return m.sendText(adp, userTarget, msg, text)
 		},
 		ReplyButtons: func(text string, buttons [][]types.ButtonOption) error {
 			return sendReplyButtonsWithFallback(adp, msg, target, text, buttons)

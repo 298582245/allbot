@@ -55,7 +55,8 @@
       </el-form>
 
       <div class="login-footer">
-        <p>首次启动会在控制台输出随机管理员密码</p>
+        <p v-if="isDemoMode">演示模式：输入任意账号即可进入，数据只保存在当前页面</p>
+        <p v-else>首次启动会在控制台输出随机管理员密码</p>
       </div>
     </div>
   </div>
@@ -68,6 +69,7 @@ import { ElMessage } from 'element-plus'
 import { User, Lock } from '@element-plus/icons-vue'
 import { login } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { isDemoMode } from '@/demo/mockApi'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -77,7 +79,7 @@ const loading = ref(false)
 
 const form = reactive({
   username: 'admin',
-  password: ''
+  password: isDemoMode ? 'demo' : ''
 })
 
 const rules = {

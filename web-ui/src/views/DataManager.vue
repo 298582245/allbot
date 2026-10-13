@@ -22,7 +22,7 @@
         </div>
       </template>
 
-      <el-alert class="data-tip" title="这里会直接修改数据库。删除整张表会让相关功能不可用，谨慎操作。" type="warning" show-icon :closable="false" />
+     <!-- <el-alert class="data-tip" title="这里会直接修改数据库。删除整张表会让相关功能不可用，谨慎操作。" type="warning" show-icon :closable="false" /> -->
 
       <div class="content desktop-data-view">
         <el-card class="table-list" shadow="never">

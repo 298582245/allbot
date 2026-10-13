@@ -46,6 +46,8 @@ func main() {
 		return
 	}
 
+	repairDockerUpdateMarker()
+
 	pluginDir := flag.String("plugins", "./plugins", "插件目录")
 	showAccessCode := flag.Bool("show-access-code", false, "显示当前安全访问码并退出")
 	resetPassword := flag.Bool("reset-password", false, "重置管理员密码并退出")
@@ -130,6 +132,7 @@ func main() {
 	pluginManager.SetDatabase(configDB)
 	messageRouter.SetPluginManager(pluginManager)
 	pluginManager.SetScriptTimeoutNotifier(messageRouter.NotifyScriptTaskTimeout)
+	pluginManager.SetPluginTaskTimeoutNotifier(messageRouter.NotifyPluginTaskTimeout)
 
 	plugins, err := pluginManager.LoadAllPlugins()
 	if err != nil {
@@ -271,6 +274,42 @@ func main() {
 			return
 		}
 	}
+}
+
+func repairDockerUpdateMarker() {
+	if !updater.DockerUpdateModeEnabled() || strings.TrimSpace(os.Getenv("ALLBOT_UPDATED")) != "1" {
+		return
+	}
+	dataDir := strings.TrimSpace(os.Getenv("ALLBOT_DATA_DIR"))
+	if dataDir == "" {
+		dataDir = "/data"
+	}
+	imageDir := strings.TrimSpace(os.Getenv("ALLBOT_IMAGE_DIR"))
+	if imageDir == "" {
+		imageDir = "/opt/allbot"
+	}
+	if err := syncDockerUpdateMarker(dataDir, imageDir); err != nil {
+		log.Printf("Docker 更新标记修复失败: %v", err)
+	}
+}
+
+func syncDockerUpdateMarker(dataDir string, imageDir string) error {
+	markerPath := filepath.Join(dataDir, ".allbot-image-sha256")
+	imageHashPath := filepath.Join(imageDir, "allbot.sha256")
+	imageHash, err := os.ReadFile(imageHashPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if removeErr := os.Remove(markerPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return removeErr
+			}
+			return nil
+		}
+		return err
+	}
+	if strings.TrimSpace(string(imageHash)) == "" {
+		return fmt.Errorf("镜像程序哈希为空")
+	}
+	return os.WriteFile(markerPath, imageHash, 0600)
 }
 
 func resetAdminPassword(dbPath string, output io.Writer) error {
@@ -432,17 +471,31 @@ func notifyRestartCompleted(adapterManager *config.AdapterManager) {
 		} else {
 			log.Println("AllBot 已升级完成")
 		}
+		if notifyCompletedMessage(adapterManager, "UPDATE_NOTIFY", func(startedAt string, now time.Time) (string, error) {
+			return buildUpdateCompletedMessage(fromVersion, toVersion, startedAt, now)
+		}) {
+			return
+		}
 	}
 	if strings.TrimSpace(os.Getenv("ALLBOT_RESTARTED")) != "1" || adapterManager == nil {
 		return
 	}
-	platform := strings.TrimSpace(os.Getenv("ALLBOT_RESTART_NOTIFY_PLATFORM"))
-	userID := strings.TrimSpace(os.Getenv("ALLBOT_RESTART_NOTIFY_USER_ID"))
-	groupID := strings.TrimSpace(os.Getenv("ALLBOT_RESTART_NOTIFY_GROUP_ID"))
-	target := strings.TrimSpace(os.Getenv("ALLBOT_RESTART_NOTIFY_TARGET"))
-	adapterID := strings.TrimSpace(os.Getenv("ALLBOT_RESTART_NOTIFY_ADAPTER_ID"))
+	notifyCompletedMessage(adapterManager, "RESTART_NOTIFY", func(startedAt string, now time.Time) (string, error) {
+		return buildRestartCompletedMessage(startedAt, now)
+	})
+}
+
+func notifyCompletedMessage(adapterManager *config.AdapterManager, prefix string, build func(startedAt string, now time.Time) (string, error)) bool {
+	if adapterManager == nil {
+		return false
+	}
+	platform := strings.TrimSpace(os.Getenv("ALLBOT_" + prefix + "_PLATFORM"))
+	userID := strings.TrimSpace(os.Getenv("ALLBOT_" + prefix + "_USER_ID"))
+	groupID := strings.TrimSpace(os.Getenv("ALLBOT_" + prefix + "_GROUP_ID"))
+	target := strings.TrimSpace(os.Getenv("ALLBOT_" + prefix + "_TARGET"))
+	adapterID := strings.TrimSpace(os.Getenv("ALLBOT_" + prefix + "_ADAPTER_ID"))
 	if platform == "" || target == "" {
-		return
+		return false
 	}
 	msg := &types.Message{Platform: platform, AdapterID: adapterID, UserID: userID, GroupID: groupID, Metadata: map[string]string{}}
 	if adapterID != "" {
@@ -450,16 +503,17 @@ func notifyRestartCompleted(adapterManager *config.AdapterManager) {
 	}
 	adp := adapterManager.GetAdapterForMessage(msg)
 	if adp == nil {
-		log.Printf("重启完成通知发送失败：适配器不存在 platform=%s adapter_id=%s", platform, adapterID)
-		return
+		log.Printf("完成通知发送失败：适配器不存在 platform=%s adapter_id=%s", platform, adapterID)
+		return true
 	}
-	text, durationErr := buildRestartCompletedMessage(os.Getenv("ALLBOT_RESTART_STARTED_AT_NS"), time.Now())
+	text, durationErr := build(os.Getenv("ALLBOT_"+prefix+"_STARTED_AT_NS"), time.Now())
 	if durationErr != nil {
-		log.Printf("重启耗时计算失败: %v", durationErr)
+		log.Printf("完成耗时计算失败: %v", durationErr)
 	}
 	if err := sendRestartCompletedMessage(adp, target, text); err != nil {
-		log.Printf("重启完成通知发送失败: %v", err)
+		log.Printf("完成通知发送失败: %v", err)
 	}
+	return true
 }
 
 func sendRestartCompletedMessage(adp adapter.Adapter, target string, text string) error {
@@ -470,22 +524,34 @@ func sendRestartCompletedMessage(adp adapter.Adapter, target string, text string
 }
 
 func buildRestartCompletedMessage(startedAtValue string, now time.Time) (string, error) {
+	return buildCompletedMessage("重启", "", "", startedAtValue, now)
+}
+
+func buildUpdateCompletedMessage(fromVersion string, toVersion string, startedAtValue string, now time.Time) (string, error) {
+	return buildCompletedMessage("更新", fromVersion, toVersion, startedAtValue, now)
+}
+
+func buildCompletedMessage(action string, fromVersion string, toVersion string, startedAtValue string, now time.Time) (string, error) {
 	startedAtValue = strings.TrimSpace(startedAtValue)
+	prefix := fmt.Sprintf("AllBot %s完成", action)
+	if fromVersion != "" && toVersion != "" {
+		prefix += fmt.Sprintf("：%s -> %s", fromVersion, toVersion)
+	}
 	if startedAtValue == "" {
-		return "AllBot 重启完成，耗时：未知", errors.New("重启开始时间为空")
+		return prefix + "，耗时：未知", errors.New(action + "开始时间为空")
 	}
 	startedAtNS, err := strconv.ParseInt(startedAtValue, 10, 64)
 	if err != nil {
-		return "AllBot 重启完成，耗时：未知", fmt.Errorf("重启开始时间无效: %w", err)
+		return prefix + "，耗时：未知", fmt.Errorf("%s开始时间无效: %w", action, err)
 	}
 	if startedAtNS <= 0 {
-		return "AllBot 重启完成，耗时：未知", errors.New("重启开始时间必须为正数")
+		return prefix + "，耗时：未知", errors.New(action + "开始时间必须为正数")
 	}
 	startedAt := time.Unix(0, startedAtNS)
 	if startedAt.After(now) {
-		return "AllBot 重启完成，耗时：未知", errors.New("重启开始时间晚于当前时间")
+		return prefix + "，耗时：未知", errors.New(action + "开始时间晚于当前时间")
 	}
-	return fmt.Sprintf("AllBot 重启完成，耗时：%s", formatRestartDuration(now.Sub(startedAt))), nil
+	return fmt.Sprintf("%s，耗时：%s", prefix, formatRestartDuration(now.Sub(startedAt))), nil
 }
 
 func formatRestartDuration(duration time.Duration) string {

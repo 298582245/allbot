@@ -16,6 +16,7 @@ import (
 
 type backupOSSSettingsResponse struct {
 	Enabled             bool   `json:"enabled"`
+	Retention           int    `json:"retention"`
 	Provider            string `json:"provider"`
 	Bucket              string `json:"bucket"`
 	Endpoint            string `json:"endpoint"`
@@ -37,6 +38,7 @@ func newBackupSettingsResponse(settings config.BackupSettings) backupSettingsRes
 		BackupSettings: settings,
 		OSS: backupOSSSettingsResponse{
 			Enabled:             settings.OSS.Enabled,
+			Retention:           settings.OSS.Retention,
 			Provider:            settings.OSS.Provider,
 			Bucket:              settings.OSS.Bucket,
 			Endpoint:            settings.OSS.Endpoint,

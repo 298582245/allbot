@@ -16,6 +16,7 @@ func init() {
 		ConfigSchema: []registry.ConfigField{
 			{Key: "app_id", Label: "App ID", Type: "text", Required: true, Help: "QQ 开放平台机器人 App ID"},
 			{Key: "client_secret", Label: "Client Secret", Type: "password", Required: true, Help: "QQ 开放平台机器人 Client Secret"},
+			{Key: "bot_type", Label: "机器人类型", Type: "select", Required: true, Default: "public", Help: "按 QQ 开放平台机器人类型选择频道消息订阅方式", Options: []registry.ConfigOption{{Label: "公域机器人", Value: "public"}, {Label: "私域机器人", Value: "private"}}},
 			{Key: "api_base_url", Label: "API 基础地址", Type: "text", Required: false, Placeholder: "https://api.sgroup.qq.com", Help: "一般保持默认即可"},
 			{Key: "token_url", Label: "Token 地址", Type: "text", Required: false, Placeholder: "https://bots.qq.com/app/getAppAccessToken", Help: "一般保持默认即可"},
 		},
@@ -47,5 +48,6 @@ func newAdapterFromRegistry(parsed interface{}) (contract.Adapter, error) {
 		qqOfficeConfig.ClientSecret,
 		qqOfficeConfig.APIBaseURL,
 		qqOfficeConfig.TokenURL,
+		qqOfficeConfig.BotType,
 	), nil
 }

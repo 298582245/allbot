@@ -1,11 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import router from '@/router'
+import { isDemoMode } from '@/demo/mockApi'
 
 export const useAuthStore = defineStore('auth', () => {
-  const token = ref(localStorage.getItem('token') || '')
-  const csrfToken = ref(localStorage.getItem('csrfToken') || '')
-  const username = ref(localStorage.getItem('username') || '')
+  const token = ref(isDemoMode ? '' : (localStorage.getItem('token') || ''))
+  const csrfToken = ref(isDemoMode ? '' : (localStorage.getItem('csrfToken') || ''))
+  const username = ref(isDemoMode ? '' : (localStorage.getItem('username') || ''))
 
   const isAuthenticated = ref(!!token.value)
 
@@ -15,13 +16,15 @@ export const useAuthStore = defineStore('auth', () => {
     username.value = newUsername
     isAuthenticated.value = true
 
-    localStorage.setItem('token', newToken)
-    localStorage.setItem('csrfToken', newCsrfToken)
-    localStorage.setItem('username', newUsername)
+    if (!isDemoMode) {
+      localStorage.setItem('token', newToken)
+      localStorage.setItem('csrfToken', newCsrfToken)
+      localStorage.setItem('username', newUsername)
+    }
   }
 
   const logout = async ({ callApi = true, redirect = true } = {}) => {
-    if (callApi) {
+    if (callApi && !isDemoMode) {
       try {
         await fetch('/api/logout', {
           method: 'POST',

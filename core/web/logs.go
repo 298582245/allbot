@@ -76,7 +76,7 @@ var (
 	urlVolatileQueryPattern = regexp.MustCompile(`(?i)([?&](?:offset|timeout|limit|timestamp|ts|nonce|retry|attempt|t)=)[^&\s\"]+`)
 	whitespacePattern       = regexp.MustCompile(`\s+`)
 	logFileNamePattern      = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}\.log$`)
-	logLineHeaderPattern    = regexp.MustCompile(`^\d{2}:\d{2}:\d{2}\s+(?i:INFO|WARN|ERROR|DEBUG)\s+`)
+	logLineHeaderPattern    = regexp.MustCompile(`^\d{2}:\d{2}:\d{2}(?:\.\d{3})?\s+(?i:INFO|WARN|ERROR|DEBUG)\s+`)
 )
 
 // NewLogManager 创建日志管理器。
@@ -107,7 +107,7 @@ func (lm *LogManager) collectLogs() {
 // AddLog 添加日志，内存保留最新 maxLogs 条，文件按日期追加保存。
 func (lm *LogManager) AddLog(level, message string) {
 	entry := LogEntry{
-		Time:    time.Now().Format("15:04:05"),
+		Time:    time.Now().Format("15:04:05.000"),
 		Level:   level,
 		Message: strings.TrimSpace(message),
 	}
@@ -469,7 +469,7 @@ type CustomLogger struct {
 func NewCustomLogger(lm *LogManager) *CustomLogger {
 	return &CustomLogger{
 		logManager: lm,
-		logger:     log.New(os.Stdout, "", log.LstdFlags),
+		logger:     log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds),
 	}
 }
 
@@ -479,7 +479,9 @@ func (cl *CustomLogger) Write(p []byte) (n int, err error) {
 	content := message
 
 	if len(message) > 20 && message[4] == '/' && message[7] == '/' && message[10] == ' ' {
-		content = message[20:]
+		if separator := strings.Index(message[11:], " "); separator >= 0 {
+			content = message[11+separator+1:]
+		}
 	}
 
 	level := "info"

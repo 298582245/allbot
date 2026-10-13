@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -490,6 +491,42 @@ func TestDockerRestartRequestPath(t *testing.T) {
 	t.Setenv("ALLBOT_DOCKER_RESTART_REQUEST", " custom/restart.json ")
 	if got := dockerRestartRequestPath(); got != "custom/restart.json" {
 		t.Fatalf("custom dockerRestartRequestPath() = %q", got)
+	}
+}
+
+func TestSyncDockerUpdateMarkerUsesImageHash(t *testing.T) {
+	dataDir := t.TempDir()
+	imageDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, ".allbot-image-sha256"), []byte("updated-binary\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(imageDir, "allbot.sha256"), []byte("image-binary\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncDockerUpdateMarker(dataDir, imageDir); err != nil {
+		t.Fatalf("syncDockerUpdateMarker returned error: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dataDir, ".allbot-image-sha256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "image-binary\n" {
+		t.Fatalf("marker = %q, expected image hash", data)
+	}
+}
+
+func TestSyncDockerUpdateMarkerRemovesMarkerWhenImageHashMissing(t *testing.T) {
+	dataDir := t.TempDir()
+	imageDir := t.TempDir()
+	markerPath := filepath.Join(dataDir, ".allbot-image-sha256")
+	if err := os.WriteFile(markerPath, []byte("updated-binary\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncDockerUpdateMarker(dataDir, imageDir); err != nil {
+		t.Fatalf("syncDockerUpdateMarker returned error: %v", err)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("marker should be removed, stat error: %v", err)
 	}
 }
 

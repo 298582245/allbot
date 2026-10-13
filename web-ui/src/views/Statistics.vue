@@ -103,8 +103,8 @@
               <div class="trend-controls">
                 <el-button size="small" plain :loading="messageTrendLoading" @click="loadMessageTrend">刷新</el-button>
                 <el-radio-group v-model="messageTrendGranularity" size="small" @change="handleGranularityChange">
-                  <el-radio-button label="day">按日</el-radio-button>
-                  <el-radio-button label="month">按月</el-radio-button>
+                  <el-radio-button value="day">按日</el-radio-button>
+                  <el-radio-button value="month">按月</el-radio-button>
                 </el-radio-group>
                 <el-date-picker
                   v-if="messageTrendGranularity === 'day'"
@@ -148,8 +148,8 @@
                 <el-tag effect="plain">总触发 {{ formatCompact(pluginTriggerTrend.total) }} 次</el-tag>
                 <el-button size="small" plain :loading="pluginTrendLoading" @click="loadPluginTriggerTrend">刷新</el-button>
                 <el-radio-group v-model="pluginTrendGranularity" size="small" @change="handlePluginTrendGranularityChange">
-                  <el-radio-button label="day">按日</el-radio-button>
-                  <el-radio-button label="month">按月</el-radio-button>
+                  <el-radio-button value="day">按日</el-radio-button>
+                  <el-radio-button value="month">按月</el-radio-button>
                 </el-radio-group>
                 <el-date-picker
                   v-if="pluginTrendGranularity === 'day'"

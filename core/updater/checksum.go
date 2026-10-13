@@ -36,10 +36,15 @@ type ChecksumFile struct {
 const maxChecksumFileBytes int64 = 1 << 20
 
 func DownloadChecksumBytes(ctx context.Context, asset ReleaseAsset) ([]byte, error) {
+	return downloadChecksumBytes(ctx, asset, "")
+}
+
+func downloadChecksumBytes(ctx context.Context, asset ReleaseAsset, proxyURL string) ([]byte, error) {
 	url := strings.TrimSpace(asset.DownloadURL)
 	if url == "" {
 		return nil, fmt.Errorf("checksum 下载地址不能为空")
 	}
+	url = ProxyDownloadURL(url, proxyURL)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

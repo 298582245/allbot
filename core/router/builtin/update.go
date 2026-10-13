@@ -21,6 +21,22 @@ func replyUpdate(ctx *Context) error {
 	}
 	requestCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
+	notification := updater.UpgradeNotification{
+		MessageKey:  RestartMessageKey(ctx.Message),
+		Platform:    ctx.Message.Platform,
+		AdapterID:   ctx.adapterID(),
+		UserID:      ctx.Message.UserID,
+		GroupID:     ctx.Message.GroupID,
+		Target:      ctx.Target,
+		StartedAtNS: time.Now().UnixNano(),
+	}
+	if ctx.MessageKey != nil {
+		notification.MessageKey = ctx.MessageKey(ctx.Message)
+	}
+	requestCtx = updater.WithUpgradeNotification(requestCtx, notification)
+	requestCtx = updater.WithUpgradeProgress(requestCtx, func(state updater.UpgradeState) {
+		_ = ctx.SendUserText("更新进度：" + state.Message)
+	})
 	state, err := ctx.UpdateHandler.StartUpgrade(requestCtx)
 	if err != nil {
 		return ctx.SendText(err.Error())

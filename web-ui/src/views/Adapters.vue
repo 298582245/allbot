@@ -150,7 +150,7 @@ const saving = ref(false)
 const adapters = ref([])
 const searchKeyword = ref('')
 const currentPage = ref(1)
-const pageSize = 8
+const pageSize = 9
 const dialogVisible = ref(false)
 const dialogTitle = ref('添加机器人')
 const isEdit = ref(false)
@@ -174,6 +174,7 @@ const adapterPlatformFallback = [
     config_schema: [
       { key: 'app_id', label: 'App ID', type: 'text', required: true },
       { key: 'client_secret', label: 'Client Secret', type: 'password', required: true },
+      { key: 'bot_type', label: '机器人类型', type: 'select', required: true, default: 'public', help: '按 QQ 开放平台机器人类型选择频道消息订阅方式', options: [{ label: '公域机器人', value: 'public' }, { label: '私域机器人', value: 'private' }] },
       { key: 'api_base_url', label: 'API 地址', type: 'text', required: false, placeholder: 'https://api.sgroup.qq.com' },
       { key: 'token_url', label: 'Token 地址', type: 'text', required: false, placeholder: 'https://bots.qq.com/app/getAppAccessToken' }
     ]
@@ -240,7 +241,11 @@ const filteredAdapters = computed(() => {
 })
 
 const sortedAdapters = computed(() => {
-  return [...filteredAdapters.value].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
+  return [...filteredAdapters.value].sort((a, b) => {
+    const pinnedDiff = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned))
+    if (pinnedDiff !== 0) return pinnedDiff
+    return Number(Boolean(b.running)) - Number(Boolean(a.running))
+  })
 })
 
 const paginatedAdapters = computed(() => {

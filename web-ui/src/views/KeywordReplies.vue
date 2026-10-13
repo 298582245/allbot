@@ -109,15 +109,15 @@
         </el-form-item>
         <el-form-item label="匹配方式">
           <el-radio-group v-model="form.match_type" :disabled="form.builtin">
-            <el-radio-button label="regex">正则</el-radio-button>
-            <el-radio-button label="exact">精确</el-radio-button>
+            <el-radio-button value="regex">正则</el-radio-button>
+            <el-radio-button value="exact">精确</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="回复类型">
           <el-radio-group v-model="form.reply_type" :disabled="form.builtin">
-            <el-radio-button label="text">文本</el-radio-button>
-            <el-radio-button label="image">图片</el-radio-button>
-            <el-radio-button label="audio">音频</el-radio-button>
+            <el-radio-button value="text">文本</el-radio-button>
+            <el-radio-button value="image">图片</el-radio-button>
+            <el-radio-button value="audio">音频</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="回复内容">

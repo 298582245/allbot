@@ -566,6 +566,94 @@ func newManagerTestPlugin(t *testing.T, script string) (*Manager, *types.Plugin,
 	return manager, plugin, pluginPath
 }
 
+func TestExecutePluginTaskCanBeStoppedWithoutChangingPluginResult(t *testing.T) {
+	manager, plugin, pluginPath := newManagerTestPlugin(t, `
+const readline = require('readline');
+readline.createInterface({ input: process.stdin, terminal: false }).on('line', () => {});
+setInterval(() => {}, 1000);
+`)
+	database, err := config.NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	manager.SetDatabase(database)
+	resultCh := make(chan error, 1)
+	go func() {
+		resultCh <- manager.ExecutePlugin(plugin, pluginPath, []byte(`{}`), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, PluginTaskInfo{Platform: "test", UserID: "user-1", Content: "触发"})
+	}()
+
+	var taskID int64
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		items, listErr := database.ListPluginTaskLogs(config.PluginTaskLogFilter{Limit: 10})
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		if len(items) == 1 {
+			taskID = items[0].ID
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if taskID == 0 || !manager.StopPluginTask(taskID) {
+		t.Fatal("expected a running plugin task that can be stopped")
+	}
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			t.Fatalf("stopping plugin should not return an execution error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("plugin execution did not stop")
+	}
+	item, err := database.GetPluginTaskLog(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item == nil || item.Status != config.PluginTaskStatusStopped {
+		t.Fatalf("expected stopped plugin task, got %#v", item)
+	}
+}
+
+func TestExecutePluginTaskStopsAfterRunTimeout(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node 不可用，跳过插件任务超时测试")
+	}
+	manager, plugin, pluginPath := newManagerTestPlugin(t, `
+setInterval(() => console.log('tick'), 100);
+`)
+	database, err := config.NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.SavePluginTaskSettings(config.PluginTaskSettings{RunTimeoutSeconds: 1}); err != nil {
+		t.Fatal(err)
+	}
+	manager.SetDatabase(database)
+	notifications := make(chan PluginTaskTimeoutNotification, 1)
+	manager.SetPluginTaskTimeoutNotifier(func(notification PluginTaskTimeoutNotification) { notifications <- notification })
+	if err := manager.ExecutePlugin(plugin, pluginPath, []byte(`{}`), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, PluginTaskInfo{Platform: "test", UserID: "user-1", Content: "超时"}); err != nil {
+		t.Fatalf("timeout should not change plugin execution result: %v", err)
+	}
+	items, err := database.ListPluginTaskLogs(config.PluginTaskLogFilter{PluginID: plugin.ID, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Status != config.PluginTaskStatusFailed || !strings.Contains(items[0].Error, "运行超过 1 秒") {
+		t.Fatalf("unexpected timeout log: %#v", items)
+	}
+	select {
+	case notification := <-notifications:
+		if notification.LogID != items[0].ID || notification.TimeoutSeconds != 1 {
+			t.Fatalf("unexpected timeout notification: %#v", notification)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected plugin task timeout notification")
+	}
+}
+
 func newManagerTestOpenAPI(t *testing.T, script string) (*Manager, types.OpenAPIEndpoint, string) {
 	t.Helper()
 	if _, err := exec.LookPath("node"); err != nil {
