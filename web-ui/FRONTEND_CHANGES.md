@@ -2,6 +2,15 @@
 
 本文件只记录 `web-ui/src` 下的打包前前端源码改动，不记录 `web/` 下构建产物。
 
+## 2026-10-15
+
+### `src/views/Plugins.vue`
+
+- 时间：14:20
+- 修改范围：插件访问控制
+- 变更摘要：新增“仅管理员使用”开关；启用后平台管理员可直接使用插件，非管理员可通过白名单个人 ID 使用。
+- 统计：新增 1 个插件访问控制配置项。
+
 ## 2026-10-13
 
 ### `src/demo/mockApi.js`、`src/utils/request.js`、`src/api/index.js`、`src/router/index.js`、`src/stores/auth.js`、`src/App.vue`、`src/views/Login.vue`、`src/views/WebChat.vue`

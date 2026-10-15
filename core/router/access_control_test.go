@@ -23,6 +23,32 @@ func TestAllowMessageByAccessControlUnionID(t *testing.T) {
 	}
 }
 
+func TestAllowMessageByAccessControlAdminOnly(t *testing.T) {
+	message := &types.Message{Platform: "qq", UserID: "user-1", GroupID: "group-1"}
+	config := types.AccessControlConfig{AdminOnly: true}
+
+	if !allowMessageByAccessControlWithAdmin(config, message, "", true) {
+		t.Fatal("expected administrator to bypass admin-only access control")
+	}
+	if allowMessageByAccessControlWithAdmin(config, message, "", false) {
+		t.Fatal("expected non-administrator without personal whitelist to be blocked")
+	}
+	config.WhitelistUserIDs = []string{"user-1"}
+	if !allowMessageByAccessControlWithAdmin(config, message, "", false) {
+		t.Fatal("expected personal whitelist user to bypass admin-only access control")
+	}
+	config.BlockedUserIDs = []string{"user-1"}
+	if allowMessageByAccessControlWithAdmin(config, message, "", true) {
+		t.Fatal("expected blocked user to remain blocked even when administrator")
+	}
+	config.BlockedUserIDs = nil
+	config.WhitelistUserIDs = nil
+	config.WhitelistGroups = []string{"other-group"}
+	if allowMessageByAccessControlWithAdmin(config, message, "", false) {
+		t.Fatal("expected group whitelist not to act as admin-only exception")
+	}
+}
+
 func TestAllowSystemHardBlockUnionID(t *testing.T) {
 	message := &types.Message{Platform: "qq", UserID: "user-1"}
 	if allowSystemHardBlock(types.AccessControlConfig{BlockedUnionIDs: []string{"union-1"}}, message, "union-1") {

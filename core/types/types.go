@@ -34,6 +34,7 @@ type RichMessage struct {
 
 type AccessControlConfig struct {
 	InheritSystem     bool     `json:"inherit_system"`
+	AdminOnly         bool     `json:"admin_only"`
 	WhitelistGroups   []string `json:"whitelist_groups"`
 	BlockedGroups     []string `json:"blocked_groups"`
 	WhitelistUserIDs  []string `json:"whitelist_user_ids"`

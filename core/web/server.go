@@ -454,7 +454,11 @@ func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	sort.SliceStable(result, func(i, j int) bool {
-		return boolValue(result[i], "pinned", false) && !boolValue(result[j], "pinned", false)
+		pinnedI, pinnedJ := boolValue(result[i], "pinned", false), boolValue(result[j], "pinned", false)
+		if pinnedI != pinnedJ {
+			return pinnedI
+		}
+		return boolValue(result[i], "enabled", true) && !boolValue(result[j], "enabled", true)
 	})
 	s.jsonResponse(w, result)
 }
@@ -990,7 +994,7 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 			config["user_config"] = map[string]interface{}{}
 		}
 		if _, ok := config["access_control"]; !ok {
-			config["access_control"] = map[string]interface{}{"inherit_system": true, "whitelist_groups": []string{}, "blocked_groups": []string{}, "whitelist_user_ids": []string{}, "blocked_user_ids": []string{}, "whitelist_union_ids": []string{}, "blocked_union_ids": []string{}}
+			config["access_control"] = map[string]interface{}{"inherit_system": true, "admin_only": false, "whitelist_groups": []string{}, "blocked_groups": []string{}, "whitelist_user_ids": []string{}, "blocked_user_ids": []string{}, "whitelist_union_ids": []string{}, "blocked_union_ids": []string{}}
 		}
 		if _, ok := config["runtime_profile"]; !ok {
 			config["runtime_profile"] = ""

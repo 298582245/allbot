@@ -10,12 +10,13 @@ import (
 	"testing"
 )
 
-func TestHandlePluginsSortsPinnedBeforeUnpinned(t *testing.T) {
+func TestHandlePluginsSortsPinnedAndEnabledBeforeOthers(t *testing.T) {
 	withTempWorkdir(t, func() {
 		server := testServer(t)
-		writePinnedTestPluginConfig(t, "alpha", false)
-		writePinnedTestPluginConfig(t, "bravo", true)
-		writePinnedTestPluginConfig(t, "charlie", true)
+		writeSortedTestPluginConfig(t, "pinned-disabled", true, false)
+		writeSortedTestPluginConfig(t, "pinned-enabled", true, true)
+		writeSortedTestPluginConfig(t, "normal-disabled", false, false)
+		writeSortedTestPluginConfig(t, "normal-enabled", false, true)
 
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/api/plugins", nil)
@@ -25,12 +26,9 @@ func TestHandlePluginsSortsPinnedBeforeUnpinned(t *testing.T) {
 		}
 		var plugins []map[string]interface{}
 		decodeUnifiedResponseData(t, recorder, &plugins)
-		ids := []string{plugins[0]["id"].(string), plugins[1]["id"].(string), plugins[2]["id"].(string)}
-		if ids[0] != "bravo" || ids[1] != "charlie" || ids[2] != "alpha" {
+		ids := []string{plugins[0]["id"].(string), plugins[1]["id"].(string), plugins[2]["id"].(string), plugins[3]["id"].(string)}
+		if ids[0] != "pinned-enabled" || ids[1] != "pinned-disabled" || ids[2] != "normal-enabled" || ids[3] != "normal-disabled" {
 			t.Fatalf("unexpected plugin order: %#v", ids)
-		}
-		if plugins[0]["pinned"] != true || plugins[2]["pinned"] != false {
-			t.Fatalf("unexpected pinned fields: %#v", plugins)
 		}
 	})
 }
@@ -82,6 +80,10 @@ func TestHandlePluginActionPinsAndUnpins(t *testing.T) {
 }
 
 func writePinnedTestPluginConfig(t *testing.T, pluginID string, pinned bool) {
+	writeSortedTestPluginConfig(t, pluginID, pinned, true)
+}
+
+func writeSortedTestPluginConfig(t *testing.T, pluginID string, pinned, enabled bool) {
 	t.Helper()
 	pluginDir := filepath.Join("plugins", pluginID)
 	if err := os.MkdirAll(pluginDir, 0755); err != nil {
@@ -96,7 +98,7 @@ func writePinnedTestPluginConfig(t *testing.T, pluginID string, pinned bool) {
 		"priority":     0,
 		"pinned":       pinned,
 		"trigger":      "^" + pluginID + "$",
-		"enabled":      true,
+		"enabled":      enabled,
 		"dependencies": map[string]string{},
 	}
 	data, err := json.Marshal(config)

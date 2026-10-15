@@ -384,6 +384,10 @@
               <div class="field-tip">开启后使用系统权限控制；关闭后使用当前插件自己的配置。</div>
             </el-form-item>
             <template v-if="!currentConfig.access_control.inherit_system">
+              <el-form-item label="仅管理员使用">
+                <el-switch v-model="currentConfig.access_control.admin_only" />
+                <div class="field-tip">开启后平台管理员可直接使用；非管理员仅白名单 ID（个人 ID）可使用。</div>
+              </el-form-item>
               <el-form-item label="白名单群">
                 <el-select v-model="currentConfig.access_control.whitelist_groups" multiple filterable allow-create default-first-option placeholder="群 ID，可输入多个" style="width: 100%" />
               </el-form-item>
@@ -1454,6 +1458,7 @@ const handleConfigDialogClose = () => {
 function createAccessControl(inheritSystem = false) {
   return {
     inherit_system: inheritSystem,
+    admin_only: false,
     whitelist_groups: [],
     blocked_groups: [],
     whitelist_user_ids: [],
@@ -1832,6 +1837,7 @@ function normalizeAccessControl(value, defaultInherit = false) {
   const list = (items) => Array.isArray(items) ? items.map(item => String(item).trim()).filter(Boolean) : []
   return {
     inherit_system: Object.prototype.hasOwnProperty.call(source, 'inherit_system') ? Boolean(source.inherit_system) : defaultInherit,
+    admin_only: Boolean(source.admin_only),
     whitelist_groups: list(source.whitelist_groups),
     blocked_groups: list(source.blocked_groups),
     whitelist_user_ids: list(source.whitelist_user_ids),

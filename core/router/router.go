@@ -480,10 +480,14 @@ func (r *Router) systemAccessControl() types.AccessControlConfig {
 func (r *Router) allowPluginMessage(plugin *types.Plugin, msg *types.Message) bool {
 	config := plugin.AccessControl
 	unionID := r.messageUnionID(msg)
+	r.mu.RLock()
+	adminChecker := r.adminChecker
+	r.mu.RUnlock()
+	isAdmin := adminChecker != nil && adminChecker(msg.Platform, msg.UserID)
 	if config.InheritSystem {
-		return allowMessageByAccessControl(r.systemAccessControl(), msg, unionID)
+		return allowMessageByAccessControlWithAdmin(r.systemAccessControl(), msg, unionID, isAdmin)
 	}
-	return allowMessageByAccessControl(config, msg, unionID)
+	return allowMessageByAccessControlWithAdmin(config, msg, unionID, isAdmin)
 }
 
 func messageSessionGroupID(msg *types.Message) string {
@@ -550,6 +554,10 @@ func allowSystemHardBlock(config types.AccessControlConfig, msg *types.Message, 
 }
 
 func allowMessageByAccessControl(config types.AccessControlConfig, msg *types.Message, unionID string) bool {
+	return allowMessageByAccessControlWithAdmin(config, msg, unionID, false)
+}
+
+func allowMessageByAccessControlWithAdmin(config types.AccessControlConfig, msg *types.Message, unionID string, isAdmin bool) bool {
 	if containsString(config.BlockedUserIDs, msg.UserID) {
 		return false
 	}
@@ -558,6 +566,9 @@ func allowMessageByAccessControl(config types.AccessControlConfig, msg *types.Me
 	}
 	if msg.GroupID != "" && containsString(config.BlockedGroups, msg.GroupID) {
 		return false
+	}
+	if config.AdminOnly {
+		return isAdmin || containsString(config.WhitelistUserIDs, msg.UserID)
 	}
 	if len(config.WhitelistUserIDs) > 0 && !containsString(config.WhitelistUserIDs, msg.UserID) {
 		return false

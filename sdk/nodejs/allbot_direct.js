@@ -622,6 +622,7 @@ function normalizeAccessControl(config = {}) {
     const list = (value) => Array.isArray(value) ? value.map(String).filter(Boolean) : [];
     return {
         inherit_system: Boolean(config.inherit_system ?? config.inheritSystem),
+        admin_only: Boolean(config.admin_only ?? config.adminOnly),
         whitelist_groups: list(config.whitelist_groups || config.whitelistGroups),
         blocked_groups: list(config.blocked_groups || config.blockedGroups),
         whitelist_user_ids: list(config.whitelist_user_ids || config.whitelistUserIds),

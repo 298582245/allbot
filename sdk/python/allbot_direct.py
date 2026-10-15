@@ -844,6 +844,7 @@ def normalize_access_control(config: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "inherit_system": bool(config.get("inherit_system", config.get("inheritSystem", False))),
+        "admin_only": bool(config.get("admin_only", config.get("adminOnly", False))),
         "whitelist_groups": list_value(config.get("whitelist_groups") or config.get("whitelistGroups")),
         "blocked_groups": list_value(config.get("blocked_groups") or config.get("blockedGroups")),
         "whitelist_user_ids": list_value(config.get("whitelist_user_ids") or config.get("whitelistUserIds")),
