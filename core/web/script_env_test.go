@@ -60,12 +60,13 @@ func TestHandleScriptEnvsCRUD(t *testing.T) {
 	}
 }
 
-func TestHandleScriptEnvsListIDDesc(t *testing.T) {
+func TestHandleScriptEnvsListPinnedAndEnabledFirst(t *testing.T) {
 	server := testServer(t)
 	fixtures := []map[string]interface{}{
-		{"name": "B_NORMAL", "value": "1", "enabled": true, "pinned": false},
-		{"name": "C_PINNED", "value": "2", "enabled": true, "pinned": true},
-		{"name": "A_PINNED", "value": "3", "enabled": true, "pinned": true},
+		{"name": "PINNED_DISABLED", "value": "1", "enabled": false, "pinned": true},
+		{"name": "NORMAL_ENABLED", "value": "2", "enabled": true, "pinned": false},
+		{"name": "PINNED_ENABLED", "value": "3", "enabled": true, "pinned": true},
+		{"name": "NORMAL_DISABLED", "value": "4", "enabled": false, "pinned": false},
 	}
 	for _, fixture := range fixtures {
 		recorder := performOpenAPIJSONRequest(t, server.handleScriptEnvs, http.MethodPost, "/api/script-envs", fixture)
@@ -82,7 +83,7 @@ func TestHandleScriptEnvsListIDDesc(t *testing.T) {
 		Items []config.ScriptEnvVar `json:"items"`
 	}
 	decodeOpenAPIResponse(t, recorder, &list)
-	want := []string{"A_PINNED", "C_PINNED", "B_NORMAL"}
+	want := []string{"PINNED_ENABLED", "PINNED_DISABLED", "NORMAL_ENABLED", "NORMAL_DISABLED"}
 	if len(list.Items) != len(want) {
 		t.Fatalf("unexpected list length: %#v", list)
 	}

@@ -2,6 +2,34 @@ package config
 
 import "testing"
 
+func TestKeywordRepliesListPinnedAndEnabledFirst(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	items, err := db.ListKeywordReplies()
+	if err != nil {
+		t.Fatalf("ListKeywordReplies returned error: %v", err)
+	}
+	for i := 1; i < len(items); i++ {
+		previous, current := items[i-1], items[i]
+		if previous.Pinned && !current.Pinned {
+			continue
+		}
+		if previous.Pinned != current.Pinned {
+			t.Fatalf("pinned replies should be listed first: %#v then %#v", previous, current)
+		}
+		if previous.Enabled && !current.Enabled {
+			continue
+		}
+		if previous.Enabled != current.Enabled {
+			t.Fatalf("enabled replies should be listed first within each pinned group: %#v then %#v", previous, current)
+		}
+	}
+}
+
 func TestBuiltinPluginListKeywordReplySeeded(t *testing.T) {
 	db, err := NewDatabase(":memory:")
 	if err != nil {

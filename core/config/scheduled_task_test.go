@@ -5,6 +5,40 @@ import (
 	"time"
 )
 
+func TestScheduledTasksListPinnedAndEnabledFirst(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	fixtures := []*ScheduledTask{
+		{PluginID: "z-disabled", TaskKey: "pinned-disabled", Pinned: true, Enabled: false, Cron: "@once", Platform: "qq", UserID: "admin", Content: "test"},
+		{PluginID: "user", TaskKey: "normal-enabled", Pinned: false, Enabled: true, Cron: "@once", Platform: "qq", UserID: "admin", Content: "test"},
+		{PluginID: "a-enabled", TaskKey: "pinned-enabled", Pinned: true, Enabled: true, Cron: "@once", Platform: "qq", UserID: "admin", Content: "test"},
+		{PluginID: "user", TaskKey: "normal-disabled", Pinned: false, Enabled: false, Cron: "@once", Platform: "qq", UserID: "admin", Content: "test"},
+	}
+	for _, item := range fixtures {
+		if err := db.SaveScheduledTask(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items, err := db.ListScheduledTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pinned-enabled", "pinned-disabled", "normal-enabled", "normal-disabled"}
+	if len(items) != len(want) {
+		t.Fatalf("items = %#v", items)
+	}
+	for i, taskKey := range want {
+		if items[i].TaskKey != taskKey {
+			t.Fatalf("items[%d].TaskKey = %q, want %q; items=%#v", i, items[i].TaskKey, taskKey, items)
+		}
+	}
+}
+
 func TestDisablePluginScheduledTasksOnlyClosesPluginDeclaredTasks(t *testing.T) {
 	db, err := NewDatabase(":memory:")
 	if err != nil {

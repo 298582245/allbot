@@ -1271,6 +1271,7 @@ func (r *Router) dispatchFakeMessage(pluginID string, action plugincore.FakeMess
 	if platform == "" {
 		return fmt.Errorf("平台不能为空")
 	}
+	userID, groupID = r.normalizeFakeMessageIdentity(platform, userID, groupID)
 	msg := &types.Message{
 		ID:        fmt.Sprintf("fake-%s-%d", pluginID, time.Now().UnixNano()),
 		Platform:  platform,
@@ -1283,6 +1284,10 @@ func (r *Router) dispatchFakeMessage(pluginID string, action plugincore.FakeMess
 			"fake_source_plugin": pluginID,
 		},
 	}
+	if platform == "qq_office" && groupID != "" {
+		msg.Metadata["qq_office_group_openid"] = groupID
+		msg.Metadata["qq_office_member_openid"] = userID
+	}
 	if adapterID != "" {
 		msg.Metadata["adapter_id"] = adapterID
 		msg.Metadata["adapter_platform"] = platform
@@ -1292,6 +1297,31 @@ func (r *Router) dispatchFakeMessage(pluginID string, action plugincore.FakeMess
 	log.Printf("[SYSTEM] Plugin %s fake message: platform=%s adapter_id=%s user=%s group=%s content=%s", pluginID, platform, adapterID, userID, groupID, content)
 	go r.HandleMessage(msg)
 	return nil
+}
+
+func (r *Router) normalizeFakeMessageIdentity(platform, userID, groupID string) (string, string) {
+	if strings.EqualFold(strings.TrimSpace(platform), "qq_office") {
+		groupID = strings.TrimPrefix(groupID, "group_")
+	}
+	r.mu.RLock()
+	database := r.database
+	r.mu.RUnlock()
+	if database == nil {
+		return userID, groupID
+	}
+	if _, err := database.GetUserAccount(platform, userID); err == nil {
+		return userID, groupID
+	}
+	accounts, err := database.ListUserAccountsByUnionID(userID)
+	if err != nil {
+		return userID, groupID
+	}
+	for _, account := range accounts {
+		if account != nil && strings.EqualFold(strings.TrimSpace(account.Platform), strings.TrimSpace(platform)) {
+			return account.UserID, groupID
+		}
+	}
+	return userID, groupID
 }
 
 func (r *Router) DispatchFakeMessage(pluginID string, platform string, userID string, groupID string, content string) error {
