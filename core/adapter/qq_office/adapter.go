@@ -941,6 +941,7 @@ func (a *QQOfficeAdapter) handleDirectMessage(data map[string]interface{}) {
 	guildID := stringValue(data["guild_id"])
 	channelID := stringValue(data["channel_id"])
 	author, _ := data["author"].(map[string]interface{})
+	authorBot := qqOfficeAuthorIsBot(author)
 	userID := stringValue(author["id"])
 	authorName := stringValue(author["username"])
 	if authorName == "" {
@@ -961,6 +962,7 @@ func (a *QQOfficeAdapter) handleDirectMessage(data map[string]interface{}) {
 			"reply_target":          "dms_" + guildID + "|msg_" + messageID,
 		},
 	}
+	a.setQQOfficeBotMetadata(msg.Metadata, authorBot, userID)
 	log.Printf("[接收][QQ官方][%s(DMS %s)]：%s", userID, guildID, content)
 	a.dispatchMessage(msg)
 }
@@ -973,6 +975,7 @@ func (a *QQOfficeAdapter) handleC2CMessage(data map[string]interface{}) {
 	}
 	messageID := stringValue(data["id"])
 	author, _ := data["author"].(map[string]interface{})
+	authorBot := qqOfficeAuthorIsBot(author)
 	userOpenID := stringValue(author["user_openid"])
 	if userOpenID == "" {
 		userOpenID = stringValue(author["id"])
@@ -994,6 +997,7 @@ func (a *QQOfficeAdapter) handleC2CMessage(data map[string]interface{}) {
 			"reply_target":          "user_" + userOpenID + "|msg_" + messageID,
 		},
 	}
+	a.setQQOfficeBotMetadata(msg.Metadata, authorBot, userOpenID)
 	log.Printf("[接收][QQ官方][%s(C2C)]：%s", userOpenID, content)
 	a.dispatchMessage(msg)
 }
@@ -1043,6 +1047,7 @@ func (a *QQOfficeAdapter) handleGroupMessage(eventType string, data map[string]i
 			"reply_target":            "group_" + groupOpenID + "|msg_" + messageID + "|at_" + memberOpenID,
 		},
 	}
+	a.setQQOfficeBotMetadata(msg.Metadata, qqOfficeAuthorIsBot(author), memberOpenID)
 	log.Printf("[接收][QQ官方][%s(群 %s)]：%s", memberOpenID, groupOpenID, content)
 	a.dispatchMessage(msg)
 }
@@ -1055,9 +1060,7 @@ func (a *QQOfficeAdapter) handleChannelMessage(eventType string, data map[string
 		return
 	}
 	author, _ := data["author"].(map[string]interface{})
-	if bot, ok := author["bot"].(bool); ok && bot {
-		return
-	}
+	authorBot := qqOfficeAuthorIsBot(author)
 	userID := stringValue(author["id"])
 	if userID == "" {
 		userID = stringValue(author["user_id"])
@@ -1082,8 +1085,29 @@ func (a *QQOfficeAdapter) handleChannelMessage(eventType string, data map[string
 			"reply_target":          "channel_" + channelID + "|msg_" + messageID,
 		},
 	}
+	a.setQQOfficeBotMetadata(msg.Metadata, authorBot, userID)
 	log.Printf("[接收][QQ官方][%s(频道 %s)]：%s", userID, channelID, content)
 	a.dispatchMessage(msg)
+}
+
+func qqOfficeAuthorIsBot(author map[string]interface{}) bool {
+	if author == nil {
+		return false
+	}
+	bot, ok := author["bot"].(bool)
+	return ok && bot
+}
+
+func (a *QQOfficeAdapter) setQQOfficeBotMetadata(metadata map[string]string, isBot bool, userID string) {
+	if !isBot || metadata == nil {
+		return
+	}
+	metadata["is_bot"] = "true"
+	metadata["sender_type"] = "bot"
+	metadata["bot_id"] = strings.TrimSpace(userID)
+	metadata["qq_office_bot_id"] = strings.TrimSpace(userID)
+	metadata["bot_identity_label"] = "机器人 App ID"
+	metadata["bot_identity_value"] = strings.TrimSpace(a.appID)
 }
 
 func (a *QQOfficeAdapter) handleInteractionCreate(data map[string]interface{}) {

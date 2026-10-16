@@ -28,6 +28,17 @@ func TestPluginTriggerStatsRecordsRegisteredUser(t *testing.T) {
 	assertPluginTriggerTotal(t, db, "demo", 1)
 }
 
+func TestPluginTriggerStatsRecordsAcceptedBotMessageWithoutUserAccount(t *testing.T) {
+	db, router := newPluginTriggerStatsRouter(t)
+	registerPluginForStats(t, router, &types.Plugin{ID: "bot", Name: "机器人插件", Trigger: "^bot$", Enabled: true, AcceptBotMessages: true})
+	msg := pluginTriggerStatsMessage("bot")
+	msg.UserID = "bot-openid"
+	msg.Metadata["is_bot"] = "true"
+	msg.Metadata["sender_type"] = "bot"
+	router.HandleMessage(msg)
+	assertPluginTriggerTotal(t, db, "bot", 1)
+}
+
 func TestPluginTriggerStatsRecordsOnlySelectedPlugin(t *testing.T) {
 	db, router := newPluginTriggerStatsRouter(t)
 	if _, err := db.EnsureUserAccount("qq", "user-1"); err != nil {

@@ -283,7 +283,7 @@ func (r *Router) HandleMessage(msg *types.Message) {
 	if !isEvent && r.rejectDisabledUser(msg, database) {
 		return
 	}
-	if !isEvent && msg.Metadata["fake"] != "true" && r.sessionManager.HandleMessageWithMessage(messageSessionScope(msg, ""), msg) {
+	if !isEvent && !isBotMessage(msg) && msg.Metadata["fake"] != "true" && r.sessionManager.HandleMessageWithMessage(messageSessionScope(msg, ""), msg) {
 		log.Printf("%s Message intercepted by waiting session", listenLogPrefix(msg))
 		return
 	}
@@ -295,7 +295,7 @@ func (r *Router) HandleMessage(msg *types.Message) {
 		log.Printf("[SYSTEM] Message blocked by system access control: platform=%s user=%s group=%s", msg.Platform, msg.UserID, msg.GroupID)
 		return
 	}
-	if !isEvent && keywordReplies != nil && keywordReplies.Handle(msg) {
+	if !isEvent && !isBotMessage(msg) && keywordReplies != nil && keywordReplies.Handle(msg) {
 		return
 	}
 
@@ -304,7 +304,7 @@ func (r *Router) HandleMessage(msg *types.Message) {
 		log.Printf("[SYSTEM] No plugin matched")
 		return
 	}
-	if database != nil && !isEvent {
+	if database != nil && !isEvent && !isBotMessage(msg) {
 		if _, err := database.GetUserAccount(msg.Platform, msg.UserID); err != nil {
 			adp := r.getAdapterForMessage(msg)
 			if adp != nil {
@@ -442,6 +442,9 @@ func (r *Router) FilterPluginsForMessage(msg *types.Message, requireTrigger bool
 		if !r.supportsAdapter(plugin, msg.AdapterID) {
 			continue
 		}
+		if isBotMessage(msg) && !plugin.AcceptBotMessages {
+			continue
+		}
 		if !r.allowPluginMessage(plugin, msg) {
 			continue
 		}
@@ -461,6 +464,14 @@ func (r *Router) FilterPluginsForMessage(msg *types.Message, requireTrigger bool
 		return matched[i].Priority > matched[j].Priority
 	})
 	return matched
+}
+
+func isBotMessage(msg *types.Message) bool {
+	if msg == nil || msg.Metadata == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(msg.Metadata["is_bot"]), "true") ||
+		strings.EqualFold(strings.TrimSpace(msg.Metadata["sender_type"]), "bot")
 }
 
 func (r *Router) systemAccessControl() types.AccessControlConfig {

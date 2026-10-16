@@ -987,6 +987,9 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 		if _, ok := config["pinned"]; !ok {
 			config["pinned"] = false
 		}
+		if _, ok := config["accept_bot_messages"]; !ok {
+			config["accept_bot_messages"] = false
+		}
 		if _, ok := config["user_config_schema"]; !ok {
 			config["user_config_schema"] = []interface{}{}
 		}

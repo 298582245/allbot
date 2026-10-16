@@ -972,6 +972,29 @@ func TestQQOfficeHandleChannelMessageBuildsDeletableMessage(t *testing.T) {
 	}
 }
 
+func TestQQOfficeHandleChannelBotMessageBuildsMessage(t *testing.T) {
+	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
+	got := make(chan *types.Message, 1)
+	adp.SetMessageHandler(func(msg *types.Message) { got <- msg })
+
+	adp.handleDispatch("MESSAGE_CREATE", map[string]interface{}{
+		"id":         "msg-bot",
+		"guild_id":   "guild-openid",
+		"channel_id": "channel-openid",
+		"content":    "机器人回复",
+		"author": map[string]interface{}{
+			"id":       "bot-openid",
+			"username": "另一个机器人",
+			"bot":      true,
+		},
+	})
+
+	msg := <-got
+	if msg.Content != "机器人回复" || msg.Metadata["is_bot"] != "true" || msg.Metadata["sender_type"] != "bot" || msg.Metadata["bot_id"] != "bot-openid" || msg.Metadata["qq_office_bot_id"] != "bot-openid" || msg.Metadata["bot_identity_value"] != "app123" {
+		t.Fatalf("bot message = %#v", msg)
+	}
+}
+
 func TestQQOfficeIdentifyIntentsIncludeGroupEvents(t *testing.T) {
 	intents := qqOfficeIntentGuilds | qqOfficeIntentGuildMessages | qqOfficeIntentDirectMessage | qqOfficeIntentGroupMember | qqOfficeIntentGroupAndC2C
 	if intents&qqOfficeIntentGuildMessages == 0 || intents&qqOfficeIntentGroupMember == 0 || intents&qqOfficeIntentGroupAndC2C == 0 {

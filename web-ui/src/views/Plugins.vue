@@ -371,6 +371,10 @@
               </el-select>
               <div class="field-tip">不选择表示所有机器人都可以触发该插件。</div>
             </el-form-item>
+            <el-form-item label="接收机器人消息">
+              <el-switch v-model="currentConfig.accept_bot_messages" active-text="开启" inactive-text="关闭" />
+              <div class="field-tip">开启后，其他机器人发送的消息也可以匹配该插件；当前机器人自己发送的消息仍按平台规则处理。</div>
+            </el-form-item>
             <el-form-item label="启用状态">
               <el-switch v-model="currentConfig.enabled" />
             </el-form-item>
@@ -897,6 +901,7 @@ const currentConfig = ref({
   pinned: false,
   platforms: [],
   allowed_adapter_ids: [],
+  accept_bot_messages: false,
   access_control: createAccessControl(true),
   user_config_schema: [],
   user_config: {},
@@ -1195,6 +1200,7 @@ const handleConfig = async (plugin) => {
     const config = await request.get(`/plugins/config/${plugin.id}`)
     config.platforms = Array.isArray(config.platforms) ? config.platforms : []
     config.allowed_adapter_ids = config.allowed_adapter_ids || []
+    config.accept_bot_messages = Boolean(config.accept_bot_messages)
     config.runtime_profile = config.runtime_profile || ''
     config.priority = Number(config.priority || 0)
     config.pinned = Boolean(config.pinned)
@@ -1444,6 +1450,7 @@ const handleConfigDialogClose = () => {
     pinned: false,
     platforms: [],
     allowed_adapter_ids: [],
+    accept_bot_messages: false,
     access_control: createAccessControl(true),
     user_config_schema: [],
     user_config: {},

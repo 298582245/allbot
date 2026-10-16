@@ -21,6 +21,17 @@ func TestRouterEventMessagesTriggerAllMatchedPlugins(t *testing.T) {
 	assertPluginTriggerTotal(t, db, "second", 1)
 }
 
+func TestRouterBotMessagesRequirePluginOptIn(t *testing.T) {
+	r := NewRouter(session.NewManager())
+	registerPluginForStats(t, r, &types.Plugin{ID: "default", Name: "默认插件", Trigger: "^bot$", Enabled: true})
+	registerPluginForStats(t, r, &types.Plugin{ID: "allowed", Name: "机器人插件", Trigger: "^bot$", Enabled: true, AcceptBotMessages: true})
+
+	matched := r.FilterPluginsForMessage(&types.Message{Platform: "qq", Content: "bot", Metadata: map[string]string{"is_bot": "true"}}, true)
+	if len(matched) != 1 || matched[0].ID != "allowed" {
+		t.Fatalf("matched bot plugins = %#v, expected only opt-in plugin", matched)
+	}
+}
+
 func TestRouterNormalMessagesStillTriggerHighestPriorityPlugin(t *testing.T) {
 	db, r := newPluginTriggerStatsRouter(t)
 	if _, err := db.EnsureUserAccount("qq", "user-1"); err != nil {

@@ -2337,6 +2337,7 @@ func (m *Manager) ValidatePluginConfig(pluginPath, pluginID string) (*types.Plug
 		Trigger:           config.Trigger,
 		TriggerRegex:      triggerRegex,
 		Enabled:           config.Enabled,
+		AcceptBotMessages: config.AcceptBotMessages,
 		UserConfig:        config.UserConfig,
 		AccessControl:     pluginAccessControl(config.AccessControl),
 		OpenAPI:           normalizeOpenAPIConfig(config.OpenAPI, config.Runtime),

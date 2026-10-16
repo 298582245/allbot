@@ -58,6 +58,7 @@ type Plugin struct {
 	TriggerRegex      *regexp.Regexp
 	Order             int
 	Enabled           bool
+	AcceptBotMessages bool
 	UserConfig        map[string]interface{}
 	AccessControl     AccessControlConfig
 	OpenAPI           OpenAPIConfig
@@ -166,6 +167,7 @@ type PluginConfig struct {
 	Pinned            bool                    `json:"pinned"`
 	Trigger           string                  `json:"trigger"`
 	Enabled           bool                    `json:"enabled"`
+	AcceptBotMessages bool                    `json:"accept_bot_messages,omitempty"`
 	Dependencies      map[string]string       `json:"dependencies"`
 	UserConfigSchema  []PluginUserConfigField `json:"user_config_schema,omitempty"`
 	UserConfig        map[string]interface{}  `json:"user_config,omitempty"`
