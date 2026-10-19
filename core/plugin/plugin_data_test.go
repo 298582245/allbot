@@ -85,3 +85,52 @@ func TestPluginDataMigratesAndSurvivesManifestReplacement(t *testing.T) {
 		t.Fatal("invalid plugin.data must return an error")
 	}
 }
+
+func TestPluginSystemConfigSurvivesManifestReplacement(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "demo")
+	if err := os.Mkdir(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "main.js"), []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeManifest := func(pinned bool, priority int) {
+		t.Helper()
+		manifest := types.PluginConfig{
+			Name: "demo", Version: "1.0.0", Runtime: "nodejs", Entry: "main.js", Trigger: "^demo$",
+			Enabled: true, Pinned: pinned, Priority: priority,
+			UserConfigSchema: []types.PluginUserConfigField{{Key: "token", Default: "author-token"}},
+		}
+		data, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "plugin.json"), data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeManifest(false, 1)
+	manager := NewManager(root, deps.NewManager(t.TempDir()))
+	if _, err := manager.LoadPlugin(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetPluginPinned("demo", true); err != nil {
+		t.Fatal(err)
+	}
+	writeManifest(false, 99)
+	if err := manager.ReloadPlugin("demo"); err != nil {
+		t.Fatal(err)
+	}
+	plugin := manager.GetPlugin("demo").Plugin
+	if !plugin.Pinned || plugin.Priority != 99 {
+		t.Fatalf("system config merge = pinned=%v priority=%d", plugin.Pinned, plugin.Priority)
+	}
+	document, err := ReadPluginConfigDocument(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document["pinned"] != true || document["priority"] != float64(99) {
+		t.Fatalf("document system config = %#v", document)
+	}
+}

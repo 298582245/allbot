@@ -410,6 +410,8 @@ plugins/demo/
 | `user_config` | 用户配置值 |
 | `access_control` | 插件访问控制 |
 
+插件作者默认配置保存在 `plugin.json`。后台修改的插件系统配置（包括启用、置顶、优先级、触发规则、平台、访问控制和 Web 配置）保存在同目录 `plugin.data.system_config`，用户配置仍保存在 `plugin.data.user_config`。加载时只覆盖用户实际修改的字段，插件更新默认配置不会覆盖这些修改。
+
 ### Node.js 插件示例
 
 ```js

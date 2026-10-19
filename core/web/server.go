@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -1030,7 +1031,6 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		_, hasUserConfig := config["user_config"]
 		originalData, err := os.ReadFile(configPath)
 		if err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
@@ -1046,8 +1046,23 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 		} else {
 			delete(config, "user_config")
 		}
+		systemConfig := make(map[string]interface{})
+		for key := range plugin.SystemConfigKeys() {
+			if value, exists := config[key]; exists && (!reflect.DeepEqual(value, original[key]) || original[key] == nil) {
+				systemConfig[key] = value
+			}
+			if value, exists := original[key]; exists {
+				config[key] = value
+			} else {
+				delete(config, key)
+			}
+		}
 		data, err := json.MarshalIndent(config, "", "  ")
 		if err != nil {
+			s.jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := plugin.ReplacePluginSystemConfig(pluginPath, systemConfig); err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1055,12 +1070,10 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if hasUserConfig {
-			if err := plugin.SavePluginData(pluginPath, typedConfig.UserConfigSchema, typedConfig.UserConfig); err != nil {
-				_ = os.WriteFile(configPath, originalData, 0644)
-				s.jsonError(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+		if err := plugin.SavePluginData(pluginPath, typedConfig.UserConfigSchema, typedConfig.UserConfig); err != nil {
+			_ = os.WriteFile(configPath, originalData, 0644)
+			s.jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		if err := s.pluginManager.ReloadPlugin(pluginID); err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)

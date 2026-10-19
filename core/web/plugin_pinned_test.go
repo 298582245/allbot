@@ -123,7 +123,7 @@ func performPinnedAction(t *testing.T, server *Server, pluginID, action string) 
 
 func assertPinnedConfig(t *testing.T, pluginID string, pinned bool) {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("plugins", pluginID, "plugin.json"))
+	data, err := os.ReadFile(filepath.Join("plugins", pluginID, "plugin.data"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,12 @@ func assertPinnedConfig(t *testing.T, pluginID string, pinned bool) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		t.Fatal(err)
 	}
-	if config["pinned"] != pinned {
-		t.Fatalf("expected pinned=%v, got %#v", pinned, config["pinned"])
+	systemConfig, ok := config["system_config"].(map[string]interface{})
+	storedPinned := false
+	if ok {
+		storedPinned, _ = systemConfig["pinned"].(bool)
+	}
+	if storedPinned != pinned {
+		t.Fatalf("expected pinned=%v, got %#v", pinned, config["system_config"])
 	}
 }

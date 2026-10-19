@@ -55,7 +55,7 @@ func TestSetPluginPinnedPersistsConfigAndMemory(t *testing.T) {
 	if process == nil || process.Plugin == nil || !process.Plugin.Pinned {
 		t.Fatalf("plugin should be pinned in memory: %#v", process)
 	}
-	stored, err := os.ReadFile(filepath.Join(pluginDir, "plugin.json"))
+	stored, err := os.ReadFile(filepath.Join(pluginDir, PluginDataFileName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,8 +63,20 @@ func TestSetPluginPinnedPersistsConfigAndMemory(t *testing.T) {
 	if err := json.Unmarshal(stored, &raw); err != nil {
 		t.Fatal(err)
 	}
-	if raw["pinned"] != true {
-		t.Fatalf("plugin.json should persist pinned=true, got %#v", raw["pinned"])
+	systemConfig, ok := raw["system_config"].(map[string]interface{})
+	if !ok || systemConfig["pinned"] != true {
+		t.Fatalf("plugin.data should persist system_config.pinned=true, got %#v", raw["system_config"])
+	}
+	manifest, err := os.ReadFile(filepath.Join(pluginDir, "plugin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifestValues map[string]interface{}
+	if err := json.Unmarshal(manifest, &manifestValues); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := manifestValues["pinned"]; exists {
+		t.Fatalf("plugin.json should not be changed by pinning: %#v", manifestValues["pinned"])
 	}
 }
 

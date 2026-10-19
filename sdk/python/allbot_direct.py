@@ -496,7 +496,7 @@ class Context:
 
     async def sync_scheduled_tasks(self, task_keys: Any = None) -> Dict[str, Any]:
         keys = task_keys if isinstance(task_keys, list) else []
-        return await self._request(
+        return self._request(
             {"action": "sync_scheduled_tasks", "task_keys": [str(key or "").strip() for key in keys if str(key or "").strip()]},
             "scheduled_task_response",
         )

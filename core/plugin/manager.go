@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -443,7 +444,7 @@ func (m *Manager) TogglePlugin(pluginID string, enabled bool) error {
 		return fmt.Errorf("plugin not found: %s", pluginID)
 	}
 
-	if err := m.updatePluginConfigValue(pluginID, "enabled", enabled); err != nil {
+	if err := updatePluginSystemConfigValue(filepath.Join(m.pluginDir, pluginID), "enabled", enabled); err != nil {
 		return err
 	}
 
@@ -459,30 +460,12 @@ func (m *Manager) SetPluginPinned(pluginID string, pinned bool) error {
 		return fmt.Errorf("plugin not found: %s", pluginID)
 	}
 
-	if err := m.updatePluginConfigValue(pluginID, "pinned", pinned); err != nil {
+	if err := updatePluginSystemConfigValue(filepath.Join(m.pluginDir, pluginID), "pinned", pinned); err != nil {
 		return err
 	}
 
 	process.Plugin.Pinned = pinned
 	return nil
-}
-
-func (m *Manager) updatePluginConfigValue(pluginID, key string, value interface{}) error {
-	configPath := filepath.Join(m.pluginDir, pluginID, "plugin.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return err
-	}
-	var config map[string]interface{}
-	if err := json.Unmarshal(data, &config); err != nil {
-		return err
-	}
-	config[key] = value
-	newData, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(configPath, newData, 0644)
 }
 
 func (m *Manager) ReloadPlugin(pluginID string) error {
@@ -509,21 +492,8 @@ func (m *Manager) ReloadPlugin(pluginID string) error {
 }
 
 func (m *Manager) SavePluginAccessControl(pluginID string, accessControl types.AccessControlConfig) error {
-	configPath := filepath.Join(m.pluginDir, pluginID, "plugin.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return err
-	}
-	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	raw["access_control"] = accessControl
-	updated, err := json.MarshalIndent(raw, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(configPath, updated, 0644); err != nil {
+	pluginPath := filepath.Join(m.pluginDir, pluginID)
+	if err := updatePluginSystemConfigValue(pluginPath, "access_control", accessControl); err != nil {
 		return err
 	}
 	return m.ReloadPlugin(pluginID)
@@ -2371,7 +2341,7 @@ func readPluginConfigWithData(pluginPath string) (types.PluginConfig, bool, erro
 	return config, hasData, nil
 }
 
-// ReadPluginConfigDocument reads plugin.json and overlays persisted user_config values.
+// ReadPluginConfigDocument reads plugin.json and overlays persisted system and user config values.
 func ReadPluginConfigDocument(pluginPath string) (map[string]interface{}, error) {
 	data, err := os.ReadFile(filepath.Join(pluginPath, "plugin.json"))
 	if err != nil {
@@ -2388,21 +2358,30 @@ func ReadPluginConfigDocument(pluginPath string) (map[string]interface{}, error)
 	if _, err := mergePluginData(pluginPath, &config); err != nil {
 		return nil, err
 	}
+	merged, err := pluginConfigMap(config)
+	if err != nil {
+		return nil, err
+	}
+	for key := range pluginSystemConfigKeys {
+		if value, ok := merged[key]; ok {
+			raw[key] = value
+		}
+	}
 	if config.UserConfig != nil {
 		raw["user_config"] = config.UserConfig
 	}
 	return raw, nil
 }
 
-// SavePluginData persists only user-configured values that still have a field in plugin.json.
+// SavePluginData persists user-configured values and preserves system_config.
 func SavePluginData(pluginPath string, schema []types.PluginUserConfigField, values map[string]interface{}) error {
 	config := types.PluginConfig{UserConfigSchema: schema, UserConfig: values}
 	filtered := filterPluginUserConfig(config)
-	data, err := json.MarshalIndent(map[string]interface{}{"user_config": filtered}, "", "  ")
+	systemConfig, err := readSavedPluginSystemConfig(pluginPath)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(pluginPath, PluginDataFileName), data, 0644)
+	return writePluginData(pluginPath, systemConfig, filtered)
 }
 
 func mergePluginData(pluginPath string, config *types.PluginConfig) (bool, error) {
@@ -2421,11 +2400,12 @@ func mergePluginData(pluginPath string, config *types.PluginConfig) (bool, error
 	if err != nil {
 		return false, err
 	}
-	var saved struct {
-		UserConfig map[string]interface{} `json:"user_config"`
+	saved, err := parsePluginData(data)
+	if err != nil {
+		return false, err
 	}
-	if err := json.Unmarshal(data, &saved); err != nil {
-		return false, fmt.Errorf("plugin.data 无效: %w", err)
+	if err := applyPluginSystemConfig(config, saved.SystemConfig); err != nil {
+		return false, err
 	}
 	for key, value := range saved.UserConfig {
 		if _, ok := allowed[key]; ok {
@@ -2441,6 +2421,173 @@ func migrateLegacyPluginData(pluginPath string) error {
 		return err
 	}
 	return SavePluginData(pluginPath, config.UserConfigSchema, config.UserConfig)
+}
+
+var pluginSystemConfigKeys = map[string]struct{}{
+	"name": {}, "version": {}, "runtime": {}, "entry": {}, "enabled": {}, "pinned": {},
+	"runtime_profile": {}, "trigger": {}, "priority": {},
+	"platforms": {}, "allowed_adapter_ids": {}, "accept_bot_messages": {},
+	"access_control": {}, "open_api": {}, "script_env": {}, "web_ui": {}, "web_chat": {},
+}
+
+// SystemConfigKeys returns the plugin fields whose user overrides belong in plugin.data.
+func SystemConfigKeys() map[string]struct{} {
+	keys := make(map[string]struct{}, len(pluginSystemConfigKeys))
+	for key := range pluginSystemConfigKeys {
+		keys[key] = struct{}{}
+	}
+	return keys
+}
+
+type pluginData struct {
+	SystemConfig map[string]interface{} `json:"system_config"`
+	UserConfig   map[string]interface{} `json:"user_config"`
+}
+
+func parsePluginData(data []byte) (pluginData, error) {
+	var saved pluginData
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return saved, fmt.Errorf("plugin.data 无效: %w", err)
+	}
+	if saved.SystemConfig == nil {
+		saved.SystemConfig = make(map[string]interface{})
+	}
+	if saved.UserConfig == nil {
+		saved.UserConfig = make(map[string]interface{})
+	}
+	return saved, nil
+}
+
+func readPluginData(pluginPath string) (pluginData, bool, error) {
+	data, err := os.ReadFile(filepath.Join(pluginPath, PluginDataFileName))
+	if os.IsNotExist(err) {
+		return pluginData{SystemConfig: map[string]interface{}{}, UserConfig: map[string]interface{}{}}, false, nil
+	}
+	if err != nil {
+		return pluginData{}, false, err
+	}
+	saved, err := parsePluginData(data)
+	return saved, true, err
+}
+
+func readSavedPluginSystemConfig(pluginPath string) (map[string]interface{}, error) {
+	saved, _, err := readPluginData(pluginPath)
+	return saved.SystemConfig, err
+}
+
+func writePluginData(pluginPath string, systemConfig, userConfig map[string]interface{}) error {
+	data, err := json.MarshalIndent(pluginData{SystemConfig: systemConfig, UserConfig: userConfig}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(pluginPath, PluginDataFileName), data, 0644)
+}
+
+// SavePluginSystemConfig persists system-owned plugin settings without editing plugin.json.
+func SavePluginSystemConfig(pluginPath string, values map[string]interface{}) error {
+	config, hasData, err := readPluginData(pluginPath)
+	if err != nil {
+		return err
+	}
+	if !hasData {
+		config.SystemConfig = make(map[string]interface{})
+		config.UserConfig = make(map[string]interface{})
+	}
+	for key, value := range values {
+		if _, ok := pluginSystemConfigKeys[key]; ok {
+			config.SystemConfig[key] = value
+		}
+	}
+	return writePluginData(pluginPath, config.SystemConfig, config.UserConfig)
+}
+
+func ReplacePluginSystemConfig(pluginPath string, values map[string]interface{}) error {
+	config, _, err := readPluginData(pluginPath)
+	if err != nil {
+		return err
+	}
+	filtered := make(map[string]interface{}, len(values))
+	for key, value := range values {
+		if _, ok := pluginSystemConfigKeys[key]; ok {
+			filtered[key] = value
+		}
+	}
+	return writePluginData(pluginPath, filtered, config.UserConfig)
+}
+
+func updatePluginSystemConfigValue(pluginPath, key string, value interface{}) error {
+	manifest, err := readPluginConfigManifestMap(pluginPath)
+	if err != nil {
+		return err
+	}
+	saved, _, err := readPluginData(pluginPath)
+	if err != nil {
+		return err
+	}
+	if pluginConfigValuesEqual(manifest[key], value) {
+		delete(saved.SystemConfig, key)
+		return writePluginData(pluginPath, saved.SystemConfig, saved.UserConfig)
+	}
+	return SavePluginSystemConfig(pluginPath, map[string]interface{}{key: value})
+}
+
+func pluginConfigValuesEqual(left, right interface{}) bool {
+	normalize := func(value interface{}) interface{} {
+		data, err := json.Marshal(value)
+		if err != nil {
+			return value
+		}
+		var normalized interface{}
+		if err := json.Unmarshal(data, &normalized); err != nil {
+			return value
+		}
+		return normalized
+	}
+	return reflect.DeepEqual(normalize(left), normalize(right))
+}
+
+func readPluginConfigManifestMap(pluginPath string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(filepath.Join(pluginPath, "plugin.json"))
+	if err != nil {
+		return nil, err
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+	return config, nil
+}
+
+func pluginConfigMap(config types.PluginConfig) (map[string]interface{}, error) {
+	data, err := json.Marshal(config)
+	if err != nil {
+		return nil, err
+	}
+	var values map[string]interface{}
+	if err := json.Unmarshal(data, &values); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func applyPluginSystemConfig(config *types.PluginConfig, values map[string]interface{}) error {
+	if len(values) == 0 {
+		return nil
+	}
+	merged, err := pluginConfigMap(*config)
+	if err != nil {
+		return err
+	}
+	for key, value := range values {
+		if _, ok := pluginSystemConfigKeys[key]; ok {
+			merged[key] = value
+		}
+	}
+	data, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, config)
 }
 
 func filterPluginUserConfig(config types.PluginConfig) map[string]interface{} {
