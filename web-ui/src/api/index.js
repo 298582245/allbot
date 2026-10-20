@@ -1,6 +1,13 @@
 import request from '@/utils/request'
 import { demoWebChatRequest, isDemoMode } from '@/demo/mockApi'
 
+export const getDeveloperApps = (params) => request({ url: '/developer-apps', method: 'get', params })
+export const getDeveloperCapabilities = () => request({ url: '/developer-apps/capabilities', method: 'get' })
+export const createDeveloperApp = (data) => request({ url: '/developer-apps', method: 'post', data })
+export const updateDeveloperApp = (id, data) => request({ url: `/developer-apps/${id}/permissions`, method: 'put', data })
+export const resetDeveloperAppSecret = (id) => request({ url: `/developer-apps/${id}/secret`, method: 'post' })
+export const deleteDeveloperApp = (id) => request({ url: `/developer-apps/${id}/delete`, method: 'delete' })
+
 const webChatRequest = async (path, options = {}) => {
   if (isDemoMode) return demoWebChatRequest(path, options)
   const response = await fetch(`/api/open/web-chat${path}`, {

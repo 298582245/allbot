@@ -1,0 +1,2044 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "AllBot 开发者 API 与 MCP",
+    "version": "1.0.0",
+    "description": "应用管理与使用说明见 docs/developer_api_mcp_usage.md。REST 业务接口使用 /api/v1 前缀并复用后台业务路径。应用按业务模块授权，授权后可调用该模块下所有已开放接口。"
+  },
+  "servers": [
+    {
+      "url": "{panelOrigin}",
+      "variables": {
+        "panelOrigin": {
+          "default": "https://allbot.example.com"
+        }
+      }
+    }
+  ],
+  "tags": [
+    {
+      "name": "认证"
+    },
+    {
+      "name": "能力目录"
+    },
+    {
+      "name": "MCP"
+    },
+    {
+      "name": "系统"
+    },
+    {
+      "name": "设置"
+    },
+    {
+      "name": "插件"
+    },
+    {
+      "name": "适配器"
+    },
+    {
+      "name": "用户"
+    },
+    {
+      "name": "关键字回复"
+    },
+    {
+      "name": "任务"
+    },
+    {
+      "name": "支付"
+    },
+    {
+      "name": "图床"
+    },
+    {
+      "name": "日志"
+    },
+    {
+      "name": "备份"
+    },
+    {
+      "name": "数据"
+    },
+    {
+      "name": "统计"
+    },
+    {
+      "name": "SDK"
+    }
+  ],
+  "paths": {
+    "/api/v1/open-api/token": {
+      "post": {
+        "tags": [
+          "认证"
+        ],
+        "summary": "使用应用凭据换取 24 小时令牌",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "description": "请求字段使用 snake_case；其值对应管理后台展示的 appKey 与 appSecret。",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "app_key",
+                  "app_secret"
+                ],
+                "properties": {
+                  "app_key": {
+                    "type": "string",
+                    "description": "开发者应用的 appKey"
+                  },
+                  "app_secret": {
+                    "type": "string",
+                    "writeOnly": true,
+                    "description": "开发者应用的 appSecret；创建或重置时仅展示一次"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "签发成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "access_token",
+                    "token_type",
+                    "expires_in"
+                  ],
+                  "properties": {
+                    "access_token": {
+                      "type": "string"
+                    },
+                    "token_type": {
+                      "type": "string",
+                      "example": "Bearer"
+                    },
+                    "expires_in": {
+                      "type": "integer",
+                      "example": 86400
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthError"
+          }
+        }
+      }
+    },
+    "/api/v1/capabilities": {
+      "get": {
+        "tags": [
+          "能力目录"
+        ],
+        "summary": "获取当前应用获授权的能力",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthError"
+          }
+        }
+      }
+    },
+    "/api/v1/mcp": {
+      "post": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "MCP Streamable HTTP JSON-RPC 入口",
+        "description": "支持 Basic base64(appKey:appSecret)、应用 Bearer 令牌及面板登录 Bearer 令牌。工具包括 list_capabilities，以及按已授权模块提供的 api_<resource>_<action> 工具。每次调用都检查工具声明与路径映射是否一致；文件类请求使用 raw_body_base64 和 content_type，二进制响应采用 base64 JSON 文本。",
+        "security": [
+          {
+            "BearerAppToken": []
+          },
+          {
+            "MCPAppBasic": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Streamable HTTP JSON-RPC 请求。initialize、tools/list 和 tools/call 使用 JSON-RPC 2.0 格式。",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "MCP JSON-RPC 响应或 Streamable HTTP 响应"
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthError"
+          }
+        }
+      }
+    },
+    "/api/v1/system/status": {
+      "get": {
+        "tags": [
+          "系统"
+        ],
+        "summary": "读取系统状态",
+        "description": "需要 system 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          }
+        }
+      }
+    },
+    "/api/v1/system/update": {
+      "get": {
+        "tags": [
+          "系统"
+        ],
+        "summary": "读取更新信息",
+        "description": "需要 system 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/system/update/status": {
+      "get": {
+        "tags": [
+          "系统"
+        ],
+        "summary": "读取更新任务状态",
+        "description": "需要 system 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/system/update/upgrade": {
+      "post": {
+        "tags": [
+          "系统"
+        ],
+        "summary": "启动系统升级",
+        "description": "高风险操作，需要 system 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          }
+        }
+      }
+    },
+    "/api/v1/settings": {
+      "get": {
+        "tags": [
+          "设置"
+        ],
+        "summary": "读取一般运行设置",
+        "description": "需要 settings 模块授权；管理员账号、平台管理员、访问码和其它安全字段会被移除。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "设置"
+        ],
+        "summary": "修改一般运行设置",
+        "description": "需要 settings 模块授权。仅允许 auto_refresh、refresh_interval、auto_load_plugins、script_task_concurrent_limit、points_unit。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          }
+        }
+      }
+    },
+    "/api/v1/plugins": {
+      "get": {
+        "tags": [
+          "插件"
+        ],
+        "summary": "查询插件",
+        "description": "需要 plugins 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "插件"
+        ],
+        "summary": "创建插件",
+        "description": "需要 plugins 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          }
+        }
+      }
+    },
+    "/api/v1/plugins/{pluginId}": {
+      "parameters": [
+        {
+          "name": "pluginId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "description": "插件 ID；用于读取、执行操作或删除插件。"
+        }
+      ],
+      "post": {
+        "tags": [
+          "插件"
+        ],
+        "summary": "执行插件操作",
+        "description": "需要 plugins 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "插件"
+        ],
+        "summary": "删除插件",
+        "description": "需要 plugins 模块授权。删除前会创建插件备份。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          }
+        }
+      }
+    },
+    "/api/v1/adapters": {
+      "get": {
+        "tags": [
+          "适配器"
+        ],
+        "summary": "查询适配器",
+        "description": "需要 adapters 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "适配器"
+        ],
+        "summary": "创建适配器",
+        "description": "需要 adapters 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdapterConfig"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/adapters/{adapterId}": {
+      "parameters": [
+        {
+          "name": "adapterId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "description": "适配器数字 ID 或平台适配器标识。"
+        }
+      ],
+      "get": {
+        "tags": [
+          "适配器"
+        ],
+        "summary": "读取适配器",
+        "description": "需要 adapters 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "适配器"
+        ],
+        "summary": "执行适配器操作",
+        "description": "需要 adapters 模块授权；action 支持 pin 或 unpin。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdapterAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "适配器"
+        ],
+        "summary": "删除适配器",
+        "description": "需要 adapters 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/users": {
+      "get": {
+        "tags": [
+          "用户"
+        ],
+        "summary": "查询用户",
+        "description": "包含用户个人信息，需要 users 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Offset"
+          },
+          {
+            "name": "keyword",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "按 UnionID、昵称或账号关键字筛选。"
+          },
+          {
+            "name": "platform",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "按平台标识筛选。"
+          },
+          {
+            "name": "disabled",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "按禁用状态筛选；仅接受 true 或 false。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/users/accounts": {
+      "get": {
+        "tags": [
+          "用户"
+        ],
+        "summary": "分页查询平台账号",
+        "description": "需要 users 模块授权。platform 为必填。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "platform",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "平台标识。"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Offset"
+          },
+          {
+            "name": "keyword",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "按 UnionID、昵称或账号关键字筛选。"
+          },
+          {
+            "name": "disabled",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "按禁用状态筛选；仅接受 true 或 false。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/users/{unionId}": {
+      "parameters": [
+        {
+          "name": "unionId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "description": "AllBot 用户 UnionID。"
+        }
+      ],
+      "get": {
+        "tags": [
+          "用户"
+        ],
+        "summary": "读取用户详情",
+        "description": "需要 users 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/users/{unionId}/status": {
+      "parameters": [
+        {
+          "name": "unionId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "description": "AllBot 用户 UnionID。"
+        }
+      ],
+      "patch": {
+        "tags": [
+          "用户"
+        ],
+        "summary": "修改用户禁用状态",
+        "description": "需要 users 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserStatusUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/users/{unionId}/points/adjust": {
+      "parameters": [
+        {
+          "name": "unionId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "description": "AllBot 用户 UnionID。"
+        }
+      ],
+      "post": {
+        "tags": [
+          "用户"
+        ],
+        "summary": "调整用户积分",
+        "description": "需要 users 模块授权。delta 必须为非零整数，负数表示扣减。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserPointsAdjustment"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/users/{unionId}/point-transactions": {
+      "parameters": [
+        {
+          "name": "unionId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "description": "AllBot 用户 UnionID。"
+        }
+      ],
+      "get": {
+        "tags": [
+          "用户"
+        ],
+        "summary": "查询用户积分流水",
+        "description": "需要 users 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Offset"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/replies/keywords": {
+      "get": {
+        "tags": [
+          "关键字回复"
+        ],
+        "summary": "查询关键字回复",
+        "description": "需要 replies 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "关键字回复"
+        ],
+        "summary": "创建关键字回复",
+        "description": "需要 replies 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeywordReply"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/scheduled-tasks": {
+      "get": {
+        "tags": [
+          "任务"
+        ],
+        "summary": "查询定时任务",
+        "description": "需要 tasks 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "任务"
+        ],
+        "summary": "创建定时任务",
+        "description": "需要 tasks 模块授权。cron 字段使用标准 Cron 表达式；enabled 为 true 时会计算下次运行时间。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduledTask"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/payments/settings": {
+      "get": {
+        "tags": [
+          "支付"
+        ],
+        "summary": "读取支付配置",
+        "description": "敏感支付配置会隐藏密钥原文，需要 payments 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "支付"
+        ],
+        "summary": "修改支付配置",
+        "description": "需要 payments 模块授权。密钥字段留空时按后台逻辑保留原值。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentSettings"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/payments/orders": {
+      "get": {
+        "tags": [
+          "支付"
+        ],
+        "summary": "分页查询支付订单",
+        "description": "包含支付业务信息，需要 payments 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "order_no",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "按订单号筛选。"
+          },
+          {
+            "name": "union_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "按用户 UnionID 筛选。"
+          },
+          {
+            "name": "plugin_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "按插件 ID 筛选。"
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "按支付服务商筛选。"
+          },
+          {
+            "name": "method",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "按支付方式筛选。"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "按订单状态筛选。"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Offset"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/backups": {
+      "get": {
+        "tags": [
+          "备份"
+        ],
+        "summary": "查询备份",
+        "description": "备份可能包含敏感配置，需要 backups 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "备份"
+        ],
+        "summary": "创建备份",
+        "description": "需要 backups 模块授权。此操作不需要请求体。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/data/tables": {
+      "get": {
+        "tags": [
+          "数据"
+        ],
+        "summary": "列出数据表",
+        "description": "需要 data 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/data/tables/{table}/rows": {
+      "parameters": [
+        {
+          "name": "table",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "description": "数据表名称。"
+        }
+      ],
+      "get": {
+        "tags": [
+          "数据"
+        ],
+        "summary": "分页查询数据表行",
+        "description": "需要 data 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "页码；未提供时沿用 Handler 默认值。"
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "每页行数；未提供时沿用 Handler 默认值。"
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "按行内容搜索。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "数据"
+        ],
+        "summary": "新增数据表行",
+        "description": "需要 data 模块授权。values 的键为列名。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DataRowValues"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/data/tables/{table}/rows/{rowId}": {
+      "parameters": [
+        {
+          "name": "table",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "description": "数据表名称。"
+        },
+        {
+          "name": "rowId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "description": "数据行 ID。"
+        }
+      ],
+      "put": {
+        "tags": [
+          "数据"
+        ],
+        "summary": "更新数据表行",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DataRowValues"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "数据"
+        ],
+        "summary": "删除数据表行",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/data/export": {
+      "get": {
+        "tags": [
+          "数据"
+        ],
+        "summary": "导出数据表",
+        "description": "需要 data 模块授权；省略 table 时导出全部表。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "table",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "要导出的表名；不传时导出全部表。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "JSON 文件下载。"
+          }
+        }
+      }
+    },
+    "/api/v1/data/import": {
+      "post": {
+        "tags": [
+          "数据"
+        ],
+        "summary": "导入数据",
+        "description": "高风险操作，需要 data 模块授权。请求体为后台数据导出 JSON，最大读取 20 MiB。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "replace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "为 true 时替换现有数据；只有字符串 true 会启用。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "数据导出文件的 JSON 内容。",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/statistics/overview": {
+      "get": {
+        "tags": [
+          "统计"
+        ],
+        "summary": "读取统计概览",
+        "description": "包含系统、消息、支付、图床、脚本任务、备份和日志统计，需要 statistics 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/statistics/message-total-trend": {
+      "get": {
+        "tags": [
+          "统计"
+        ],
+        "summary": "读取消息总量趋势",
+        "description": "需要 statistics 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "granularity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "hour",
+                "day",
+                "month"
+              ]
+            },
+            "description": "趋势粒度。"
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "统计起始时间。"
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "统计结束时间。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/statistics/plugin-trigger-trend": {
+      "get": {
+        "tags": [
+          "统计"
+        ],
+        "summary": "读取插件触发趋势",
+        "description": "需要 statistics 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "统计日期。"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "统计模式。"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "最多返回的插件数量。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/sdk/files": {
+      "get": {
+        "tags": [
+          "SDK"
+        ],
+        "summary": "读取 SDK 文件树或文件内容",
+        "description": "需要 sdk 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "SDK 根目录下的相对文件路径；省略时返回文件树。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    },
+    "/api/v1/sdk/reference": {
+      "get": {
+        "tags": [
+          "SDK"
+        ],
+        "summary": "读取 SDK 参考文档",
+        "description": "需要 sdk 模块授权。",
+        "security": [
+          {
+            "BearerAppToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/JSONSuccess"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAppToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "AllBot application token"
+      },
+      "MCPAppBasic": {
+        "type": "http",
+        "scheme": "basic",
+        "description": "仅 MCP 入口支持，用户名为管理后台展示的 appKey，密码为 appSecret"
+      }
+    },
+    "parameters": {
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 20
+        },
+        "description": "每页记录数，默认 20，最大 200。"
+      },
+      "Offset": {
+        "name": "offset",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "description": "分页偏移量，从 0 开始。"
+      }
+    },
+    "schemas": {
+      "MCPRequest": {
+        "type": "object",
+        "required": [
+          "jsonrpc",
+          "method"
+        ],
+        "properties": {
+          "jsonrpc": {
+            "type": "string",
+            "enum": [
+              "2.0"
+            ],
+            "description": "JSON-RPC 版本。"
+          },
+          "id": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "description": "本次请求的关联 ID；通知消息可省略。"
+          },
+          "method": {
+            "type": "string",
+            "description": "JSON-RPC 方法，如 initialize、tools/list 或 tools/call。"
+          },
+          "params": {
+            "type": "object",
+            "description": "MCP 方法参数；tools/call 中包含 name 与 arguments。",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "tools/call 要调用的工具名。"
+              },
+              "arguments": {
+                "type": "object",
+                "description": "工具参数；API 工具包含 method、path、query、body 或 raw_body_base64、content_type。",
+                "additionalProperties": true
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "SettingsUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "auto_refresh": {
+            "type": "boolean",
+            "description": "是否启用面板自动刷新。"
+          },
+          "refresh_interval": {
+            "type": "integer",
+            "description": "面板自动刷新间隔（分钟）。"
+          },
+          "auto_load_plugins": {
+            "type": "boolean",
+            "description": "启动时是否自动加载插件。"
+          },
+          "script_task_concurrent_limit": {
+            "type": "integer",
+            "description": "脚本任务并发上限。"
+          },
+          "points_unit": {
+            "type": "string",
+            "description": "积分单位名称。"
+          }
+        }
+      },
+      "PluginCreateRequest": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "version",
+          "runtime",
+          "trigger",
+          "platforms"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "插件唯一 ID。"
+          },
+          "name": {
+            "type": "string",
+            "description": "插件显示名称。"
+          },
+          "version": {
+            "type": "string",
+            "description": "插件版本。"
+          },
+          "runtime": {
+            "type": "string",
+            "description": "运行时类型，如 nodejs 或 python。"
+          },
+          "runtime_profile": {
+            "type": "string",
+            "description": "绑定的运行环境 Profile ID。"
+          },
+          "trigger": {
+            "type": "string",
+            "description": "插件触发规则。"
+          },
+          "priority": {
+            "type": "integer",
+            "description": "插件匹配优先级。"
+          },
+          "platforms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "插件支持的平台标识列表。"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "是否启用插件。"
+          },
+          "user_config_schema": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "description": "用户配置字段定义。"
+          },
+          "user_config": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "插件配置值。"
+          },
+          "script_env": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "脚本运行环境配置。"
+          },
+          "template": {
+            "type": "string",
+            "description": "创建插件时选择的模板 ID。"
+          },
+          "account_ql": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "AccountQL 模板配置，仅对应模板类型使用。"
+          }
+        }
+      },
+      "AdapterConfig": {
+        "type": "object",
+        "required": [
+          "platform"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "适配器 ID；创建时为 0 或省略。"
+          },
+          "platform": {
+            "type": "string",
+            "description": "平台适配器标识。"
+          },
+          "remark": {
+            "type": "string",
+            "description": "管理员备注。"
+          },
+          "description": {
+            "type": "string",
+            "description": "适配器说明。"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "是否启用。"
+          },
+          "config": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "平台适配器配置；字段根据 platform 而异。"
+          }
+        }
+      },
+      "AdapterAction": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "pin",
+              "unpin"
+            ],
+            "description": "置顶或取消置顶适配器。"
+          }
+        }
+      },
+      "ActionRequest": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "插件操作名称；合法值由插件管理 Handler 定义。"
+          }
+        }
+      },
+      "UserStatusUpdate": {
+        "type": "object",
+        "required": [
+          "disabled"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "disabled": {
+            "type": "boolean",
+            "description": "true 表示禁用用户，false 表示恢复用户。"
+          }
+        }
+      },
+      "UserPointsAdjustment": {
+        "type": "object",
+        "required": [
+          "delta"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "delta": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": -999999999,
+            "maximum": 999999999,
+            "not": {
+              "enum": [
+                0
+              ]
+            },
+            "description": "积分变更量；非零，正数增加、负数扣减。"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "本次积分调整说明，最多 500 个字符。"
+          }
+        }
+      },
+      "KeywordReply": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "关键字回复 ID；更新时使用。"
+          },
+          "keyword": {
+            "type": "string",
+            "description": "触发关键字。"
+          },
+          "match_type": {
+            "type": "string",
+            "description": "匹配方式。"
+          },
+          "reply_type": {
+            "type": "string",
+            "description": "回复内容类型。"
+          },
+          "content": {
+            "type": "string",
+            "description": "回复内容。"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "是否启用。"
+          },
+          "admin_only": {
+            "type": "boolean",
+            "description": "是否仅管理员可触发。"
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "是否置顶。"
+          },
+          "schedule_enabled": {
+            "type": "boolean",
+            "description": "是否启用定时发送。"
+          },
+          "schedule_cron": {
+            "type": "string",
+            "description": "定时发送 Cron 表达式。"
+          },
+          "description": {
+            "type": "string",
+            "description": "管理员备注。"
+          }
+        }
+      },
+      "ScheduledTask": {
+        "type": "object",
+        "required": [
+          "name",
+          "cron",
+          "platform",
+          "content"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "任务 ID；更新时使用。"
+          },
+          "plugin_id": {
+            "type": "string",
+            "description": "关联插件 ID；可留空。"
+          },
+          "task_key": {
+            "type": "string",
+            "description": "插件内任务键。"
+          },
+          "name": {
+            "type": "string",
+            "description": "任务名称。"
+          },
+          "description": {
+            "type": "string",
+            "description": "任务说明。"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "是否启用排程。"
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "是否置顶。"
+          },
+          "cron": {
+            "type": "string",
+            "description": "标准 Cron 表达式；一次性执行可使用 Handler 支持的一次性格式。"
+          },
+          "platform": {
+            "type": "string",
+            "description": "目标平台标识。"
+          },
+          "adapter_id": {
+            "type": "string",
+            "description": "目标适配器 ID。"
+          },
+          "user_id": {
+            "type": "string",
+            "description": "目标用户 ID。"
+          },
+          "group_id": {
+            "type": "string",
+            "description": "目标群组 ID；私聊场景可留空。"
+          },
+          "content": {
+            "type": "string",
+            "description": "要发送的消息内容。"
+          },
+          "source": {
+            "type": "string",
+            "description": "任务来源标识。"
+          }
+        }
+      },
+      "DataRowValues": {
+        "type": "object",
+        "required": [
+          "values"
+        ],
+        "properties": {
+          "values": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "数据列名到值的映射。"
+          }
+        }
+      },
+      "PaymentSettings": {
+        "type": "object",
+        "description": "支付配置；敏感密钥在返回值中可能只提供是否已配置的标记。",
+        "properties": {
+          "points_per_rmb": {
+            "type": "integer",
+            "format": "int64",
+            "description": "每人民币对应的积分数。"
+          },
+          "max_payment_amount_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "单笔支付金额上限，单位为分。"
+          },
+          "currency_unit": {
+            "type": "string",
+            "description": "货币单位。"
+          },
+          "third_party_enabled": {
+            "type": "boolean",
+            "description": "是否启用第三方支付。"
+          },
+          "hide_pay_url": {
+            "type": "boolean",
+            "description": "是否隐藏支付地址。"
+          },
+          "qrcode_base_url": {
+            "type": "string",
+            "description": "二维码服务基础地址。"
+          },
+          "epay_submit_subject": {
+            "type": "string",
+            "description": "易支付提交订单标题。"
+          },
+          "max_pending_payments": {
+            "type": "integer",
+            "description": "最大待支付订单数。"
+          },
+          "epay_query_interval_seconds": {
+            "type": "integer",
+            "description": "易支付订单查询间隔，单位为秒。"
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "description": "支付方式代码。"
+                },
+                "label": {
+                  "type": "string",
+                  "description": "支付方式名称。"
+                },
+                "provider": {
+                  "type": "string",
+                  "description": "支付服务商。"
+                },
+                "enabled": {
+                  "type": "boolean",
+                  "description": "是否启用。"
+                }
+              }
+            },
+            "description": "支付方式配置列表。"
+          },
+          "epay": {
+            "type": "object",
+            "description": "易支付配置。",
+            "additionalProperties": true
+          },
+          "alipay_bill": {
+            "type": "object",
+            "description": "支付宝账单配置。",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "responses": {
+      "JSONSuccess": {
+        "description": "成功响应；业务 Handler 沿用其当前 JSON 响应结构。",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        }
+      },
+      "AuthError": {
+        "description": "缺少授权令牌或应用令牌无效",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": [
+                    "缺少授权令牌",
+                    "令牌无效或已过期"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "PermissionError": {
+        "description": "应用未获授此接口所属模块",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "example": "权限不足"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "BearerAppToken": []
+    }
+  ]
+}

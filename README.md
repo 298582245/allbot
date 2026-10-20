@@ -655,6 +655,14 @@ Token 可从以下位置传入：
 
 接口脚本可使用 Open API 形式的 SDK 上下文处理请求并返回响应。
 
+### 开发者 API 与 MCP
+
+开发者 API 与 MCP 是面向外部系统的管理接口，和上面的自定义 Open API 是两套独立功能。开发者 API 复用后台已开放的业务接口；管理员在“开发者应用”中创建应用并按模块授权。REST API 通过 `/api/v1/open-api/token` 使用应用凭据换取 Bearer 令牌，MCP 地址为 `/api/v1/mcp`，可使用应用 Basic 凭据或 Bearer 令牌。
+
+自定义 Open API 则由管理员逐个创建 HTTP 接口，并通过 Node.js/Python 脚本实现业务逻辑；它使用每个自定义接口自身的 Token，不会因为创建开发者应用而获得访问权限，也不会继承开发者 API 的模块授权。
+
+开发者 API 与 MCP 的接口、参数和使用说明见 [AllBot Apifox 文档](https://allbot.apifox.cn/)。
+
 ## 数据管理
 
 插件可以通过 SDK 创建私有表，实际表名会自动加上插件前缀。后台 `数据管理` 页面可查看数据表、搜索、分页、导入导出，并可通过 `setDataView` / `set_data_view` 为表配置展示名称、分组、说明和列信息。

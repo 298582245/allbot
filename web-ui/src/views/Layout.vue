@@ -235,6 +235,10 @@
             <el-icon><Setting /></el-icon>
             <span>系统设置</span>
           </el-menu-item>
+          <el-menu-item index="/developer-apps">
+            <el-icon><Key /></el-icon>
+            <span>开发者应用</span>
+          </el-menu-item>
         </el-sub-menu>
       </el-menu>
     </el-aside>
@@ -334,6 +338,7 @@ import {
   Connection,
   Document,
   Setting,
+  Key,
   User,
   SwitchButton,
   Cpu,
