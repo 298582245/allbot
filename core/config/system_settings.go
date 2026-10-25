@@ -45,6 +45,8 @@ const (
 	pluginTaskRunTimeoutSecondsDescription  = "插件任务运行超时时间，0 表示不限制"
 	pluginTaskTimeoutNotifyAdminEnabledKey  = "plugin_tasks.timeout_notify_admin_enabled"
 	pluginTaskTimeoutNotifyAdminDescription = "插件任务超时自动停止后是否通知平台管理员"
+	unregisteredPromptLimitKey              = "user.unregistered_prompt_limit"
+	unregisteredPromptLimitDescription      = "未注册用户提示次数上限，0 表示不提示"
 	githubProxyURLKey                       = "update.github_proxy_url"
 	githubProxyURLDescription               = "GitHub 更新下载代理地址"
 )
@@ -66,6 +68,7 @@ type SystemSettings struct {
 	AutoLoadPlugins           bool                      `json:"auto_load_plugins"`
 	ScriptTaskConcurrentLimit int                       `json:"script_task_concurrent_limit"`
 	PointsUnit                string                    `json:"points_unit"`
+	UnregisteredPromptLimit   int                       `json:"unregistered_prompt_limit"`
 	GitHubProxyURL            string                    `json:"github_proxy_url"`
 	AccessControl             types.AccessControlConfig `json:"access_control"`
 	// 安全访问码：开启后访问登录页需在 URL 携带访问码，否则返回 404
@@ -142,6 +145,7 @@ func (d *Database) GetSystemSettings() (*SystemSettings, error) {
 		AutoLoadPlugins:           valueOrDefault(items, "plugin.auto_load", "true") == "true",
 		ScriptTaskConcurrentLimit: intValueOrDefault(items, "script_tasks.concurrent_limit", 1),
 		PointsUnit:                valueOrDefault(items, "user.points_unit", "积分"),
+		UnregisteredPromptLimit:   intValueAllowZeroOrDefault(items, unregisteredPromptLimitKey, 10),
 		GitHubProxyURL:            strings.TrimSpace(items[githubProxyURLKey]),
 		AccessControl:             ParseAccessControlConfig(items["access_control"]),
 
@@ -292,6 +296,12 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 	if settings.PointsUnit == "" {
 		settings.PointsUnit = "积分"
 	}
+	if settings.UnregisteredPromptLimit < 0 {
+		settings.UnregisteredPromptLimit = 0
+	}
+	if settings.UnregisteredPromptLimit > 1000000 {
+		return fmt.Errorf("未注册用户提示次数上限必须在 0 到 1000000 之间")
+	}
 	githubProxyURL, err := normalizeGitHubProxyURL(settings.GitHubProxyURL)
 	if err != nil {
 		return err
@@ -309,6 +319,7 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 		"plugin.auto_load":              {boolString(settings.AutoLoadPlugins), "启动时自动加载插件"},
 		"script_tasks.concurrent_limit": {fmt.Sprintf("%d", settings.ScriptTaskConcurrentLimit), "脚本任务全局并发上限"},
 		"user.points_unit":              {settings.PointsUnit, "用户积分单位"},
+		unregisteredPromptLimitKey:      {fmt.Sprintf("%d", settings.UnregisteredPromptLimit), unregisteredPromptLimitDescription},
 		githubProxyURLKey:               {githubProxyURL, githubProxyURLDescription},
 		"access_control":                {MarshalAccessControlConfig(settings.AccessControl), "系统访问控制配置"},
 

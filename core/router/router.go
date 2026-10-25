@@ -309,11 +309,7 @@ func (r *Router) HandleMessage(msg *types.Message) {
 		return
 	}
 	if database != nil && !isEvent && !isBotMessage(msg) {
-		if _, err := database.GetUserAccount(msg.Platform, msg.UserID); err != nil {
-			adp := r.getAdapterForMessage(msg)
-			if adp != nil {
-				_ = adp.SendMessage(resolveReplyTarget(adp, msg), formatReplyText(adp, msg, userRegisterGuide()))
-			}
+		if !r.requireRegisteredUser(msg, database) {
 			return
 		}
 	}
@@ -373,11 +369,7 @@ func (r *Router) HandleMessageForPlugin(msg *types.Message, pluginID string) err
 		return fmt.Errorf("无权访问该插件")
 	}
 	if database != nil {
-		if _, err := database.GetUserAccount(msg.Platform, msg.UserID); err != nil {
-			adp := r.getAdapterForMessage(msg)
-			if adp != nil {
-				_ = adp.SendMessage(resolveReplyTarget(adp, msg), formatReplyText(adp, msg, userRegisterGuide()))
-			}
+		if !r.requireRegisteredUser(msg, database) {
 			return fmt.Errorf("用户未注册")
 		}
 		if err := database.RecordPluginTriggerStat(plugin, msg); err != nil {
@@ -386,6 +378,27 @@ func (r *Router) HandleMessageForPlugin(msg *types.Message, pluginID string) err
 	}
 	go r.callPlugin(plugin, msg)
 	return nil
+}
+
+func (r *Router) requireRegisteredUser(msg *types.Message, database *config.Database) bool {
+	account, err := database.GetUserAccount(msg.Platform, msg.UserID)
+	if err == nil && account != nil && strings.TrimSpace(account.UnionID) != "" {
+		return true
+	}
+	adp := r.getAdapterForMessage(msg)
+	if adp == nil {
+		return false
+	}
+	allowed, err := database.ConsumeUnregisteredPrompt(msg.Platform, msg.UserID)
+	if err != nil {
+		log.Printf("[SYSTEM] Record unregistered user prompt failed: platform=%s user=%s err=%v", msg.Platform, msg.UserID, err)
+		return false
+	}
+	if !allowed {
+		return false
+	}
+	_ = adp.SendMessage(resolveReplyTarget(adp, msg), formatReplyText(adp, msg, userRegisterGuide()))
+	return false
 }
 
 func (r *Router) MessageCount() uint64 {

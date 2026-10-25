@@ -56,6 +56,9 @@
       class="context-menu"
       :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
     >
+      <li @click="handleContextAction('refresh')">
+        <el-icon><Refresh /></el-icon>刷新
+      </li>
       <li v-if="contextMenu.tab && !tabsStore.isAffix(contextMenu.tab.path)" @click="handleContextAction('close')">
         <el-icon><Close /></el-icon>关闭
       </li>
@@ -78,7 +81,7 @@
 <script setup>
 import { ref, reactive, nextTick, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { Close, CircleClose, Back, Right, Remove, ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
+import { Close, CircleClose, Back, Right, Remove, ArrowLeft, ArrowRight, Refresh } from '@element-plus/icons-vue'
 import { useTabsStore } from '@/stores/tabs'
 
 const router = useRouter()
@@ -121,12 +124,16 @@ function closeContextMenu() {
   contextMenu.visible = false
 }
 
-function handleContextAction(action) {
+async function handleContextAction(action) {
   const tab = contextMenu.tab
   closeContextMenu()
   if (!tab) return
 
   switch (action) {
+    case 'refresh':
+      if (route.path !== tab.path) await router.push(tab.path)
+      router.go(0)
+      break
     case 'close':
       handleClose(tab)
       break

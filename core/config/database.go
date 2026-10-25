@@ -368,6 +368,14 @@ func createTables(db *sql.DB) error {
 
 	CREATE INDEX IF NOT EXISTS idx_user_accounts_union_id ON user_accounts(union_id);
 
+	CREATE TABLE IF NOT EXISTS unregistered_prompt_stats (
+		platform TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		prompt_count INTEGER NOT NULL DEFAULT 0,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY(platform, user_id)
+	);
+
 	CREATE TABLE IF NOT EXISTS plugin_accounts (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		plugin_id TEXT NOT NULL,
@@ -950,6 +958,7 @@ func ensureDefaultSystemSettings(db *sql.DB) error {
 		"plugin_tasks.run_timeout_seconds":          "0",
 		"plugin_tasks.timeout_notify_admin_enabled": "false",
 		"user.points_unit":                          "积分",
+		"user.unregistered_prompt_limit":            "10",
 		"access_control":                            "{}",
 		"payment.points_per_rmb":                    "100",
 		"payment.config":                            defaultPaymentConfigJSON(),
@@ -970,6 +979,7 @@ func ensureDefaultSystemSettings(db *sql.DB) error {
 		"plugin_tasks.run_timeout_seconds":          "插件任务运行超时时间，0 表示不限制",
 		"plugin_tasks.timeout_notify_admin_enabled": "插件任务超时自动停止后是否通知平台管理员",
 		"user.points_unit":                          "用户积分单位",
+		"user.unregistered_prompt_limit":            "未注册用户提示次数上限，0 表示不提示",
 		"access_control":                            "系统访问控制配置",
 		"payment.points_per_rmb":                    "积分兑换比例",
 		"payment.config":                            "支付配置",

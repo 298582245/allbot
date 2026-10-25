@@ -60,6 +60,9 @@
             </el-form></div>
           </el-tab-pane>
           <el-tab-pane label="分类代码" name="sections">
+            <div v-if="editorLoading || editorLoadError" class="editor-load-state" :class="{ 'is-error': editorLoadError }" role="status">
+              <span>{{ editorLoadError || '正在加载代码编辑器，请稍候…' }}</span>
+            </div>
             <div class="hybrid-sections">
               <nav v-if="hybridSectionGroups.length" class="hybrid-category-nav">
                 <button class="category-arrow" :disabled="hybridCategoryIndex <= 0" @click="moveHybridCategory(-1)"><el-icon><ArrowLeft /></el-icon></button>
@@ -127,6 +130,9 @@
           </el-tab-pane>
 
           <el-tab-pane label="自定义代码" name="code">
+            <div v-if="editorLoading || editorLoadError" class="editor-load-state" :class="{ 'is-error': editorLoadError }" role="status">
+              <span>{{ editorLoadError || '正在加载代码编辑器，请稍候…' }}</span>
+            </div>
             <div class="code-grid form-scroll">
               <section><div class="section-title">登录解析代码</div><div ref="parseInputEditorContainer" class="template-code-editor"></div></section>
               <section><div class="section-title">查询代码</div><div ref="queryEditorContainer" class="template-code-editor"></div></section>
@@ -168,6 +174,9 @@
             </el-tree>
           </aside>
           <main class="editor-main">
+            <div v-if="editorLoading || editorLoadError" class="editor-load-state editor-load-state-file" :class="{ 'is-error': editorLoadError }" role="status">
+              <span>{{ editorLoadError || '正在加载代码编辑器，请稍候…' }}</span>
+            </div>
             <el-empty v-if="!selectedPath" description="请选择左侧文件" />
             <el-result v-else-if="!canEdit" icon="warning" title="该文件无法在线读取" :sub-title="selectedPath" />
             <div v-show="selectedPath && canEdit" ref="editorContainer" class="code-editor-container"></div>
@@ -211,11 +220,6 @@ import {
   normalizeAccountQLConfig,
   normalizeHybridTemplateSource
 } from '@/utils/accountQlTemplate'
-import { EditorView, basicSetup } from 'codemirror'
-import { EditorState } from '@codemirror/state'
-import { python } from '@codemirror/lang-python'
-import { javascript } from '@codemirror/lang-javascript'
-import { oneDark } from '@codemirror/theme-one-dark'
 
 const route = useRoute()
 const router = useRouter()
@@ -259,6 +263,8 @@ const hybridCategoryIndex = ref(0)
 const hybridCategoryScroll = ref(null)
 const selectedFileSHA256 = ref('')
 const activeTab = ref('base')
+const editorLoading = ref(false)
+const editorLoadError = ref('')
 const templateForm = ref(createTemplateForm())
 const parseInputEditorContainer = ref(null)
 const queryEditorContainer = ref(null)
@@ -321,6 +327,7 @@ let parseInputEditorView = null
 let queryEditorView = null
 let afterRunEditorView = null
 let checkCkEditorView = null
+let editorModulesPromise = null
 
 function createTemplateForm() {
   return {
@@ -467,6 +474,40 @@ function clearConversionCode() {
   accountQL.routes = (accountQL.routes || []).map(route => ({ ...route, code: '' }))
 }
 
+function loadEditorModules() {
+  if (!editorModulesPromise) {
+    editorModulesPromise = Promise.all([
+      import('codemirror'),
+      import('@codemirror/state'),
+      import('@codemirror/lang-javascript'),
+      import('@codemirror/lang-python'),
+      import('@codemirror/theme-one-dark')
+    ]).then(([codemirror, state, javascriptLanguage, pythonLanguage, theme]) => ({
+      EditorView: codemirror.EditorView,
+      EditorState: state.EditorState,
+      basicSetup: codemirror.basicSetup,
+      javascript: javascriptLanguage.javascript,
+      python: pythonLanguage.python,
+      oneDark: theme.oneDark
+    })).catch((error) => {
+      editorModulesPromise = null
+      throw error
+    })
+  }
+  return editorModulesPromise
+}
+
+async function requestEditorModules() {
+  editorLoadError.value = ''
+  try {
+    return await loadEditorModules()
+  } catch (error) {
+    editorLoadError.value = '代码编辑器加载失败，请刷新页面后重试'
+    ElMessage.error(editorLoadError.value)
+    return null
+  }
+}
+
 async function useFileEditor() {
   destroyTemplateEditors()
   conversionMode.value = false
@@ -522,7 +563,15 @@ const openFile = async (path) => {
     destroyEditor()
     if (canEdit.value) {
       await nextTick()
-      createEditor(data.code || '', selectedPath.value)
+      editorLoading.value = true
+      try {
+        const editorModules = await requestEditorModules()
+        if (editorModules && canEdit.value && selectedPath.value === data.path) {
+          createEditor(editorModules, data.code || '', selectedPath.value)
+        }
+      } finally {
+        editorLoading.value = false
+      }
     }
   } catch (error) {
     console.error('加载文件失败:', error)
@@ -532,14 +581,16 @@ const openFile = async (path) => {
   }
 }
 
-const createEditor = (code, path) => {
+const createEditor = (editorModules, code, path) => {
   if (!editorContainer.value) return
-  const extensions = [basicSetup, languageFor(path), oneDark, EditorView.lineWrapping]
+  const { EditorView, basicSetup, oneDark } = editorModules
+  const extensions = [basicSetup, languageFor(editorModules, path), oneDark, EditorView.lineWrapping]
   editorView = new EditorView({ doc: code, extensions, parent: editorContainer.value })
 }
 
-function createTemplateCodeEditor(container, code, update) {
+function createTemplateCodeEditor(editorModules, container, code, update) {
   if (!container) return null
+  const { EditorView, basicSetup, javascript, python, oneDark } = editorModules
   return new EditorView({
     doc: String(code || ''),
     extensions: [
@@ -572,7 +623,8 @@ function hybridEditorRuntime(section = {}) {
   return String(hybridPluginFixed.value.runtime || '').toLowerCase() === 'python' ? 'python' : 'nodejs'
 }
 
-function createHybridSectionEditor(section, container) {
+function createHybridSectionEditor(editorModules, section, container) {
+  const { EditorView, EditorState, basicSetup, javascript, python, oneDark } = editorModules
   const state = EditorState.create({
     doc: String(section.content ?? ''),
     extensions: [
@@ -592,21 +644,28 @@ function createHybridSectionEditor(section, container) {
 
 async function ensureHybridSectionEditors() {
   if (!hybridMode.value || activeTab.value !== 'sections') return
-  await nextTick()
-  const sections = currentHybridSectionGroup.value?.sections || []
-  const activeIds = new Set(sections.map(section => String(section.id || '')))
-  for (const [key, view] of hybridSectionEditorViews) {
-    if (!activeIds.has(key) || !hybridSectionEditorContainers.has(key)) {
-      view.destroy()
-      hybridSectionEditorViews.delete(key)
+  editorLoading.value = true
+  try {
+    await nextTick()
+    const editorModules = await requestEditorModules()
+    if (!editorModules || !hybridMode.value || activeTab.value !== 'sections') return
+    const sections = currentHybridSectionGroup.value?.sections || []
+    const activeIds = new Set(sections.map(section => String(section.id || '')))
+    for (const [key, view] of hybridSectionEditorViews) {
+      if (!activeIds.has(key) || !hybridSectionEditorContainers.has(key)) {
+        view.destroy()
+        hybridSectionEditorViews.delete(key)
+      }
     }
-  }
-  for (const section of sections) {
-    const key = String(section.id || '')
-    const container = hybridSectionEditorContainers.get(key)
-    if (key && container && !hybridSectionEditorViews.has(key)) {
-      hybridSectionEditorViews.set(key, createHybridSectionEditor(section, container))
+    for (const section of sections) {
+      const key = String(section.id || '')
+      const container = hybridSectionEditorContainers.get(key)
+      if (key && container && !hybridSectionEditorViews.has(key)) {
+        hybridSectionEditorViews.set(key, createHybridSectionEditor(editorModules, section, container))
+      }
     }
+  } finally {
+    editorLoading.value = false
   }
 }
 
@@ -651,11 +710,18 @@ async function ensureTemplateEditors() {
     checkCkEditorView.destroy()
     checkCkEditorView = null
   }
-  await nextTick()
-  if (!parseInputEditorView) parseInputEditorView = createTemplateCodeEditor(parseInputEditorContainer.value, accountQL.parse_input_code, code => { accountQL.parse_input_code = code })
-  if (!queryEditorView) queryEditorView = createTemplateCodeEditor(queryEditorContainer.value, accountQL.query_code, code => { accountQL.query_code = code })
-  if (accountQL.enable_after_run && !afterRunEditorView) afterRunEditorView = createTemplateCodeEditor(afterRunEditorContainer.value, accountQL.after_run_code, code => { accountQL.after_run_code = code })
-  if (accountQL.enable_ck_check && !checkCkEditorView) checkCkEditorView = createTemplateCodeEditor(checkCkEditorContainer.value, accountQL.check_ck_code, code => { accountQL.check_ck_code = code })
+  editorLoading.value = true
+  try {
+    await nextTick()
+    const editorModules = await requestEditorModules()
+    if (!editorModules || !templateFormActive.value || activeTab.value !== 'code') return
+    if (!parseInputEditorView) parseInputEditorView = createTemplateCodeEditor(editorModules, parseInputEditorContainer.value, accountQL.parse_input_code, code => { accountQL.parse_input_code = code })
+    if (!queryEditorView) queryEditorView = createTemplateCodeEditor(editorModules, queryEditorContainer.value, accountQL.query_code, code => { accountQL.query_code = code })
+    if (accountQL.enable_after_run && !afterRunEditorView) afterRunEditorView = createTemplateCodeEditor(editorModules, afterRunEditorContainer.value, accountQL.after_run_code, code => { accountQL.after_run_code = code })
+    if (accountQL.enable_ck_check && !checkCkEditorView) checkCkEditorView = createTemplateCodeEditor(editorModules, checkCkEditorContainer.value, accountQL.check_ck_code, code => { accountQL.check_ck_code = code })
+  } finally {
+    editorLoading.value = false
+  }
 }
 
 function syncTemplateEditors() {
@@ -673,6 +739,8 @@ function destroyTemplateEditors() {
   queryEditorView = null
   afterRunEditorView = null
   checkCkEditorView = null
+  editorLoading.value = false
+  editorLoadError.value = ''
 }
 
 const saveCode = async () => {
@@ -1079,9 +1147,9 @@ const normalizeCreatePath = (path) => {
   return String(path || '').replace(/\\/g, '/').replace(/^\/+/, '').trim()
 }
 
-const languageFor = (path) => {
-  if (path.endsWith('.py')) return python()
-  return javascript()
+const languageFor = (editorModules, path) => {
+  if (path.endsWith('.py')) return editorModules.python()
+  return editorModules.javascript()
 }
 
 const collectDirectories = (nodes) => {
@@ -1118,6 +1186,8 @@ const destroyEditor = () => {
     editorView.destroy()
     editorView = null
   }
+  editorLoading.value = false
+  editorLoadError.value = ''
 }
 
 const goBack = () => {
@@ -1251,6 +1321,7 @@ onBeforeUnmount(() => {
 }
 
 .template-tabs :deep(.el-tab-pane) {
+  position: relative;
   flex: 1;
   height: 100%;
   min-height: 0;
@@ -1258,6 +1329,58 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.editor-load-state {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  left: 14px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 10px 14px;
+  border: 1px solid #d9ecff;
+  border-radius: 6px;
+  background: rgba(240, 248, 255, 0.96);
+  color: #409eff;
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.editor-load-state::before {
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  border: 2px solid #b3d8ff;
+  border-top-color: #409eff;
+  border-radius: 50%;
+  animation: editor-load-spin 0.8s linear infinite;
+  content: '';
+}
+
+.editor-load-state-file {
+  top: 14px;
+}
+
+.editor-load-state.is-error {
+  border-color: #fbc4c4;
+  background: rgba(254, 240, 240, 0.96);
+  color: #f56c6c;
+}
+
+.editor-load-state.is-error::before {
+  display: none;
+}
+
+.editor-main {
+  position: relative;
+}
+
+@keyframes editor-load-spin {
+  to { transform: rotate(360deg); }
 }
 
 .form-scroll {
