@@ -229,7 +229,7 @@ func (a *QQOfficeAdapter) Stop() error {
 }
 
 func (a *QQOfficeAdapter) SendMessage(target string, text string) error {
-	return a.sendMessage(target, text, 0)
+	return a.sendMarkdownMessage(target, text, 0, false, true)
 }
 
 // SendMessageWithSequence 使用协议指定的回复序号发送文本消息。
@@ -237,10 +237,10 @@ func (a *QQOfficeAdapter) SendMessageWithSequence(target string, text string, se
 	if sequence <= 0 {
 		return fmt.Errorf("QQ 官方回复序号必须大于 0")
 	}
-	return a.sendMessage(target, text, sequence)
+	return a.sendMarkdownMessage(target, text, sequence, false, true)
 }
 
-func (a *QQOfficeAdapter) sendMessage(target string, text string, sequence int) error {
+func (a *QQOfficeAdapter) sendTextMessage(target string, text string, sequence int) error {
 	parts := contract.SplitTextMessage(text, contract.DefaultTextMessageLimit)
 	if len(parts) > 1 {
 		log.Printf("[WARN][QQ官方][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
@@ -397,14 +397,27 @@ func (a *QQOfficeAdapter) SendMarkdown(target string, markdown string) error {
 	if markdown == "" {
 		return fmt.Errorf("QQ 官方 Markdown 内容不能为空")
 	}
+	return a.sendMarkdownMessage(target, markdown, 0, true, false)
+}
+
+func (a *QQOfficeAdapter) sendMarkdownMessage(target string, markdown string, sequence int, convertDMSToPlainText bool, splitAsText bool) error {
+	if markdown == "" && !convertDMSToPlainText {
+		return nil
+	}
 	targetInfo, err := parseQQOfficeMessageTarget(target)
 	if err != nil {
 		return err
 	}
 	if targetInfo.kind == "dms" {
-		return a.SendMessage(target, utils.MarkdownToPlainText(markdown))
+		if convertDMSToPlainText {
+			return a.sendTextMessage(target, utils.MarkdownToPlainText(markdown), sequence)
+		}
+		return a.sendTextMessage(target, markdown, sequence)
 	}
 	splitLimit := contract.DefaultRichMessageLimit
+	if splitAsText {
+		splitLimit = contract.DefaultTextMessageLimit
+	}
 	if targetInfo.atUser != "" {
 		splitLimit -= contract.TextRuneCount(fmt.Sprintf("<@%s>\n", strings.TrimSpace(targetInfo.atUser)))
 		if splitLimit <= 0 {
@@ -412,6 +425,9 @@ func (a *QQOfficeAdapter) SendMarkdown(target string, markdown string) error {
 		}
 	}
 	parts := contract.SplitMarkdownMessage(markdown, splitLimit)
+	if splitAsText {
+		parts = contract.SplitTextMessage(markdown, splitLimit)
+	}
 	if len(parts) > 1 {
 		log.Printf("[WARN][QQ官方][%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(markdown), splitLimit, len(parts))
 	}
@@ -426,7 +442,13 @@ func (a *QQOfficeAdapter) SendMarkdown(target string, markdown string) error {
 		}
 		if targetInfo.msgID != "" {
 			body["msg_id"] = targetInfo.msgID
-			body["msg_seq"] = a.nextReplySeq(targetInfo)
+			if targetInfo.kind == "user" || targetInfo.kind == "group" {
+				partSequence := sequence
+				if partSequence > 0 {
+					partSequence += index
+				}
+				body["msg_seq"] = a.reserveReplySeq(targetInfo, partSequence)
+			}
 		}
 		path := ""
 		switch targetInfo.kind {
@@ -434,6 +456,8 @@ func (a *QQOfficeAdapter) SendMarkdown(target string, markdown string) error {
 			path = "/v2/users/" + url.PathEscape(targetInfo.id) + "/messages"
 		case "group":
 			path = "/v2/groups/" + url.PathEscape(targetInfo.id) + "/messages"
+		case "channel":
+			path = "/channels/" + url.PathEscape(targetInfo.id) + "/messages"
 		default:
 			return fmt.Errorf("QQ 官方 Markdown 目标类型无效: %s", targetInfo.kind)
 		}

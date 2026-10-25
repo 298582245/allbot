@@ -1,10 +1,36 @@
 package router
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/allbot/allbot/core/types"
 )
+
+func TestRouterHasWhitelistBlockedPlugin(t *testing.T) {
+	router := NewRouter(nil)
+	router.plugins["demo"] = &types.Plugin{
+		Enabled:       true,
+		Platforms:     []string{"qq_office"},
+		TriggerRegex:  regexp.MustCompile(`^朴朴登录$`),
+		AccessControl: types.AccessControlConfig{WhitelistGroups: []string{"allowed-group"}},
+	}
+
+	blocked := &types.Message{Platform: "qq_office", GroupID: "blocked-group", UserID: "user-1", Content: "朴朴登录"}
+	if !router.hasWhitelistBlockedPlugin(blocked) {
+		t.Fatal("expected matching plugin blocked by group whitelist")
+	}
+
+	allowed := &types.Message{Platform: "qq_office", GroupID: "allowed-group", UserID: "user-1", Content: "朴朴登录"}
+	if router.hasWhitelistBlockedPlugin(allowed) {
+		t.Fatal("expected allowed group not to be reported as whitelist-blocked")
+	}
+
+	nonMatching := &types.Message{Platform: "qq_office", GroupID: "blocked-group", UserID: "user-1", Content: "其他指令"}
+	if router.hasWhitelistBlockedPlugin(nonMatching) {
+		t.Fatal("expected non-matching trigger not to be reported as whitelist-blocked")
+	}
+}
 
 func TestAllowMessageByAccessControlUnionID(t *testing.T) {
 	message := &types.Message{Platform: "qq", UserID: "user-1", GroupID: "group-1"}

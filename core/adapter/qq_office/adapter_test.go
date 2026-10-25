@@ -215,7 +215,8 @@ func TestQQOfficeSendTargetPrivateUserUsesC2CPath(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode message body failed: %v", err)
 			}
-			if body["content"] != "你好" || body["msg_type"] != float64(0) {
+			markdown, ok := body["markdown"].(map[string]interface{})
+			if !ok || body["msg_type"] != float64(2) || markdown["content"] != "你好" {
 				t.Fatalf("message body = %#v", body)
 			}
 			w.WriteHeader(http.StatusOK)
@@ -265,6 +266,17 @@ func TestQQOfficeSendMessageWithSequenceC2CAndGroup(t *testing.T) {
 		body := <-bodies
 		if body["msg_id"] != expectedID || body["msg_seq"] != float64(2) {
 			t.Fatalf("body = %#v, expected msg_id=%q msg_seq=2", body, expectedID)
+		}
+		markdown, ok := body["markdown"].(map[string]interface{})
+		if !ok || body["msg_type"] != float64(2) {
+			t.Fatalf("body = %#v, expected Markdown message", body)
+		}
+		wantContent := "私聊"
+		if expectedID == "msg-group" {
+			wantContent = "<@member-openid>\n群聊"
+		}
+		if markdown["content"] != wantContent {
+			t.Fatalf("markdown content = %#v, want %q", markdown["content"], wantContent)
 		}
 	}
 }
@@ -362,7 +374,10 @@ func TestQQOfficeSendMessageSplitsLongTextAndIncrementsReplySeq(t *testing.T) {
 	if first["msg_seq"] != float64(1) || second["msg_seq"] != float64(2) || third["msg_seq"] != float64(3) {
 		t.Fatalf("msg_seq = %v/%v/%v", first["msg_seq"], second["msg_seq"], third["msg_seq"])
 	}
-	joined := first["content"].(string) + second["content"].(string) + third["content"].(string)
+	firstMarkdown := first["markdown"].(map[string]interface{})
+	secondMarkdown := second["markdown"].(map[string]interface{})
+	thirdMarkdown := third["markdown"].(map[string]interface{})
+	joined := firstMarkdown["content"].(string) + secondMarkdown["content"].(string) + thirdMarkdown["content"].(string)
 	if joined != text {
 		t.Fatal("sent content does not reassemble to original text")
 	}
@@ -714,10 +729,10 @@ func TestQQOfficeSendMessagePostsC2CAndGroup(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
 		case "/v2/users/user-openid/messages":
 			atomic.AddInt32(&userCalls, 1)
-			assertQQOfficeMessageRequest(t, r, "你好", "msg-c2c")
+			assertQQOfficeMarkdownRequest(t, r, "你好", "msg-c2c")
 		case "/v2/groups/group-openid/messages":
 			atomic.AddInt32(&groupCalls, 1)
-			assertQQOfficeMessageRequest(t, r, "群回复", "msg-group")
+			assertQQOfficeMarkdownRequest(t, r, "<@member-openid>\n群回复", "msg-group")
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -736,6 +751,36 @@ func TestQQOfficeSendMessagePostsC2CAndGroup(t *testing.T) {
 	}
 }
 
+func TestQQOfficeSendMessagePostsChannelMarkdown(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/channels/channel-openid/messages":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode message body failed: %v", err)
+			}
+			markdown, ok := body["markdown"].(map[string]interface{})
+			if !ok || body["msg_type"] != float64(2) || body["msg_id"] != "msg-channel" || markdown["content"] != "频道回复" {
+				t.Fatalf("message body = %#v", body)
+			}
+			if _, ok := body["msg_seq"]; ok {
+				t.Fatalf("channel body should omit msg_seq: %#v", body)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	if err := adp.SendMessage("channel_channel-openid|msg_msg-channel", "频道回复"); err != nil {
+		t.Fatalf("SendMessage channel returned error: %v", err)
+	}
+}
+
 func assertQQOfficeMarkdownRequest(t *testing.T, r *http.Request, content string, msgID string) {
 	t.Helper()
 	if r.Method != http.MethodPost {
@@ -750,23 +795,6 @@ func assertQQOfficeMarkdownRequest(t *testing.T, r *http.Request, content string
 		t.Fatalf("markdown body = %#v", body)
 	}
 	if body["msg_type"] != float64(2) || body["msg_id"] != msgID || body["msg_seq"] != float64(1) || markdown["content"] != content {
-		t.Fatalf("message body = %#v", body)
-	}
-}
-
-func assertQQOfficeMessageRequest(t *testing.T, r *http.Request, content string, msgID string) {
-	t.Helper()
-	if r.Method != http.MethodPost {
-		t.Fatalf("method = %s, expected POST", r.Method)
-	}
-	if got := r.Header.Get("Authorization"); got != "QQBot test-token" {
-		t.Fatalf("Authorization = %q", got)
-	}
-	var body map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		t.Fatalf("decode message body failed: %v", err)
-	}
-	if body["content"] != content || body["msg_id"] != msgID || body["msg_type"] != float64(0) || body["msg_seq"] != float64(1) {
 		t.Fatalf("message body = %#v", body)
 	}
 }

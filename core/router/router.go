@@ -301,7 +301,11 @@ func (r *Router) HandleMessage(msg *types.Message) {
 
 	matchedPlugins := r.matchPlugins(msg)
 	if len(matchedPlugins) == 0 {
-		log.Printf("[SYSTEM] No plugin matched")
+		if r.hasWhitelistBlockedPlugin(msg) {
+			log.Printf("[SYSTEM] No plugin matched(非白名单)")
+		} else {
+			log.Printf("[SYSTEM] No plugin matched")
+		}
 		return
 	}
 	if database != nil && !isEvent && !isBotMessage(msg) {
@@ -422,6 +426,53 @@ func (r *Router) matchPlugins(msg *types.Message) []*types.Plugin {
 	}
 	log.Printf("[SYSTEM] Plugin matched: %s(priority=%d) for message: %s", matched[0].Name, matched[0].Priority, msg.Content)
 	return matched
+}
+
+func (r *Router) hasWhitelistBlockedPlugin(msg *types.Message) bool {
+	if msg == nil {
+		return false
+	}
+	unionID := r.messageUnionID(msg)
+	systemAccess := r.systemAccessControl()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	adminChecker := r.adminChecker
+	isAdmin := adminChecker != nil && adminChecker(msg.Platform, msg.UserID)
+	for _, plugin := range r.plugins {
+		if plugin == nil || !plugin.Enabled || !r.supportsPlatform(plugin, msg.Platform) || !r.supportsAdapter(plugin, msg.AdapterID) {
+			continue
+		}
+		if isBotMessage(msg) && !plugin.AcceptBotMessages {
+			continue
+		}
+		if plugin.TriggerRegex == nil || !plugin.TriggerRegex.MatchString(msg.Content) {
+			continue
+		}
+		accessControl := plugin.AccessControl
+		if accessControl.InheritSystem {
+			accessControl = systemAccess
+		}
+		if whitelistBlocksMessage(accessControl, msg, unionID, isAdmin) {
+			return true
+		}
+	}
+	return false
+}
+
+func whitelistBlocksMessage(config types.AccessControlConfig, msg *types.Message, unionID string, isAdmin bool) bool {
+	if config.AdminOnly && isAdmin {
+		return false
+	}
+	if len(config.WhitelistUserIDs) > 0 && !containsString(config.WhitelistUserIDs, msg.UserID) {
+		return true
+	}
+	if len(config.WhitelistUnionIDs) > 0 && (unionID == "" || !containsString(config.WhitelistUnionIDs, unionID)) {
+		return true
+	}
+	if msg.GroupID != "" && len(config.WhitelistGroups) > 0 && !containsString(config.WhitelistGroups, msg.GroupID) {
+		return true
+	}
+	return false
 }
 
 func (r *Router) FilterPluginsForMessage(msg *types.Message, requireTrigger bool) []*types.Plugin {
