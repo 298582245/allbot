@@ -751,6 +751,38 @@ func TestQQOfficeSendMessagePostsC2CAndGroup(t *testing.T) {
 	}
 }
 
+func TestQQOfficeSendMessageEscapesMarkdownCharacters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/v2/groups/group-openid/messages":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode message body failed: %v", err)
+			}
+			markdown, ok := body["markdown"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("markdown body = %#v", body)
+			}
+			want := "\\`代码\\` \\*星号\\* \\_下划线\\_ \\~删除线\\~ \\#标题 \\[链接\\]\\(url\\) \\!"
+			if markdown["content"] != want {
+				t.Fatalf("markdown content = %q, want %q", markdown["content"], want)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	text := "`代码` *星号* _下划线_ ~删除线~ #标题 [链接](url) !"
+	if err := adp.SendMessage("group_group-openid|msg_msg-group", text); err != nil {
+		t.Fatalf("SendMessage returned error: %v", err)
+	}
+}
+
 func TestQQOfficeSendMessagePostsChannelMarkdown(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

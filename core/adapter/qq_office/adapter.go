@@ -414,6 +414,9 @@ func (a *QQOfficeAdapter) sendMarkdownMessage(target string, markdown string, se
 		}
 		return a.sendTextMessage(target, markdown, sequence)
 	}
+	if splitAsText {
+		markdown = escapeQQOfficePlainTextMarkdown(markdown)
+	}
 	splitLimit := contract.DefaultRichMessageLimit
 	if splitAsText {
 		splitLimit = contract.DefaultTextMessageLimit
@@ -1538,6 +1541,19 @@ func qqOfficeGroupAtContent(target qqOfficeMessageTarget, content string) string
 		return content
 	}
 	return fmt.Sprintf("<@%s>\n%s", strings.TrimSpace(target.atUser), content)
+}
+
+func escapeQQOfficePlainTextMarkdown(text string) string {
+	const escapable = "\\`*_~{}[]()#+-.!|<>"
+	var builder strings.Builder
+	builder.Grow(len(text))
+	for _, char := range text {
+		if strings.ContainsRune(escapable, char) {
+			builder.WriteByte('\\')
+		}
+		builder.WriteRune(char)
+	}
+	return builder.String()
 }
 
 func parseQQOfficeDMSTarget(target string) (string, string, error) {
