@@ -258,8 +258,50 @@ const removeApp = async (row) => {
 }
 
 const copyCredential = async (value, label) => {
-  await navigator.clipboard.writeText(value)
-  ElMessage.success(`${label} 已复制`)
+  if (!value) {
+    ElMessage.warning(`没有可复制的${label}`)
+    return
+  }
+
+  let copied = false
+  if (typeof navigator !== 'undefined' && typeof navigator.clipboard?.writeText === 'function') {
+    try {
+      await navigator.clipboard.writeText(value)
+      copied = true
+    } catch {
+      copied = false
+    }
+  }
+
+  if (!copied) {
+    try {
+      copyCredentialByFallback(value)
+      copied = true
+    } catch {
+      copied = false
+    }
+  }
+
+  if (copied) {
+    ElMessage.success(`${label} 已复制`)
+  } else {
+    ElMessage.error(`${label} 复制失败，请手动复制`)
+  }
+}
+
+const copyCredentialByFallback = (value) => {
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', 'readonly')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  try {
+    textarea.select()
+    if (!document.execCommand('copy')) throw new Error('copy command failed')
+  } finally {
+    document.body.removeChild(textarea)
+  }
 }
 
 const clearSecret = () => {

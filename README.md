@@ -663,6 +663,64 @@ Token 可从以下位置传入：
 
 开发者 API 与 MCP 的接口、参数和使用说明见 [AllBot Apifox 文档](https://allbot.apifox.cn/)。
 
+### 在 IDE 中配置 MCP
+
+AllBot 的 MCP 地址是面板地址后加 `/api/v1/mcp`。例如本机地址为：
+
+```text
+http://127.0.0.1:3000/api/v1/mcp
+```
+
+在管理员后台“开发者应用”中创建应用并授予需要的模块权限后，可以直接使用 `appKey:appSecret` 做 Basic 鉴权。先将两者用英文冒号拼接，再进行 Base64 编码：
+
+PowerShell：
+
+```powershell
+$pair = "appKey:appSecret"
+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pair))
+```
+
+如果 IDE 支持远程 Streamable HTTP MCP，可在它的 MCP 配置文件中填写以下结构。将 `<base64(appKey:appSecret)>` 替换为上一步的结果：
+
+```json
+{
+  "mcpServers": {
+    "AllBot 开发者 MCP": {
+      "url": "http://127.0.0.1:3000/api/v1/mcp",
+      "headers": {
+        "Authorization": "Basic <base64(appKey:appSecret)>"
+      }
+    }
+  }
+}
+```
+
+如果 IDE 只支持 stdio MCP，可以使用 `mcp-remote` 作为本地桥接。下面的配置把鉴权值放到环境变量中，避免直接写进命令参数：
+
+```json
+{
+  "mcpServers": {
+    "AllBot 开发者 MCP": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://127.0.0.1:3000/api/v1/mcp",
+        "--header",
+        "Authorization:${ALLBOT_MCP_AUTH}"
+      ],
+      "env": {
+        "ALLBOT_MCP_AUTH": "Basic <base64(appKey:appSecret)>"
+      }
+    }
+  }
+}
+```
+
+也可以先调用 `POST /api/v1/open-api/token` 换取 24 小时应用令牌，再把配置中的 Authorization 改为 `Bearer <access_token>`。REST 开发者接口只能使用这个 Bearer 令牌；MCP 才支持直接使用 Basic 应用凭据。不要把 `appSecret` 直接当作 Bearer 令牌，也不要把管理员后台登录令牌用于 REST 接口。
+
+上面的配置是 AllBot 开发者 MCP，不是 Apifox 的 MCP 配置，也不是后台“自定义 Open API”。自定义 Open API 使用管理员为每个脚本接口配置的独立 Token；Apifox 的 `apifox-mcp-server` 只用于访问 Apifox 文档，不能替代 AllBot 的 `/api/v1/mcp` 地址。
+
 ## 数据管理
 
 插件可以通过 SDK 创建私有表，实际表名会自动加上插件前缀。后台 `数据管理` 页面可查看数据表、搜索、分页、导入导出，并可通过 `setDataView` / `set_data_view` 为表配置展示名称、分组、说明和列信息。

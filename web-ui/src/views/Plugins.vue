@@ -804,10 +804,6 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled, Plus } from '@element-plus/icons-vue'
 import { getAdapterPlatforms, getAdapters, getPlugins, controlPlugin, setPluginPinned, deletePlugin, getPluginRecycleBin, deletePluginBackup, getPluginTemplates, previewCreatePlugin, validateCreatePlugin, createPlugin, importPlugin, getRuntimeProfiles, getScriptEnvs } from '@/api'
 import request from '@/utils/request'
-import { EditorView, basicSetup } from 'codemirror'
-import { javascript } from '@codemirror/lang-javascript'
-import { python } from '@codemirror/lang-python'
-import { oneDark } from '@codemirror/theme-one-dark'
 import StdPagination from '@/components/StdPagination.vue'
 import { inspectPluginArchive, inspectPluginDirectory } from '@/utils/pluginImport'
 import {
@@ -882,6 +878,7 @@ const createPreview = shallowRef('')
 const createPreviewData = shallowRef(null)
 let createDraftTimer = null
 let createPreviewTimer = null
+let editorModulesPromise = null
 let parseInputEditorView = null
 let queryEditorView = null
 let afterRunEditorView = null
@@ -1746,8 +1743,30 @@ function sanitizeEnvBase(value) {
   return /^[A-Z_]/.test(normalized) ? normalized : `PLUGIN_${normalized}`
 }
 
-function createCodeEditor(container, code, onUpdate) {
+function loadEditorModules() {
+  if (!editorModulesPromise) {
+    editorModulesPromise = Promise.all([
+      import('codemirror'),
+      import('@codemirror/lang-javascript'),
+      import('@codemirror/lang-python'),
+      import('@codemirror/theme-one-dark')
+    ]).then(([codemirror, javascriptLanguage, pythonLanguage, theme]) => ({
+      EditorView: codemirror.EditorView,
+      basicSetup: codemirror.basicSetup,
+      javascript: javascriptLanguage.javascript,
+      python: pythonLanguage.python,
+      oneDark: theme.oneDark
+    })).catch((error) => {
+      editorModulesPromise = null
+      throw error
+    })
+  }
+  return editorModulesPromise
+}
+
+function createCodeEditor(editorModules, container, code, onUpdate) {
   if (!container) return null
+  const { EditorView, basicSetup, javascript, python, oneDark } = editorModules
   return new EditorView({
     doc: String(code || ''),
     extensions: [
@@ -1767,7 +1786,7 @@ function createCodeEditor(container, code, onUpdate) {
   })
 }
 
-function ensureCreateEditors() {
+async function ensureCreateEditors() {
   if (!isAccountQLTemplate.value || createActiveTab.value !== 'code') return
   const accountQL = createForm.value.account_ql
   if (!accountQL) return
@@ -1780,23 +1799,31 @@ function ensureCreateEditors() {
     checkCkEditorView = null
   }
   if (!parseInputEditorContainer.value || !queryEditorContainer.value || (accountQL.enable_after_run && !afterRunEditorContainer.value) || (accountQL.enable_ck_check && !checkCkEditorContainer.value)) return
+  let editorModules
+  try {
+    editorModules = await loadEditorModules()
+  } catch (error) {
+    ElMessage.error('代码编辑器加载失败，请刷新页面后重试')
+    return
+  }
+  if (!createDialogVisible.value || !isAccountQLTemplate.value || createActiveTab.value !== 'code') return
   if (!parseInputEditorView) {
-    parseInputEditorView = createCodeEditor(parseInputEditorContainer.value, accountQL.parse_input_code, (code) => {
+    parseInputEditorView = createCodeEditor(editorModules, parseInputEditorContainer.value, accountQL.parse_input_code, (code) => {
       if (createForm.value.account_ql) createForm.value.account_ql.parse_input_code = code
     })
   }
   if (!queryEditorView) {
-    queryEditorView = createCodeEditor(queryEditorContainer.value, accountQL.query_code, (code) => {
+    queryEditorView = createCodeEditor(editorModules, queryEditorContainer.value, accountQL.query_code, (code) => {
       if (createForm.value.account_ql) createForm.value.account_ql.query_code = code
     })
   }
   if (accountQL.enable_after_run && !afterRunEditorView) {
-    afterRunEditorView = createCodeEditor(afterRunEditorContainer.value, accountQL.after_run_code, (code) => {
+    afterRunEditorView = createCodeEditor(editorModules, afterRunEditorContainer.value, accountQL.after_run_code, (code) => {
       if (createForm.value.account_ql) createForm.value.account_ql.after_run_code = code
     })
   }
   if (accountQL.enable_ck_check && !checkCkEditorView) {
-    checkCkEditorView = createCodeEditor(checkCkEditorContainer.value, accountQL.check_ck_code, (code) => {
+    checkCkEditorView = createCodeEditor(editorModules, checkCkEditorContainer.value, accountQL.check_ck_code, (code) => {
       if (createForm.value.account_ql) createForm.value.account_ql.check_ck_code = code
     })
   }
