@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -705,10 +706,16 @@ func (s *Server) handlePluginAction(w http.ResponseWriter, pluginID, action stri
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if s.router != nil {
+			s.router.SetPluginEnabled(pluginID, true)
+		}
 	case "disable":
 		if err := s.pluginManager.TogglePlugin(pluginID, false); err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if s.router != nil {
+			s.router.SetPluginEnabled(pluginID, false)
 		}
 	case "reload", "restart":
 		if err := s.pluginManager.ReloadPlugin(pluginID); err != nil {
@@ -1345,6 +1352,30 @@ func (s *Server) handlePluginFiles(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "不能预览文件夹", http.StatusBadRequest)
 			return
 		}
+		if r.URL.Query().Get("raw") == "1" {
+			data, err := os.ReadFile(fullPath)
+			if err != nil {
+				s.jsonError(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			contentType := pluginFileContentType(filePath, data)
+			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = w.Write(data)
+			return
+		}
+		if isPluginImageFile(filePath) {
+			s.jsonResponse(w, map[string]interface{}{
+				"path":         filepath.ToSlash(filePath),
+				"filename":     filepath.Base(filePath),
+				"editable":     false,
+				"text":         false,
+				"preview":      "image",
+				"content_type": pluginFileContentType(filePath, nil),
+				"size":         info.Size(),
+			})
+			return
+		}
 		data, err := os.ReadFile(fullPath)
 		if err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
@@ -1509,7 +1540,11 @@ func buildPluginFileTree(root, relative string) ([]map[string]interface{}, error
 		if err != nil {
 			return nil, err
 		}
-		item := map[string]interface{}{"name": name, "path": relPath, "type": "file", "text": true, "size": info.Size()}
+		isImage := !entry.IsDir() && isPluginImageFile(relPath)
+		item := map[string]interface{}{"name": name, "path": relPath, "type": "file", "text": !isImage, "size": info.Size()}
+		if isImage {
+			item["preview"] = "image"
+		}
 		if entry.IsDir() {
 			children, err := buildPluginFileTree(root, relPath)
 			if err != nil {
@@ -1522,6 +1557,22 @@ func buildPluginFileTree(root, relative string) ([]map[string]interface{}, error
 		result = append(result, item)
 	}
 	return result, nil
+}
+
+func isPluginImageFile(path string) bool {
+	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+	return strings.HasPrefix(contentType, "image/")
+}
+
+func pluginFileContentType(path string, data []byte) string {
+	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+	if contentType != "" {
+		return contentType
+	}
+	if len(data) > 0 {
+		return http.DetectContentType(data)
+	}
+	return "application/octet-stream"
 }
 
 func safePluginPath(root, relative string) (string, error) {

@@ -301,6 +301,20 @@ func (r *Router) UnregisterPlugin(pluginID string) {
 	log.Printf("Plugin unregistered: %s", pluginID)
 }
 
+// SetPluginEnabled updates the enabled flag in the router's matching table.
+// Plugin manager reloads can replace the manager's plugin object while the
+// router still holds the previous object, so toggles must update this copy too.
+func (r *Router) SetPluginEnabled(pluginID string, enabled bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	plugin := r.plugins[pluginID]
+	if plugin == nil {
+		return false
+	}
+	plugin.Enabled = enabled
+	return true
+}
+
 func (r *Router) HandleMessage(msg *types.Message) {
 	atomic.AddUint64(&r.messageCount, 1)
 	r.mu.RLock()

@@ -14,6 +14,7 @@ import (
 
 	"github.com/allbot/allbot/core/deps"
 	plugincore "github.com/allbot/allbot/core/plugin"
+	"github.com/allbot/allbot/core/types"
 )
 
 func TestHandlePluginWebPanelsListsEnabledPanels(t *testing.T) {
@@ -50,8 +51,23 @@ func TestHandlePluginWebStaticServesEntryAndBlocksTraversal(t *testing.T) {
 		writePluginWebTestPlugin(t, "shop", "商城", 1, true)
 		loadPluginWebTestPlugin(t, server, "shop")
 
+		unauthorizedRecorder := httptest.NewRecorder()
+		server.handlePluginWebStatic(unauthorizedRecorder, httptest.NewRequest(http.MethodGet, "/plugin-web/shop/", nil))
+		if unauthorizedRecorder.Code != http.StatusNotFound {
+			t.Fatalf("unauthorized entry response = %d, want 404", unauthorizedRecorder.Code)
+		}
+		token, _, err := server.createAdminSession()
+		if err != nil {
+			t.Fatal(err)
+		}
+		authenticatedRequest := func(method, target string) *http.Request {
+			request := httptest.NewRequest(method, target, nil)
+			request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+			return request
+		}
+
 		entryRecorder := httptest.NewRecorder()
-		server.handlePluginWebStatic(entryRecorder, httptest.NewRequest(http.MethodGet, "/plugin-web/shop/", nil))
+		server.handlePluginWebStatic(entryRecorder, authenticatedRequest(http.MethodGet, "/plugin-web/shop/"))
 		if entryRecorder.Code != http.StatusOK || !strings.Contains(entryRecorder.Body.String(), "shop panel") {
 			t.Fatalf("entry response = %d %s", entryRecorder.Code, entryRecorder.Body.String())
 		}
@@ -60,7 +76,7 @@ func TestHandlePluginWebStaticServesEntryAndBlocksTraversal(t *testing.T) {
 		}
 
 		assetRecorder := httptest.NewRecorder()
-		server.handlePluginWebStatic(assetRecorder, httptest.NewRequest(http.MethodGet, "/plugin-web/shop/app.js", nil))
+		server.handlePluginWebStatic(assetRecorder, authenticatedRequest(http.MethodGet, "/plugin-web/shop/app.js"))
 		if assetRecorder.Code != http.StatusOK || !strings.Contains(assetRecorder.Body.String(), "plugin app") {
 			t.Fatalf("asset response = %d %s", assetRecorder.Code, assetRecorder.Body.String())
 		}
@@ -69,13 +85,13 @@ func TestHandlePluginWebStaticServesEntryAndBlocksTraversal(t *testing.T) {
 		}
 
 		refreshEntryRecorder := httptest.NewRecorder()
-		server.handlePluginWebStatic(refreshEntryRecorder, httptest.NewRequest(http.MethodGet, "/plugin-web/shop/__allbot_refresh__/123/", nil))
+		server.handlePluginWebStatic(refreshEntryRecorder, authenticatedRequest(http.MethodGet, "/plugin-web/shop/__allbot_refresh__/123/"))
 		if refreshEntryRecorder.Code != http.StatusOK || !strings.Contains(refreshEntryRecorder.Body.String(), "shop panel") {
 			t.Fatalf("refresh entry response = %d %s", refreshEntryRecorder.Code, refreshEntryRecorder.Body.String())
 		}
 
 		refreshAssetRecorder := httptest.NewRecorder()
-		server.handlePluginWebStatic(refreshAssetRecorder, httptest.NewRequest(http.MethodGet, "/plugin-web/shop/__allbot_refresh__/123/app.js", nil))
+		server.handlePluginWebStatic(refreshAssetRecorder, authenticatedRequest(http.MethodGet, "/plugin-web/shop/__allbot_refresh__/123/app.js"))
 		if refreshAssetRecorder.Code != http.StatusOK || !strings.Contains(refreshAssetRecorder.Body.String(), "plugin app") {
 			t.Fatalf("refresh asset response = %d %s", refreshAssetRecorder.Code, refreshAssetRecorder.Body.String())
 		}
@@ -84,7 +100,7 @@ func TestHandlePluginWebStaticServesEntryAndBlocksTraversal(t *testing.T) {
 		}
 
 		headRecorder := httptest.NewRecorder()
-		server.handlePluginWebStatic(headRecorder, httptest.NewRequest(http.MethodHead, "/plugin-web/shop/__allbot_refresh__/123/app.js", nil))
+		server.handlePluginWebStatic(headRecorder, authenticatedRequest(http.MethodHead, "/plugin-web/shop/__allbot_refresh__/123/app.js"))
 		if headRecorder.Code != http.StatusOK || headRecorder.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("HEAD response = %d, Cache-Control = %q", headRecorder.Code, headRecorder.Header().Get("Cache-Control"))
 		}
@@ -93,15 +109,46 @@ func TestHandlePluginWebStaticServesEntryAndBlocksTraversal(t *testing.T) {
 		}
 
 		invalidRefreshRecorder := httptest.NewRecorder()
-		server.handlePluginWebStatic(invalidRefreshRecorder, httptest.NewRequest(http.MethodGet, "/plugin-web/shop/__allbot_refresh__/invalid/app.js", nil))
+		server.handlePluginWebStatic(invalidRefreshRecorder, authenticatedRequest(http.MethodGet, "/plugin-web/shop/__allbot_refresh__/invalid/app.js"))
 		if invalidRefreshRecorder.Code != http.StatusNotFound {
 			t.Fatalf("expected invalid refresh path 404, got %d", invalidRefreshRecorder.Code)
 		}
 
 		blockedRecorder := httptest.NewRecorder()
-		server.handlePluginWebStatic(blockedRecorder, httptest.NewRequest(http.MethodGet, "/plugin-web/shop/../plugin.json", nil))
+		server.handlePluginWebStatic(blockedRecorder, authenticatedRequest(http.MethodGet, "/plugin-web/shop/../plugin.json"))
 		if blockedRecorder.Code != http.StatusNotFound {
 			t.Fatalf("expected traversal 404, got %d", blockedRecorder.Code)
+		}
+	})
+}
+
+func TestHandlePluginActionSyncsDisabledPluginToRouter(t *testing.T) {
+	withTempWorkdir(t, func() {
+		server := testServer(t)
+		writePluginWebTestPlugin(t, "shop", "商城", 1, true)
+		loadPluginWebTestPlugin(t, server, "shop")
+		process := server.pluginManager.GetPlugin("shop")
+		if process == nil || process.Plugin == nil {
+			t.Fatal("plugin was not loaded")
+		}
+		if err := server.router.RegisterPlugin(process.Plugin); err != nil {
+			t.Fatal(err)
+		}
+
+		recorder := httptest.NewRecorder()
+		server.handlePluginAction(recorder, "shop", "disable")
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("disable response = %d: %s", recorder.Code, recorder.Body.String())
+		}
+		if process.Plugin.Enabled {
+			t.Fatal("plugin manager should mark the plugin disabled")
+		}
+		if routed := server.router.GetPlugin("shop"); routed == nil || routed.Enabled {
+			t.Fatalf("router should stop matching the disabled plugin: %#v", routed)
+		}
+		matched := server.router.FilterPluginsForMessage(&types.Message{Platform: "qq", Content: "shop"}, true)
+		if len(matched) != 0 {
+			t.Fatalf("disabled plugin still matched: %#v", matched)
 		}
 	})
 }

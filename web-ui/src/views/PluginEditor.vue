@@ -178,6 +178,12 @@
               <span>{{ editorLoadError || '正在加载代码编辑器，请稍候…' }}</span>
             </div>
             <el-empty v-if="!selectedPath" description="请选择左侧文件" />
+            <div v-else-if="imagePreviewUrl" class="image-preview-panel">
+              <div class="image-preview-stage">
+                <el-image class="image-preview" :src="imagePreviewUrl" :preview-src-list="[imagePreviewUrl]" preview-teleported fit="contain" :alt="selectedPath" />
+              </div>
+              <div class="image-preview-meta">{{ selectedPath }}<span v-if="imagePreviewContentType"> · {{ imagePreviewContentType }}</span><span v-if="imagePreviewSize"> · {{ formatFileSize(imagePreviewSize) }}</span></div>
+            </div>
             <el-result v-else-if="!canEdit" icon="warning" title="该文件无法在线读取" :sub-title="selectedPath" />
             <div v-show="selectedPath && canEdit" ref="editorContainer" class="code-editor-container"></div>
           </main>
@@ -262,6 +268,9 @@ const hybridSectionEditorViews = new Map()
 const hybridCategoryIndex = ref(0)
 const hybridCategoryScroll = ref(null)
 const selectedFileSHA256 = ref('')
+const imagePreviewUrl = ref('')
+const imagePreviewSize = ref(0)
+const imagePreviewContentType = ref('')
 const activeTab = ref('base')
 const editorLoading = ref(false)
 const editorLoadError = ref('')
@@ -559,8 +568,23 @@ const openFile = async (path) => {
     fileTreeRef.value?.setCurrentKey(selectedPath.value)
     selectedDirectory.value = parentPath(selectedPath.value)
     selectedFileSHA256.value = String(data.sha256 || '')
+    destroyImagePreview()
     canEdit.value = Boolean(data.editable)
     destroyEditor()
+    if (data.preview === 'image' || isImagePath(selectedPath.value)) {
+      canEdit.value = false
+      editorLoading.value = true
+      try {
+        const blob = await request.get(`/plugins/files/${pluginId.value}`, { params: { path: selectedPath.value, raw: '1' }, responseType: 'blob' })
+        if (!(blob instanceof Blob)) throw new Error('图片预览数据无效')
+        imagePreviewUrl.value = URL.createObjectURL(blob)
+        imagePreviewSize.value = Number(data.size || blob.size || 0)
+        imagePreviewContentType.value = String(data.content_type || blob.type || '')
+      } finally {
+        editorLoading.value = false
+      }
+      return
+    }
     if (canEdit.value) {
       await nextTick()
       editorLoading.value = true
@@ -1121,12 +1145,18 @@ const handleNodeClick = (node) => {
   if (node.type === 'directory') {
     selectedPath.value = node.path
     canEdit.value = false
+    destroyImagePreview()
     destroyEditor()
+    return
+  }
+  if (node.preview === 'image' || isImagePath(node.path)) {
+    openFile(node.path)
     return
   }
   if (!node.text) {
     selectedPath.value = node.path
     canEdit.value = false
+    destroyImagePreview()
     destroyEditor()
     return
   }
@@ -1150,6 +1180,20 @@ const normalizeCreatePath = (path) => {
 const languageFor = (editorModules, path) => {
   if (path.endsWith('.py')) return editorModules.python()
   return editorModules.javascript()
+}
+
+const imageExtensions = new Set(['.apng', '.avif', '.bmp', '.gif', '.ico', '.jpeg', '.jpg', '.png', '.svg', '.tif', '.tiff', '.webp'])
+const isImagePath = (path) => {
+  const value = String(path || '').toLowerCase()
+  const dotIndex = value.lastIndexOf('.')
+  return dotIndex >= 0 && imageExtensions.has(value.slice(dotIndex))
+}
+
+const formatFileSize = (size) => {
+  const value = Number(size || 0)
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`
 }
 
 const collectDirectories = (nodes) => {
@@ -1190,6 +1234,13 @@ const destroyEditor = () => {
   editorLoadError.value = ''
 }
 
+const destroyImagePreview = () => {
+  if (imagePreviewUrl.value) URL.revokeObjectURL(imagePreviewUrl.value)
+  imagePreviewUrl.value = ''
+  imagePreviewSize.value = 0
+  imagePreviewContentType.value = ''
+}
+
 const goBack = () => {
   router.push('/plugins')
 }
@@ -1207,6 +1258,7 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => {
   destroyEditor()
+  destroyImagePreview()
   destroyTemplateEditors()
   destroyHybridSectionEditors(true)
 })
@@ -1677,6 +1729,47 @@ onBeforeUnmount(() => {
 
 .code-editor-container :deep(.cm-scroller) {
   overflow: auto;
+}
+
+.image-preview-panel {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.image-preview-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  background: repeating-conic-gradient(#f3f4f6 0% 25%, #fff 0% 50%) 50% / 20px 20px;
+}
+
+.image-preview {
+  width: 100%;
+  height: 100%;
+  min-height: 180px;
+}
+
+.image-preview :deep(.el-image__inner) {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.image-preview-meta {
+  flex: none;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 768px) {

@@ -82,7 +82,10 @@ func (s *Server) handlePluginWebStatic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.accessGranted(r) {
+	// Plugin pages are outside the /api/ authentication middleware, so they
+	// must require an administrator session explicitly. The access-code pass
+	// cookie only gates the main dashboard and is not an authentication token.
+	if !s.validAdminToken(r.Header.Get("Authorization")) && !s.requestHasValidSession(r) {
 		http.NotFound(w, r)
 		return
 	}
