@@ -765,7 +765,8 @@ func TestQQOfficeSendMessageEscapesMarkdownCharacters(t *testing.T) {
 			if !ok {
 				t.Fatalf("markdown body = %#v", body)
 			}
-			want := "\\`代码\\` \\*星号\\* \\_下划线\\_ \\~删除线\\~ \\#标题 \\[链接\\]\\(url\\) \\!"
+			want := "&#96;代码&#96; &#42;星号&#42; &#95;下划线&#95; &#126;删除线&#126; &#35;标题 " +
+				"&#91;链接&#93;&#40;url&#41; &#33;"
 			if markdown["content"] != want {
 				t.Fatalf("markdown content = %q, want %q", markdown["content"], want)
 			}
@@ -785,9 +786,8 @@ func TestQQOfficeSendMessageEscapesMarkdownCharacters(t *testing.T) {
 
 func TestEscapeQQOfficePlainTextMarkdownKeepsNumericAndURLPunctuation(t *testing.T) {
 	text := "[数字] [文字](文字) +0.18元 https%3A-0\n+ 列表\n1. 列表"
-	want := `\[数字\] \[文字\]\(文字\) +0.18元 https%3A-0
-\+ 列表
-1\. 列表`
+	want := "&#91;数字&#93; &#91;文字&#93;&#40;文字&#41; &#43;0&#46;18元 https%3A&#45;0\n" +
+		"&#43; 列表\n1&#46; 列表"
 	if got := escapeQQOfficePlainTextMarkdown(text); got != want {
 		t.Fatalf("escaped text = %q, want %q", got, want)
 	}

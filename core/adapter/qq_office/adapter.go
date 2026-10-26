@@ -22,7 +22,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode"
 
 	"github.com/allbot/allbot/core/adapter/_contract"
 	"github.com/allbot/allbot/core/types"
@@ -1545,31 +1544,31 @@ func qqOfficeGroupAtContent(target qqOfficeMessageTarget, content string) string
 }
 
 func escapeQQOfficePlainTextMarkdown(text string) string {
-	const escapable = "\\`*_~{}[]()#!|<>"
-	var builder strings.Builder
-	builder.Grow(len(text))
-	runes := []rune(text)
-	lineStart := 0
-	for index, char := range runes {
-		escape := strings.ContainsRune(escapable, char)
-		switch char {
-		case '+', '-':
-			escape = index == lineStart && (index+1 == len(runes) || unicode.IsSpace(runes[index+1]))
-		case '.':
-			escape = index > lineStart && index+1 < len(runes) && unicode.IsSpace(runes[index+1])
-			for digitIndex := lineStart; escape && digitIndex < index; digitIndex++ {
-				escape = unicode.IsDigit(runes[digitIndex])
-			}
-		}
-		if escape {
-			builder.WriteByte('\\')
-		}
-		builder.WriteRune(char)
-		if char == '\n' || char == '\r' {
-			lineStart = index + 1
-		}
-	}
-	return builder.String()
+	// QQ's Markdown renderer does not reliably honor backslash escapes. HTML
+	// numeric entities are decoded after Markdown parsing, so punctuation is
+	// displayed literally without changing copied text or adding hidden chars.
+	return strings.NewReplacer(
+		"&", "&#38;",
+		"\\", "&#92;",
+		"`", "&#96;",
+		"*", "&#42;",
+		"_", "&#95;",
+		"~", "&#126;",
+		"{", "&#123;",
+		"}", "&#125;",
+		"[", "&#91;",
+		"]", "&#93;",
+		"(", "&#40;",
+		")", "&#41;",
+		"#", "&#35;",
+		"!", "&#33;",
+		"|", "&#124;",
+		"<", "&#60;",
+		">", "&#62;",
+		"+", "&#43;",
+		"-", "&#45;",
+		".", "&#46;",
+	).Replace(text)
 }
 
 func parseQQOfficeDMSTarget(target string) (string, string, error) {
