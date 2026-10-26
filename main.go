@@ -158,7 +158,10 @@ func main() {
 	messageRouter.SetDataViewSaver(configDB.SaveDataView)
 	messageRouter.SetDatabase(configDB)
 	messageRouter.SetAdminChecker(configDB.IsPlatformAdmin)
+	imageHostService := imagehost.NewService(configDB)
+	messageRouter.SetMediaResolver(imageHostService.PrepareLocalMedia)
 	keywordReplyManager := router.NewKeywordReplyManager(configDB, messageRouter.GetAdapterForMessage, configDB.IsPlatformAdmin, time.Now())
+	keywordReplyManager.SetMediaResolver(imageHostService.PrepareLocalMedia)
 	keywordReplyManager.SetRestartHandler(requestRestart)
 	messageRouter.SetKeywordReplyManager(keywordReplyManager)
 	scheduledTaskRunner := router.NewScheduledTaskRunner(configDB, messageRouter)
@@ -186,7 +189,7 @@ func main() {
 	logCleanupService := web.NewLogCleanupService(configDB, webServer.GetLogManager())
 	logCleanupService.Start()
 	webServer.SetBackupService(backupService)
-	webServer.SetImageHostService(imagehost.NewService(configDB))
+	webServer.SetImageHostService(imageHostService)
 	if adminPasswordInit.Generated {
 		log.Println("首次启动已生成管理员登录密码，请立即登录后修改：")
 	} else if adminPasswordInit.Migrated {

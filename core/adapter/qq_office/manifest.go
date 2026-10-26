@@ -23,6 +23,8 @@ func init() {
 		Capabilities: registry.Capabilities{
 			SendText:         true,
 			SendImage:        true,
+			SendAudio:        true,
+			SendVideo:        true,
 			SendMarkdown:     true,
 			SendRich:         true,
 			SendMixedContent: true,

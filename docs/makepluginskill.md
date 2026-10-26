@@ -134,9 +134,12 @@
 - 需要主动推送时使用：
   - `ctx.sendMessage(...)` / `ctx.send_message(...)`
   - `ctx.push(...)`
-- 发送图片和文件时使用：
+- 发送图片、音频、视频和文件时使用：
   - `ctx.sendImage(...)` / `ctx.send_image(...)`
+  - `ctx.sendAudio(...)` / `ctx.send_audio(...)`
+  - `ctx.sendVideo(...)` / `ctx.send_video(...)`
   - `ctx.sendFile(...)` / `ctx.send_file(...)`
+- 这些方法支持本地文件路径；配置系统公网地址后，AllBot 会复制到临时目录并生成临时公开链接，发送成功后立即清理，最长保留 10 分钟。
 
 ### 交互式等待
 - 需要用户继续输入时使用 `ctx.listen(timeout)`。

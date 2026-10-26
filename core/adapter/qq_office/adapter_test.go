@@ -626,6 +626,52 @@ func TestQQOfficeSendImageUploadsAndSendsMedia(t *testing.T) {
 	}
 }
 
+func TestQQOfficeSendAudioAndVideoUploadMediaTypes(t *testing.T) {
+	var uploadTypes []float64
+	var messageTypes int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/v2/users/user-openid/files":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode upload body failed: %v", err)
+			}
+			uploadTypes = append(uploadTypes, body["file_type"].(float64))
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"file_info": "file-info"})
+		case "/v2/users/user-openid/messages":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode message body failed: %v", err)
+			}
+			if body["msg_type"] != float64(7) {
+				t.Fatalf("message body = %#v", body)
+			}
+			messageTypes++
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	if err := adp.SendAudio("user_user-openid", "https://example.com/a.mp3"); err != nil {
+		t.Fatalf("SendAudio returned error: %v", err)
+	}
+	if err := adp.SendVideo("user_user-openid", "https://example.com/a.mp4"); err != nil {
+		t.Fatalf("SendVideo returned error: %v", err)
+	}
+	if len(uploadTypes) != 2 || uploadTypes[0] != 3 || uploadTypes[1] != 2 {
+		t.Fatalf("upload file types = %#v, expected [3 2]", uploadTypes)
+	}
+	if messageTypes != 2 {
+		t.Fatalf("message count = %d, expected 2", messageTypes)
+	}
+}
+
 func TestQQOfficeSendButtonsPostsKeyboard(t *testing.T) {
 	var body map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -925,6 +971,61 @@ func TestQQOfficeHandleC2CMessageBuildsMessage(t *testing.T) {
 	}
 	if msg.Metadata["message_type"] != "c2c" || msg.Metadata["reply_target"] != "user_user-openid|msg_msg-c2c" {
 		t.Fatalf("metadata = %#v", msg.Metadata)
+	}
+}
+
+func TestQQOfficeHandleC2CMediaMessageBuildsUnifiedMedia(t *testing.T) {
+	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
+	got := make(chan *types.Message, 1)
+	adp.SetMessageHandler(func(msg *types.Message) { got <- msg })
+
+	adp.handleDispatch("C2C_MESSAGE_CREATE", map[string]interface{}{
+		"id":      "msg-image",
+		"content": "",
+		"author": map[string]interface{}{
+			"user_openid": "user-openid",
+		},
+		"attachments": []interface{}{map[string]interface{}{
+			"content_type": "image/png",
+			"filename":     "photo.png",
+			"url":          "https://cdn.example.com/photo.png",
+		}},
+	})
+
+	msg := <-got
+	if !msg.MediaOnly || len(msg.Medias) != 1 || msg.Medias[0].Type != types.MessageMediaTypeImage || msg.Medias[0].URL != "https://cdn.example.com/photo.png" {
+		t.Fatalf("media message = %#v", msg)
+	}
+	if msg.Content != "[photo.png](https://cdn.example.com/photo.png)" {
+		t.Fatalf("media content = %q", msg.Content)
+	}
+}
+
+func TestQQOfficeHandleGroupMediaAppendsToText(t *testing.T) {
+	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
+	got := make(chan *types.Message, 1)
+	adp.SetMessageHandler(func(msg *types.Message) { got <- msg })
+
+	adp.handleDispatch("GROUP_AT_MESSAGE_CREATE", map[string]interface{}{
+		"id":           "msg-group-media",
+		"group_openid": "group-openid",
+		"content":      "说明文字",
+		"author": map[string]interface{}{
+			"member_openid": "member-openid",
+		},
+		"attachments": []interface{}{map[string]interface{}{
+			"content_type": "video/mp4",
+			"filename":     "clip.mp4",
+			"url":          "https://cdn.example.com/clip.mp4",
+		}},
+	})
+
+	msg := <-got
+	if msg.MediaOnly || len(msg.Medias) != 1 || msg.Medias[0].Type != types.MessageMediaTypeVideo {
+		t.Fatalf("group media message = %#v", msg)
+	}
+	if msg.Content != "说明文字 [clip.mp4](https://cdn.example.com/clip.mp4)" {
+		t.Fatalf("group media content = %q", msg.Content)
 	}
 }
 

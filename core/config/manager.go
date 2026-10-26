@@ -21,6 +21,7 @@ type AdapterManager struct {
 	adapters        map[int64]adapter.Adapter
 	lifecycleLocks  map[int64]*sync.Mutex
 	restartAttempts map[int64]int
+	restartEligible map[int64]bool
 	messageHandler  func(*types.Message)
 	mu              sync.RWMutex
 	healthStop      chan struct{}
@@ -36,6 +37,7 @@ func NewAdapterManager(db *Database) *AdapterManager {
 		adapters:        make(map[int64]adapter.Adapter),
 		lifecycleLocks:  make(map[int64]*sync.Mutex),
 		restartAttempts: make(map[int64]int),
+		restartEligible: make(map[int64]bool),
 		healthStop:      make(chan struct{}),
 	}
 }
@@ -101,6 +103,11 @@ func (m *AdapterManager) RestartUnhealthyAdapters() {
 		if config == nil || !config.Enabled {
 			continue
 		}
+		// 首次启动失败时没有自动重启资格。只有已经成功启动过、
+		// 后续变得不健康的实例才允许由健康监控自动重启。
+		if !m.isRestartEligible(config.ID) {
+			continue
+		}
 		if m.IsAdapterRunning(config.ID) {
 			m.resetRestartAttempts(config.ID)
 			continue
@@ -115,8 +122,6 @@ func (m *AdapterManager) RestartUnhealthyAdapters() {
 		log.Printf("警告：适配器未运行，准备自动重启（第 %d/%d 次）: %s#%d", attempt, adapterAutoRestartMaxAttempts, config.Platform, config.ID)
 		if err := m.ReloadAdapterByID(config.ID); err != nil {
 			log.Printf("警告：自动重启适配器失败 %s#%d: %s", config.Platform, config.ID, utils.MaskSensitiveError(err))
-		} else {
-			m.resetRestartAttempts(config.ID)
 		}
 	}
 }
@@ -197,7 +202,7 @@ func (m *AdapterManager) startAdapterLocked(config *AdapterConfig) error {
 
 	m.mu.Lock()
 	m.adapters[config.ID] = adp
-	delete(m.restartAttempts, config.ID)
+	m.restartEligible[config.ID] = true
 	m.mu.Unlock()
 	log.Printf("适配器已启动: %s#%d", config.Platform, config.ID)
 
@@ -214,6 +219,19 @@ func (m *AdapterManager) nextRestartAttempt(id int64) int {
 func (m *AdapterManager) resetRestartAttempts(id int64) {
 	m.mu.Lock()
 	delete(m.restartAttempts, id)
+	m.mu.Unlock()
+}
+
+func (m *AdapterManager) isRestartEligible(id int64) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.restartEligible[id]
+}
+
+func (m *AdapterManager) clearRestartState(id int64) {
+	m.mu.Lock()
+	delete(m.restartAttempts, id)
+	delete(m.restartEligible, id)
 	m.mu.Unlock()
 }
 
@@ -237,7 +255,11 @@ func (m *AdapterManager) StopAdapterByID(id int64) error {
 	lifecycleLock := m.adapterLifecycleLock(id)
 	lifecycleLock.Lock()
 	defer lifecycleLock.Unlock()
-	return m.stopAdapterLocked(id)
+	if err := m.stopAdapterLocked(id); err != nil {
+		return err
+	}
+	m.clearRestartState(id)
+	return nil
 }
 
 func (m *AdapterManager) stopAdapterLocked(id int64) error {
@@ -297,6 +319,7 @@ func (m *AdapterManager) ReloadAdapterByID(id int64) error {
 		return m.startAdapterLocked(config)
 	}
 
+	m.clearRestartState(id)
 	return nil
 }
 

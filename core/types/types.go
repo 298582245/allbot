@@ -9,8 +9,24 @@ type Message struct {
 	UserID    string
 	GroupID   string
 	Content   string
+	Medias    []MessageMedia
+	MediaOnly bool
 	Metadata  map[string]string
 }
+
+// MessageMedia describes media received in a message. Adapters should use
+// image, audio, video, or file as Type and provide a public URL when available.
+type MessageMedia struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
+}
+
+const (
+	MessageMediaTypeImage = "image"
+	MessageMediaTypeAudio = "audio"
+	MessageMediaTypeVideo = "video"
+	MessageMediaTypeFile  = "file"
+)
 
 type ButtonOption struct {
 	Text   string `json:"text"`

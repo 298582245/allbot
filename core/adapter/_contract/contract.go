@@ -43,6 +43,16 @@ type Adapter interface {
 	SetMessageHandler(handler func(*types.Message))
 }
 
+// AudioSender 由支持发送音频消息的平台适配器实现。
+type AudioSender interface {
+	SendAudio(target string, audioURL string) error
+}
+
+// VideoSender 由支持发送视频消息的平台适配器实现。
+type VideoSender interface {
+	SendVideo(target string, videoURL string) error
+}
+
 // HealthChecker 由可判断运行态的适配器实现。
 // IsHealthy 必须只做本地轻量检查，不应发起网络请求。
 type HealthChecker interface {

@@ -61,28 +61,29 @@ func (a *managerHealthTestAdapter) Stop() error {
 func (a *managerHealthTestAdapter) SetMessageHandler(handler func(*types.Message)) {}
 func (a *managerHealthTestAdapter) IsHealthy() bool                                { return a.healthy }
 
-type managerFailingAdapter struct {
+type managerAlwaysUnhealthyAdapter struct {
 	platform string
 	starts   *int32
 }
 
-func (a *managerFailingAdapter) GetPlatform() string                            { return a.platform }
-func (a *managerFailingAdapter) SendMessage(target string, text string) error   { return nil }
-func (a *managerFailingAdapter) SendImage(target string, imageURL string) error { return nil }
-func (a *managerFailingAdapter) SendFile(target string, filePath string) error  { return nil }
-func (a *managerFailingAdapter) GetUserInfo(userID string) (*adapter.UserInfo, error) {
+func (a *managerAlwaysUnhealthyAdapter) GetPlatform() string                            { return a.platform }
+func (a *managerAlwaysUnhealthyAdapter) SendMessage(target string, text string) error   { return nil }
+func (a *managerAlwaysUnhealthyAdapter) SendImage(target string, imageURL string) error { return nil }
+func (a *managerAlwaysUnhealthyAdapter) SendFile(target string, filePath string) error  { return nil }
+func (a *managerAlwaysUnhealthyAdapter) GetUserInfo(userID string) (*adapter.UserInfo, error) {
 	return nil, nil
 }
-func (a *managerFailingAdapter) GetGroupInfo(groupID string) (*adapter.GroupInfo, error) {
+func (a *managerAlwaysUnhealthyAdapter) GetGroupInfo(groupID string) (*adapter.GroupInfo, error) {
 	return nil, nil
 }
-func (a *managerFailingAdapter) AtUser(groupID string, userID string) error { return nil }
-func (a *managerFailingAdapter) Start() error {
+func (a *managerAlwaysUnhealthyAdapter) AtUser(groupID string, userID string) error { return nil }
+func (a *managerAlwaysUnhealthyAdapter) Start() error {
 	atomic.AddInt32(a.starts, 1)
-	return strconv.ErrSyntax
+	return nil
 }
-func (a *managerFailingAdapter) Stop() error                                    { return nil }
-func (a *managerFailingAdapter) SetMessageHandler(handler func(*types.Message)) {}
+func (a *managerAlwaysUnhealthyAdapter) Stop() error                                    { return nil }
+func (a *managerAlwaysUnhealthyAdapter) SetMessageHandler(handler func(*types.Message)) {}
+func (a *managerAlwaysUnhealthyAdapter) IsHealthy() bool                                { return false }
 
 func newAdapterManagerSelectionTest(t *testing.T) (*Database, *AdapterManager, int64, int64) {
 	t.Helper()
@@ -145,6 +146,7 @@ func TestAdapterManagerRestartUnhealthyEnabledAdapter(t *testing.T) {
 	}
 	manager := NewAdapterManager(db)
 	manager.adapters[adapterConfig.ID] = &managerHealthTestAdapter{platform: platform, healthy: false, starts: &starts, stops: &stops}
+	manager.restartEligible[adapterConfig.ID] = true
 
 	manager.RestartUnhealthyAdapters()
 
@@ -170,7 +172,7 @@ func TestAdapterManagerStopsAutomaticRestartAfterLimit(t *testing.T) {
 		DisplayName: "Health Limit Test",
 		ParseConfig: func(raw string) (interface{}, error) { return nil, nil },
 		NewAdapter: func(config interface{}) (adapter.Adapter, error) {
-			return &managerFailingAdapter{platform: platform, starts: &starts}, nil
+			return &managerAlwaysUnhealthyAdapter{platform: platform, starts: &starts}, nil
 		},
 	})
 
@@ -179,6 +181,8 @@ func TestAdapterManagerStopsAutomaticRestartAfterLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := NewAdapterManager(db)
+	manager.adapters[adapterConfig.ID] = &managerAlwaysUnhealthyAdapter{platform: platform, starts: &starts}
+	manager.restartEligible[adapterConfig.ID] = true
 
 	for i := 0; i < adapterAutoRestartMaxAttempts+5; i++ {
 		manager.RestartUnhealthyAdapters()

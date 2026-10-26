@@ -84,6 +84,9 @@ class Context {
         this.group_id = this.groupId;
         this.content = data.content || '';
         this.text = this.content;
+        this.medias = Array.isArray(data.medias) ? data.medias : [];
+        this.mediaOnly = Boolean(data.media_only);
+        this.media_only = this.mediaOnly;
         this.messageId = data.message_id || '';
         this.message_id = this.messageId;
         this.admin = Boolean(data.is_admin);
@@ -204,6 +207,40 @@ class Context {
         return this.sendImageMessage(options);
     }
 
+    async sendAudioMessage(options = {}) {
+        const targetPlatform = String(options.platform || this.platform || '');
+        return this._request({
+            action: 'send_audio_message',
+            platform: targetPlatform,
+            adapter_id: this._adapterIdFor(options, targetPlatform),
+            user_id: String(options.userId || options.user_id || this.userId || ''),
+            group_id: String(options.groupId || options.group_id || ''),
+            union_id: String(options.unionId || options.union_id || ''),
+            url: String(options.audioUrl || options.audio_url || options.url || '')
+        }, 'send_audio_message_response');
+    }
+
+    async send_audio_message(options = {}) {
+        return this.sendAudioMessage(options);
+    }
+
+    async sendVideoMessage(options = {}) {
+        const targetPlatform = String(options.platform || this.platform || '');
+        return this._request({
+            action: 'send_video_message',
+            platform: targetPlatform,
+            adapter_id: this._adapterIdFor(options, targetPlatform),
+            user_id: String(options.userId || options.user_id || this.userId || ''),
+            group_id: String(options.groupId || options.group_id || ''),
+            union_id: String(options.unionId || options.union_id || ''),
+            url: String(options.videoUrl || options.video_url || options.url || '')
+        }, 'send_video_message_response');
+    }
+
+    async send_video_message(options = {}) {
+        return this.sendVideoMessage(options);
+    }
+
     async sendMessage(options = {}) {
         const targetPlatform = String(options.platform || this.platform || '');
         const payload = {
@@ -259,6 +296,22 @@ class Context {
     
     async send_image(imageUrl) {
         return this.sendImage(imageUrl);
+    }
+
+    async sendAudio(audioUrl) {
+        return this._send({ action: 'send_audio', url: String(audioUrl ?? '') });
+    }
+
+    async send_audio(audioUrl) {
+        return this.sendAudio(audioUrl);
+    }
+
+    async sendVideo(videoUrl) {
+        return this._send({ action: 'send_video', url: String(videoUrl ?? '') });
+    }
+
+    async send_video(videoUrl) {
+        return this.sendVideo(videoUrl);
     }
 
     

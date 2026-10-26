@@ -1,9 +1,18 @@
 package adapter
 
-import "github.com/allbot/allbot/core/adapter/_contract"
+import (
+	"github.com/allbot/allbot/core/adapter/_contract"
+	"github.com/allbot/allbot/core/types"
+)
 
 // Adapter 平台适配器接口。
 type Adapter = contract.Adapter
+
+// AudioSender 由支持发送音频消息的平台适配器实现。
+type AudioSender = contract.AudioSender
+
+// VideoSender 由支持发送视频消息的平台适配器实现。
+type VideoSender = contract.VideoSender
 
 // HealthChecker 由可判断运行态的适配器实现。
 type HealthChecker = contract.HealthChecker
@@ -54,3 +63,13 @@ type UserInfo = contract.UserInfo
 
 // GroupInfo 群组信息。
 type GroupInfo = contract.GroupInfo
+
+// MessageMedia 是适配器写入收到消息时使用的统一媒体结构。
+type MessageMedia = types.MessageMedia
+
+const (
+	MessageMediaTypeImage = types.MessageMediaTypeImage
+	MessageMediaTypeAudio = types.MessageMediaTypeAudio
+	MessageMediaTypeVideo = types.MessageMediaTypeVideo
+	MessageMediaTypeFile  = types.MessageMediaTypeFile
+)

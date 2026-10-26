@@ -127,6 +127,9 @@ class Context:
         self.groupId = self.group_id
         self.content = data.get("content", "")
         self.text = self.content
+        self.medias = data.get("medias", []) or []
+        self.media_only = bool(data.get("media_only", False))
+        self.mediaOnly = self.media_only
         self.message_id = data.get("message_id", "")
         self.messageId = self.message_id
         self.admin = bool(data.get("is_admin", False))
@@ -235,6 +238,38 @@ class Context:
         """send_image_message 的 camelCase 别名。"""
         return await self.send_image_message(**options)
 
+    async def send_audio_message(self, **options: Any) -> Dict[str, Any]:
+        """主动向指定用户、群或 UnionID 发送音频。"""
+        target_platform = str(options.get("platform") or self.platform)
+        return self._request({
+            "action": "send_audio_message",
+            "platform": target_platform,
+            "adapter_id": self._adapter_id_for(options, target_platform),
+            "user_id": str(options.get("user_id") or options.get("userId") or self.user_id),
+            "group_id": str(options.get("group_id") or options.get("groupId") or ""),
+            "union_id": str(options.get("union_id") or options.get("unionId") or ""),
+            "url": str(options.get("audio_url") or options.get("audioUrl") or options.get("url") or ""),
+        }, "send_audio_message_response")
+
+    async def sendAudioMessage(self, **options: Any) -> Dict[str, Any]:
+        return await self.send_audio_message(**options)
+
+    async def send_video_message(self, **options: Any) -> Dict[str, Any]:
+        """主动向指定用户、群或 UnionID 发送视频。"""
+        target_platform = str(options.get("platform") or self.platform)
+        return self._request({
+            "action": "send_video_message",
+            "platform": target_platform,
+            "adapter_id": self._adapter_id_for(options, target_platform),
+            "user_id": str(options.get("user_id") or options.get("userId") or self.user_id),
+            "group_id": str(options.get("group_id") or options.get("groupId") or ""),
+            "union_id": str(options.get("union_id") or options.get("unionId") or ""),
+            "url": str(options.get("video_url") or options.get("videoUrl") or options.get("url") or ""),
+        }, "send_video_message_response")
+
+    async def sendVideoMessage(self, **options: Any) -> Dict[str, Any]:
+        return await self.send_video_message(**options)
+
     async def send_message(self, **options: Any) -> Dict[str, Any]:
         """主动发送私聊或群聊消息，用于定时通知。"""
         target_platform = str(options.get("platform") or self.platform)
@@ -288,11 +323,25 @@ class Context:
         return self._request(payload, "send_message_response")
 
     async def send_image(self, image_url: str) -> bool:
-        """发送图片 URL 或本地路径，具体支持取决于平台适配器。"""
+        """发送图片 URL 或本地路径；配置公网地址后本地路径会自动转为临时公开链接。"""
         return self._send({"action": "send_image", "url": image_url})
 
+    async def send_audio(self, audio_url: str) -> bool:
+        """发送音频 URL 或本地路径；配置公网地址后本地路径会自动转为临时公开链接。"""
+        return self._send({"action": "send_audio", "url": audio_url})
+
+    async def sendAudio(self, audio_url: str) -> bool:
+        return await self.send_audio(audio_url)
+
+    async def send_video(self, video_url: str) -> bool:
+        """发送视频 URL 或本地路径；配置公网地址后本地路径会自动转为临时公开链接。"""
+        return self._send({"action": "send_video", "url": video_url})
+
+    async def sendVideo(self, video_url: str) -> bool:
+        return await self.send_video(video_url)
+
     async def send_file(self, file_path: str) -> bool:
-        """发送文件路径，具体支持取决于平台适配器。"""
+        """发送文件 URL 或本地路径；配置公网地址后本地路径会自动转为临时公开链接。"""
         return self._send({"action": "send_file", "path": file_path})
 
     async def delete_message(self) -> bool:

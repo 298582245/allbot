@@ -153,6 +153,8 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		plugincore.OpenAPIExecutors{
 			SendRichMessage: s.openAPISendRichMessageExecutor(),
 			SendImage:       s.openAPISendImageMessageExecutor(),
+			SendAudio:       s.openAPISendAudioMessageExecutor(),
+			SendVideo:       s.openAPISendVideoMessageExecutor(),
 		},
 	)
 	if err != nil {
@@ -784,6 +786,24 @@ func (s *Server) openAPISendImageMessageExecutor() func(string, plugincore.Image
 			return plugincore.PluginUserResult{Success: false, Error: "图片消息发送器不可用"}
 		}
 		return s.router.SendPluginImageMessage(openAPIID, action)
+	}
+}
+
+func (s *Server) openAPISendAudioMessageExecutor() func(string, plugincore.AudioMessageAction) plugincore.PluginUserResult {
+	return func(openAPIID string, action plugincore.AudioMessageAction) plugincore.PluginUserResult {
+		if s.router == nil {
+			return plugincore.PluginUserResult{Success: false, Error: "音频消息发送器不可用"}
+		}
+		return s.router.SendPluginAudioMessage(openAPIID, action)
+	}
+}
+
+func (s *Server) openAPISendVideoMessageExecutor() func(string, plugincore.VideoMessageAction) plugincore.PluginUserResult {
+	return func(openAPIID string, action plugincore.VideoMessageAction) plugincore.PluginUserResult {
+		if s.router == nil {
+			return plugincore.PluginUserResult{Success: false, Error: "视频消息发送器不可用"}
+		}
+		return s.router.SendPluginVideoMessage(openAPIID, action)
 	}
 }
 

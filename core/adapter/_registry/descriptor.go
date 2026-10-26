@@ -24,6 +24,8 @@ type ConfigField struct {
 type Capabilities struct {
 	SendText         bool `json:"send_text"`
 	SendImage        bool `json:"send_image"`
+	SendAudio        bool `json:"send_audio"`
+	SendVideo        bool `json:"send_video"`
 	SendFile         bool `json:"send_file"`
 	SendMarkdown     bool `json:"send_markdown"`
 	SendRich         bool `json:"send_rich"`

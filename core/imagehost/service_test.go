@@ -104,6 +104,66 @@ func TestResolvePublicAndDelete(t *testing.T) {
 	}
 }
 
+func TestPrepareAndResolveLocalMedia(t *testing.T) {
+	service, db, dir := newImageHostTestService(t)
+	settings := config.DefaultImageHostSettings()
+	settings.StorageDir = dir
+	if err := db.SaveImageHostSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	system, err := db.GetSystemSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	system.PublicBaseURL = "https://bot.example.com/"
+	if err := db.SaveSystemSettings(system); err != nil {
+		t.Fatal(err)
+	}
+
+	source := filepath.Join(t.TempDir(), "clip.mp4")
+	content := []byte("media-data")
+	if err := os.WriteFile(source, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	url, cleanup := service.PrepareLocalMedia(source)
+	if cleanup == nil || !strings.HasPrefix(url, "https://bot.example.com/api/open/temp-media/") {
+		t.Fatalf("unexpected prepared media: %q", url)
+	}
+	name := strings.TrimPrefix(url, "https://bot.example.com/api/open/temp-media/")
+	resolved, err := service.ResolveTempMedia(name)
+	if err != nil {
+		t.Fatalf("ResolveTempMedia returned error: %v", err)
+	}
+	if resolved.ContentType != "video/mp4" {
+		t.Fatalf("unexpected content type: %q", resolved.ContentType)
+	}
+	got, err := os.ReadFile(resolved.Path)
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("copied media mismatch: %v", err)
+	}
+	cleanup()
+	if _, err := os.Stat(resolved.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected cleanup to remove temp media, got %v", err)
+	}
+}
+
+func TestPrepareLocalMediaWithoutPublicBaseURLKeepsPath(t *testing.T) {
+	service, db, dir := newImageHostTestService(t)
+	settings := config.DefaultImageHostSettings()
+	settings.StorageDir = dir
+	if err := db.SaveImageHostSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "file.bin")
+	if err := os.WriteFile(source, []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	prepared, cleanup := service.PrepareLocalMedia(source)
+	if prepared != source || cleanup != nil {
+		t.Fatalf("expected original path without public base URL, got %q", prepared)
+	}
+}
+
 func TestSaveSettingsWithOptionsKeepOld(t *testing.T) {
 	service, db, baseDir := newImageHostTestService(t)
 	oldDir := filepath.Join(baseDir, "old")

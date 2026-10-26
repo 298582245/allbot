@@ -477,6 +477,8 @@ Node.js：
 await ctx.reply('文本')
 await ctx.sendMessage({ platform: 'qq', userId: '10001', text: '主动消息' })
 await ctx.sendImage('https://example.com/a.png')
+await ctx.sendAudio('https://example.com/a.mp3')
+await ctx.sendVideo('https://example.com/a.mp4')
 await ctx.sendFile('/path/to/file')
 ```
 
@@ -486,6 +488,8 @@ Python：
 await ctx.reply('文本')
 await ctx.send_message(platform='qq', user_id='10001', text='主动消息')
 await ctx.send_image('https://example.com/a.png')
+await ctx.send_audio('https://example.com/a.mp3')
+await ctx.send_video('https://example.com/a.mp4')
 await ctx.send_file('/path/to/file')
 ```
 

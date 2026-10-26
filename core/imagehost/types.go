@@ -31,6 +31,11 @@ type PublicAsset struct {
 	SHA256      string
 }
 
+type TempMedia struct {
+	Path        string
+	ContentType string
+}
+
 const (
 	StorageDirActionMigrateDeleteOld = "migrate_delete_old"
 	StorageDirActionKeepOld          = "keep_old"

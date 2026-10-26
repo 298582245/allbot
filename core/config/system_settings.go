@@ -49,6 +49,8 @@ const (
 	unregisteredPromptLimitDescription      = "未注册用户提示次数上限，0 表示不提示"
 	githubProxyURLKey                       = "update.github_proxy_url"
 	githubProxyURLDescription               = "GitHub 更新下载代理地址"
+	publicBaseURLKey                        = "web.public_base_url"
+	publicBaseURLDescription                = "AllBot 公网地址，用于生成临时媒体公开链接"
 )
 
 type AdminPasswordInitResult struct {
@@ -70,6 +72,7 @@ type SystemSettings struct {
 	PointsUnit                string                    `json:"points_unit"`
 	UnregisteredPromptLimit   int                       `json:"unregistered_prompt_limit"`
 	GitHubProxyURL            string                    `json:"github_proxy_url"`
+	PublicBaseURL             string                    `json:"public_base_url"`
 	AccessControl             types.AccessControlConfig `json:"access_control"`
 	// 安全访问码：开启后访问登录页需在 URL 携带访问码，否则返回 404
 	AccessCodeEnabled bool   `json:"access_code_enabled"`
@@ -136,6 +139,10 @@ func (d *Database) GetSystemSettings() (*SystemSettings, error) {
 		return nil, err
 	}
 	platformAdmins := parsePlatformAdmins(items["admin.platform_users"])
+	publicBaseURL := strings.TrimRight(strings.TrimSpace(items[publicBaseURLKey]), "/")
+	if _, configured := items[publicBaseURLKey]; !configured {
+		publicBaseURL = legacyImageHostPublicBaseURL(items["imagehost.config"])
+	}
 	return &SystemSettings{
 		AdminUsername:             valueOrDefault(items, "admin.username", "admin"),
 		PlatformAdmins:            platformAdmins,
@@ -147,6 +154,7 @@ func (d *Database) GetSystemSettings() (*SystemSettings, error) {
 		PointsUnit:                valueOrDefault(items, "user.points_unit", "积分"),
 		UnregisteredPromptLimit:   intValueAllowZeroOrDefault(items, unregisteredPromptLimitKey, 10),
 		GitHubProxyURL:            strings.TrimSpace(items[githubProxyURLKey]),
+		PublicBaseURL:             publicBaseURL,
 		AccessControl:             ParseAccessControlConfig(items["access_control"]),
 
 		AccessCodeEnabled: valueOrDefault(items, "security.access_code_enabled", "false") == "true",
@@ -306,6 +314,10 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 	if err != nil {
 		return err
 	}
+	publicBaseURL, err := normalizePublicBaseURL(settings.PublicBaseURL)
+	if err != nil {
+		return err
+	}
 
 	items := map[string]struct {
 		value       string
@@ -321,6 +333,7 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 		"user.points_unit":              {settings.PointsUnit, "用户积分单位"},
 		unregisteredPromptLimitKey:      {fmt.Sprintf("%d", settings.UnregisteredPromptLimit), unregisteredPromptLimitDescription},
 		githubProxyURLKey:               {githubProxyURL, githubProxyURLDescription},
+		publicBaseURLKey:                {publicBaseURL, publicBaseURLDescription},
 		"access_control":                {MarshalAccessControlConfig(settings.AccessControl), "系统访问控制配置"},
 
 		"security.access_code_enabled": {boolString(settings.AccessCodeEnabled), "是否开启安全访问入口"},
@@ -332,6 +345,30 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 		}
 	}
 	return nil
+}
+
+func normalizePublicBaseURL(value string) (string, error) {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	if value == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", fmt.Errorf("AllBot 公网地址必须是包含 host 的 HTTP/HTTPS URL")
+	}
+	return value, nil
+}
+
+func legacyImageHostPublicBaseURL(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	var settings ImageHostSettings
+	if err := json.Unmarshal([]byte(value), &settings); err != nil {
+		return ""
+	}
+	value, _ = normalizePublicBaseURL(settings.PublicBaseURL)
+	return value
 }
 
 func normalizeGitHubProxyURL(value string) (string, error) {

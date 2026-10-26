@@ -174,6 +174,8 @@ func (s *Server) handlePluginWebAPI(w http.ResponseWriter, r *http.Request) {
 		plugincore.OpenAPIExecutors{
 			SendRichMessage: s.openAPISendRichMessageExecutor(),
 			SendImage:       s.openAPISendImageMessageExecutor(),
+			SendAudio:       s.openAPISendAudioMessageExecutor(),
+			SendVideo:       s.openAPISendVideoMessageExecutor(),
 		},
 	)
 	if err != nil {

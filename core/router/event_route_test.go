@@ -46,6 +46,28 @@ func TestRouterNormalMessagesStillTriggerHighestPriorityPlugin(t *testing.T) {
 	assertPluginTriggerTotal(t, db, "low", 0)
 }
 
+func TestRouterMediaTriggersMatchSingleMediaTypes(t *testing.T) {
+	r := NewRouter(session.NewManager())
+	registerPluginForStats(t, r, &types.Plugin{ID: "media", Name: "媒体", Trigger: "[媒体]", Enabled: true})
+	registerPluginForStats(t, r, &types.Plugin{ID: "image", Name: "图片", Trigger: "[图片]", Enabled: true})
+	registerPluginForStats(t, r, &types.Plugin{ID: "video", Name: "视频", Trigger: "[视频]", Enabled: true})
+
+	matched := r.FilterPluginsForMessage(&types.Message{Platform: "qq_office", MediaOnly: true, Medias: []types.MessageMedia{{Type: types.MessageMediaTypeImage, URL: "https://example.com/a.png"}}}, true)
+	if len(matched) != 2 {
+		t.Fatalf("image media plugins = %#v, expected media and image", matched)
+	}
+	for _, plugin := range matched {
+		if plugin.ID != "media" && plugin.ID != "image" {
+			t.Fatalf("unexpected image media plugin: %s", plugin.ID)
+		}
+	}
+
+	matched = r.FilterPluginsForMessage(&types.Message{Platform: "qq_office", MediaOnly: true, Medias: []types.MessageMedia{{Type: types.MessageMediaTypeVideo, URL: "https://example.com/a.mp4"}}}, true)
+	if len(matched) != 2 {
+		t.Fatalf("video media plugins = %#v, expected media and video", matched)
+	}
+}
+
 func TestRouterEventMessageSkipsUnregisteredUserGuide(t *testing.T) {
 	db, err := config.NewDatabase(":memory:")
 	if err != nil {

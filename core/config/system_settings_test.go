@@ -107,6 +107,79 @@ func TestSaveLogRetentionDaysRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestSystemSettingsPublicBaseURL(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	settings, err := db.GetSystemSettings()
+	if err != nil {
+		t.Fatalf("GetSystemSettings returned error: %v", err)
+	}
+	settings.PublicBaseURL = "https://bot.example.com/"
+	if err := db.SaveSystemSettings(settings); err != nil {
+		t.Fatalf("SaveSystemSettings returned error: %v", err)
+	}
+	loaded, err := db.GetSystemSettings()
+	if err != nil {
+		t.Fatalf("GetSystemSettings returned error: %v", err)
+	}
+	if loaded.PublicBaseURL != "https://bot.example.com" {
+		t.Fatalf("expected normalized public base URL, got %q", loaded.PublicBaseURL)
+	}
+}
+
+func TestSystemSettingsRejectsInvalidPublicBaseURL(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	settings, err := db.GetSystemSettings()
+	if err != nil {
+		t.Fatalf("GetSystemSettings returned error: %v", err)
+	}
+	settings.PublicBaseURL = "bot.example.com"
+	if err := db.SaveSystemSettings(settings); err == nil {
+		t.Fatal("expected invalid public base URL to fail")
+	}
+}
+
+func TestSystemSettingsPublicBaseURLCanClearLegacyImageHostValue(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	imageSettings := DefaultImageHostSettings()
+	imageSettings.PublicBaseURL = "https://legacy.example.com"
+	if err := db.SaveImageHostSettings(imageSettings); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := db.GetSystemSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.PublicBaseURL != imageSettings.PublicBaseURL {
+		t.Fatalf("expected legacy public base URL, got %q", settings.PublicBaseURL)
+	}
+	settings.PublicBaseURL = ""
+	if err := db.SaveSystemSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	settings, err = db.GetSystemSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.PublicBaseURL != "" {
+		t.Fatalf("expected cleared public base URL, got %q", settings.PublicBaseURL)
+	}
+}
+
 func TestScriptTaskSettingsDefaultsToZero(t *testing.T) {
 	db, err := NewDatabase(":memory:")
 	if err != nil {

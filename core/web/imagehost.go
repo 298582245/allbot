@@ -156,6 +156,30 @@ func (s *Server) handleOpenImage(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, asset.Path)
 }
 
+func (s *Server) handleOpenTempMedia(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.imageHostService == nil {
+		s.rawJSONError(w, "图床服务未初始化", http.StatusInternalServerError)
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/api/open/temp-media/")
+	media, err := s.imageHostService.ResolveTempMedia(name)
+	if err != nil {
+		if errors.Is(err, imagehost.ErrNotFound) || errors.Is(err, imagehost.ErrInvalidInput) {
+			http.NotFound(w, r)
+			return
+		}
+		s.rawJSONError(w, "读取临时媒体失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", media.ContentType)
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeFile(w, r, media.Path)
+}
+
 func (s *Server) requireImageHostService(w http.ResponseWriter) (*imagehost.Service, bool) {
 	if s.imageHostService == nil {
 		s.jsonError(w, "图床服务未初始化", http.StatusInternalServerError)

@@ -12,11 +12,14 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/allbot/allbot/core/config"
 )
@@ -224,11 +227,7 @@ func (s *Service) PublicURL(asset *config.ImageAsset, requestHost, requestScheme
 	if asset == nil {
 		return ""
 	}
-	settings, err := s.Settings()
-	if err != nil {
-		settings = config.DefaultImageHostSettings()
-	}
-	base := settings.PublicBaseURL
+	base := s.publicBaseURL()
 	if base == "" && strings.TrimSpace(requestHost) != "" {
 		scheme := strings.TrimSpace(requestScheme)
 		if scheme == "" {
@@ -241,6 +240,101 @@ func (s *Service) PublicURL(asset *config.ImageAsset, requestHost, requestScheme
 		return path
 	}
 	return strings.TrimRight(base, "/") + path
+}
+
+// PrepareLocalMedia makes a temporary public copy of a local media file when
+// the system public address is configured. Without that address it returns the
+// original path so adapters can attempt their native local-file behavior.
+func (s *Service) PrepareLocalMedia(filePath string) (string, func()) {
+	original := strings.TrimSpace(filePath)
+	base := ""
+	if s != nil && s.db != nil {
+		base = s.publicBaseURL()
+	}
+	if original == "" || base == "" {
+		return original, nil
+	}
+	info, err := os.Stat(original)
+	if err != nil || info.IsDir() {
+		return original, nil
+	}
+	settings, err := s.Settings()
+	if err != nil {
+		return original, nil
+	}
+	tempDir := filepath.Join(settings.StorageDir, ".temp")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return original, nil
+	}
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(original)), ".")
+	if ext == "" || strings.ContainsAny(ext, `/\\`) {
+		ext = "bin"
+	}
+	name, err := randomPublicID()
+	if err != nil {
+		return original, nil
+	}
+	name += "." + ext
+	target := filepath.Join(tempDir, name)
+	if err := copyFile(original, target); err != nil {
+		return original, nil
+	}
+	contentType := mime.TypeByExtension(filepath.Ext(name))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() { _ = os.Remove(target) })
+	}
+	time.AfterFunc(10*time.Minute, cleanup)
+	return strings.TrimRight(base, "/") + "/api/open/temp-media/" + name, cleanup
+}
+
+func (s *Service) ResolveTempMedia(name string) (*TempMedia, error) {
+	name = strings.Trim(strings.TrimSpace(name), "/")
+	if name == "" || strings.ContainsAny(name, `/\\`) || strings.Contains(name, "..") {
+		return nil, ErrInvalidInput
+	}
+	settings, err := s.Settings()
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(settings.StorageDir, ".temp", name)
+	root, err := filepath.Abs(filepath.Join(settings.StorageDir, ".temp"))
+	if err != nil {
+		return nil, err
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil || (absolute != root && !strings.HasPrefix(absolute, root+string(os.PathSeparator))) {
+		return nil, ErrInvalidInput
+	}
+	info, err := os.Stat(absolute)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, ErrNotFound
+	}
+	contentType := mime.TypeByExtension(filepath.Ext(name))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return &TempMedia{Path: absolute, ContentType: contentType}, nil
+}
+
+func (s *Service) publicBaseURL() string {
+	if s == nil || s.db == nil {
+		return ""
+	}
+	settings, err := s.db.GetSystemSettings()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(settings.PublicBaseURL), "/")
 }
 
 func (s *Service) assetResponse(asset *config.ImageAsset, requestHost, requestScheme string) *ImageAssetResponse {
