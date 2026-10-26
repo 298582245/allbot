@@ -783,6 +783,16 @@ func TestQQOfficeSendMessageEscapesMarkdownCharacters(t *testing.T) {
 	}
 }
 
+func TestEscapeQQOfficePlainTextMarkdownKeepsNumericAndURLPunctuation(t *testing.T) {
+	text := "[数字] [文字](文字) +0.18元 https%3A-0\n+ 列表\n1. 列表"
+	want := `\[数字\] \[文字\]\(文字\) +0.18元 https%3A-0
+\+ 列表
+1\. 列表`
+	if got := escapeQQOfficePlainTextMarkdown(text); got != want {
+		t.Fatalf("escaped text = %q, want %q", got, want)
+	}
+}
+
 func TestQQOfficeSendMessagePostsChannelMarkdown(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
