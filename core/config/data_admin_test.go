@@ -1,6 +1,41 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestImportTablesDoesNotDeadlockSingleConnection(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.Exec(`CREATE TABLE demo_import (id INTEGER PRIMARY KEY, name TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+
+	data := []byte(`{"version":"1","tables":[{"table":"demo_import","rows":[{"id":1,"name":"imported"}]}]}`)
+	done := make(chan error, 1)
+	go func() { done <- db.ImportTables(data, false) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ImportTables returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ImportTables deadlocked waiting for the only database connection")
+	}
+	defer db.Close()
+
+	var name string
+	if err := db.db.QueryRow(`SELECT name FROM demo_import WHERE id = 1`).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "imported" {
+		t.Fatalf("imported name = %q", name)
+	}
+}
 
 func TestQueryTableRowsSearchesRowValues(t *testing.T) {
 	db, err := NewDatabase(":memory:")
