@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -353,10 +355,10 @@ func (a *DingTalkAdapter) handleChatBotMessage(ctx context.Context, data *chatbo
 }
 
 func (a *DingTalkAdapter) buildMessage(data *chatbot.BotCallbackDataModel) *types.Message {
-	if data == nil || strings.TrimSpace(data.Msgtype) != "text" {
+	if data == nil {
 		return nil
 	}
-	content := strings.TrimSpace(data.Text.Content)
+	content, medias := dingTalkMessageContent(data.Msgtype, data.Text.Content, data.Content)
 	if content == "" {
 		return nil
 	}
@@ -392,12 +394,86 @@ func (a *DingTalkAdapter) buildMessage(data *chatbot.BotCallbackDataModel) *type
 	}
 	metadata["reply_target"] = a.ReplyTarget(&types.Message{UserID: userID, GroupID: groupID, Metadata: metadata})
 	return &types.Message{
-		ID:       strings.TrimSpace(data.MsgId),
-		Platform: platformName,
-		UserID:   userID,
-		GroupID:  groupID,
-		Content:  content,
-		Metadata: metadata,
+		ID:        strings.TrimSpace(data.MsgId),
+		Platform:  platformName,
+		UserID:    userID,
+		GroupID:   groupID,
+		Content:   content,
+		Medias:    medias,
+		MediaOnly: strings.TrimSpace(data.Text.Content) == "" && len(medias) == 1,
+		Metadata:  metadata,
+	}
+}
+
+func dingTalkMessageContent(messageType, original string, rawContent interface{}) (string, []types.MessageMedia) {
+	content := strings.TrimSpace(original)
+	mediaType := ""
+	switch strings.ToLower(strings.TrimSpace(messageType)) {
+	case "picture", "image":
+		mediaType = types.MessageMediaTypeImage
+	case "audio", "voice":
+		mediaType = types.MessageMediaTypeAudio
+	case "video":
+		mediaType = types.MessageMediaTypeVideo
+	case "file":
+		mediaType = types.MessageMediaTypeFile
+	}
+	if mediaType == "" {
+		return content, nil
+	}
+	fields, _ := rawContent.(map[string]interface{})
+	mediaURL := ""
+	for _, key := range []string{"url", "picUrl", "pictureUrl", "audioUrl", "videoUrl", "downloadUrl"} {
+		if candidate := strings.TrimSpace(dingTalkStringValue(fields[key])); validDingTalkMediaURL(candidate) {
+			mediaURL = candidate
+			break
+		}
+	}
+	if mediaURL == "" {
+		return content, nil
+	}
+	name := strings.TrimSpace(dingTalkStringValue(fields["fileName"]))
+	if name == "" {
+		name = filepath.Base(strings.SplitN(mediaURL, "?", 2)[0])
+	}
+	if name == "" || name == "." || name == "/" {
+		name = dingTalkMediaLabel(mediaType)
+	}
+	name = strings.NewReplacer("[", "［", "]", "］", "(", "（", ")", "）").Replace(name)
+	part := "[" + name + "](" + mediaURL + ")"
+	if content == "" {
+		content = part
+	} else {
+		content += " " + part
+	}
+	return content, []types.MessageMedia{{Type: mediaType, URL: mediaURL}}
+}
+
+func validDingTalkMediaURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
+}
+
+func dingTalkStringValue(value interface{}) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
+}
+
+func dingTalkMediaLabel(mediaType string) string {
+	switch mediaType {
+	case types.MessageMediaTypeImage:
+		return "图片"
+	case types.MessageMediaTypeAudio:
+		return "音频"
+	case types.MessageMediaTypeVideo:
+		return "视频"
+	default:
+		return "文件"
 	}
 }
 

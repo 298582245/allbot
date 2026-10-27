@@ -50,7 +50,9 @@ func TestRouterMediaTriggersMatchSingleMediaTypes(t *testing.T) {
 	r := NewRouter(session.NewManager())
 	registerPluginForStats(t, r, &types.Plugin{ID: "media", Name: "媒体", Trigger: "[媒体]", Enabled: true})
 	registerPluginForStats(t, r, &types.Plugin{ID: "image", Name: "图片", Trigger: "[图片]", Enabled: true})
+	registerPluginForStats(t, r, &types.Plugin{ID: "audio", Name: "音频", Trigger: "[音频]", Enabled: true})
 	registerPluginForStats(t, r, &types.Plugin{ID: "video", Name: "视频", Trigger: "[视频]", Enabled: true})
+	registerPluginForStats(t, r, &types.Plugin{ID: "file", Name: "文件", Trigger: "[文件]", Enabled: true})
 
 	matched := r.FilterPluginsForMessage(&types.Message{Platform: "qq_office", MediaOnly: true, Medias: []types.MessageMedia{{Type: types.MessageMediaTypeImage, URL: "https://example.com/a.png"}}}, true)
 	if len(matched) != 2 {
@@ -65,6 +67,18 @@ func TestRouterMediaTriggersMatchSingleMediaTypes(t *testing.T) {
 	matched = r.FilterPluginsForMessage(&types.Message{Platform: "qq_office", MediaOnly: true, Medias: []types.MessageMedia{{Type: types.MessageMediaTypeVideo, URL: "https://example.com/a.mp4"}}}, true)
 	if len(matched) != 2 {
 		t.Fatalf("video media plugins = %#v, expected media and video", matched)
+	}
+
+	for _, mediaType := range []string{types.MessageMediaTypeAudio, types.MessageMediaTypeFile} {
+		matched = r.FilterPluginsForMessage(&types.Message{Platform: "qq", MediaOnly: true, Medias: []types.MessageMedia{{Type: mediaType, URL: "https://example.com/media"}}}, true)
+		if len(matched) != 2 {
+			t.Fatalf("%s media plugins = %#v, expected media and type-specific plugin", mediaType, matched)
+		}
+	}
+
+	matched = r.FilterPluginsForMessage(&types.Message{Platform: "qq", Content: "说明文字 [image](https://example.com/a.png)", Medias: []types.MessageMedia{{Type: types.MessageMediaTypeImage, URL: "https://example.com/a.png"}}}, true)
+	if len(matched) != 0 {
+		t.Fatalf("text with media should not match single-media triggers: %#v", matched)
 	}
 }
 

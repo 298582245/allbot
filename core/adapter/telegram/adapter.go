@@ -7,14 +7,20 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
+	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/allbot/allbot/core/adapter/_contract"
+	"github.com/allbot/allbot/core/config"
+	"github.com/allbot/allbot/core/imagehost"
 	"github.com/allbot/allbot/core/types"
 	"github.com/allbot/allbot/core/utils"
 )
@@ -26,6 +32,7 @@ type GroupInfo = contract.GroupInfo
 type TelegramAdapter struct {
 	botToken       string
 	apiURL         string
+	database       *config.Database
 	messageHandler func(*types.Message)
 	stopChan       chan struct{}
 	lastUpdateID   int64
@@ -91,6 +98,10 @@ func (a *TelegramAdapter) GetBotIdentity(msg *types.Message) contract.BotIdentit
 // SetMessageHandler 设置消息处理器
 func (a *TelegramAdapter) SetMessageHandler(handler func(*types.Message)) {
 	a.messageHandler = handler
+}
+
+func (a *TelegramAdapter) SetDatabase(database *config.Database) {
+	a.database = database
 }
 
 // ReplyTarget 优先使用 Telegram 原始 chat_id，避免群聊回复落到用户私聊。
@@ -412,9 +423,9 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 		return
 	}
 
-	text, ok := message["text"].(string)
-	if !ok {
-		return
+	text, _ := message["text"].(string)
+	if strings.TrimSpace(text) == "" {
+		text, _ = message["caption"].(string)
 	}
 	text = normalizeTelegramCommandText(text, message)
 
@@ -437,6 +448,10 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 	chatID := fmt.Sprintf("%.0f", chatIDNum)
 	messageID := fmt.Sprintf("%.0f", messageIDNum)
 	fromName := telegramDisplayName(from)
+	content, medias, mediaOnly := a.telegramMessageContent(message, text)
+	if content == "" {
+		return
+	}
 
 	// 判断是群组还是私聊
 	chatType, _ := chat["type"].(string)
@@ -445,13 +460,15 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 		chatInfo = fmt.Sprintf("群组%s", chatID)
 	}
 
-	log.Printf("[接收][Telegram][%s(%s)]：%s", userID, chatInfo, text)
+	log.Printf("[接收][Telegram][%s(%s)]：%s", userID, chatInfo, content)
 
 	msg := &types.Message{
-		ID:       messageID,
-		Platform: "telegram",
-		UserID:   userID,
-		Content:  text,
+		ID:        messageID,
+		Platform:  "telegram",
+		UserID:    userID,
+		Content:   content,
+		Medias:    medias,
+		MediaOnly: mediaOnly,
 		Metadata: map[string]string{
 			"chat_id":   chatID, // 保存chat_id用于回复
 			"from_name": fromName,
@@ -466,6 +483,153 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 	if a.messageHandler != nil {
 		a.messageHandler(msg)
 	}
+}
+
+func (a *TelegramAdapter) telegramMessageContent(message map[string]interface{}, text string) (string, []types.MessageMedia, bool) {
+	originalText := strings.TrimSpace(text)
+	medias := make([]types.MessageMedia, 0)
+	appendMedia := func(mediaType string, value map[string]interface{}) {
+		if value == nil {
+			return
+		}
+		mediaURL := a.telegramMediaURL(value)
+		if mediaURL == "" {
+			return
+		}
+		name := strings.TrimSpace(telegramStringValue(value["file_name"]))
+		if name == "" {
+			if strings.Contains(mediaURL, "/api/open/temp-media/") {
+				name = telegramMediaLabel(mediaType)
+			} else {
+				name = path.Base(strings.SplitN(mediaURL, "?", 2)[0])
+			}
+		}
+		if name == "" || name == "." || name == "/" {
+			name = telegramMediaLabel(mediaType)
+		}
+		medias = append(medias, types.MessageMedia{Type: mediaType, URL: mediaURL})
+		text = strings.TrimSpace(text)
+		part := "[" + name + "](" + mediaURL + ")"
+		if text == "" {
+			text = part
+		} else {
+			text += " " + part
+		}
+	}
+
+	if photoValues, ok := message["photo"].([]interface{}); ok && len(photoValues) > 0 {
+		if photo, ok := photoValues[len(photoValues)-1].(map[string]interface{}); ok {
+			appendMedia(types.MessageMediaTypeImage, photo)
+		}
+	}
+	for _, media := range []struct {
+		key      string
+		typeName string
+	}{
+		{key: "audio", typeName: types.MessageMediaTypeAudio},
+		{key: "voice", typeName: types.MessageMediaTypeAudio},
+		{key: "video", typeName: types.MessageMediaTypeVideo},
+		{key: "document", typeName: types.MessageMediaTypeFile},
+	} {
+		if value, ok := message[media.key].(map[string]interface{}); ok {
+			appendMedia(media.typeName, value)
+		}
+	}
+	return strings.TrimSpace(text), medias, originalText == "" && len(medias) == 1
+}
+
+func (a *TelegramAdapter) telegramMediaURL(media map[string]interface{}) string {
+	if mediaURL := strings.TrimSpace(telegramStringValue(media["url"])); validTelegramURL(mediaURL) {
+		return mediaURL
+	}
+	fileID := strings.TrimSpace(telegramStringValue(media["file_id"]))
+	if fileID == "" {
+		return ""
+	}
+	var response struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			FilePath string `json:"file_path"`
+		} `json:"result"`
+	}
+	if err := a.callAPIWithResult("/getFile", map[string]interface{}{"file_id": fileID}, &response); err != nil || !response.OK {
+		if err != nil {
+			log.Printf("[WARN][Telegram] 获取媒体临时链接失败: %v", err)
+		}
+		return ""
+	}
+	filePath := strings.TrimLeft(strings.TrimSpace(response.Result.FilePath), "/")
+	if filePath == "" {
+		return ""
+	}
+	fileEndpoint := strings.TrimSuffix(a.apiURL, "/bot"+a.botToken) + "/file/bot" + a.botToken + "/" + filePath
+	request, err := http.NewRequest(http.MethodGet, fileEndpoint, nil)
+	if err != nil {
+		return ""
+	}
+	fileResponse, err := a.httpClient.Do(request)
+	if err != nil {
+		log.Printf("[WARN][Telegram] 下载媒体失败: %v", err)
+		return ""
+	}
+	defer fileResponse.Body.Close()
+	if fileResponse.StatusCode != http.StatusOK {
+		return ""
+	}
+	if a.database == nil {
+		return ""
+	}
+	tempFile, err := os.CreateTemp("", "allbot-telegram-media-*"+filepath.Ext(filePath))
+	if err != nil {
+		return ""
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+	if _, err := io.Copy(tempFile, io.LimitReader(fileResponse.Body, 20<<20)); err != nil {
+		_ = tempFile.Close()
+		return ""
+	}
+	if err := tempFile.Close(); err != nil {
+		return ""
+	}
+	preparedURL, cleanup := imagehost.NewService(a.database).PrepareLocalMedia(tempPath)
+	if cleanup != nil {
+		if !validTelegramURL(preparedURL) {
+			cleanup()
+		}
+	}
+	if !validTelegramURL(preparedURL) {
+		return ""
+	}
+	return preparedURL
+}
+
+func validTelegramURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
+}
+
+func telegramMediaLabel(mediaType string) string {
+	switch mediaType {
+	case types.MessageMediaTypeImage:
+		return "图片"
+	case types.MessageMediaTypeAudio:
+		return "音频"
+	case types.MessageMediaTypeVideo:
+		return "视频"
+	default:
+		return "文件"
+	}
+}
+
+func telegramStringValue(value interface{}) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
 }
 
 // SendMessage 发送消息
@@ -740,14 +904,66 @@ func (a *TelegramAdapter) SendImage(target string, imageURL string) error {
 	return a.callAPI("/sendPhoto", data)
 }
 
+func (a *TelegramAdapter) SendAudio(target string, audioURL string) error {
+	return a.callAPI("/sendAudio", map[string]interface{}{"chat_id": telegramChatID(target), "audio": audioURL})
+}
+
+func (a *TelegramAdapter) SendVideo(target string, videoURL string) error {
+	return a.callAPI("/sendVideo", map[string]interface{}{"chat_id": telegramChatID(target), "video": videoURL})
+}
+
 // SendFile 发送文件
 func (a *TelegramAdapter) SendFile(target string, filePath string) error {
-	data := map[string]interface{}{
-		"chat_id":  target,
-		"document": filePath,
+	filePath = strings.TrimSpace(filePath)
+	if validTelegramURL(filePath) {
+		return a.callAPI("/sendDocument", map[string]interface{}{"chat_id": telegramChatID(target), "document": filePath})
 	}
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("打开 Telegram 文件失败: %w", err)
+	}
+	defer file.Close()
 
-	return a.callAPI("/sendDocument", data)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("chat_id", fmt.Sprint(telegramChatID(target))); err != nil {
+		return err
+	}
+	part, err := writer.CreateFormFile("document", filepath.Base(filePath))
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	request, err := http.NewRequest(http.MethodPost, a.apiURL+"/sendDocument", &body)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := a.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(response.Body)
+		return fmt.Errorf("Telegram sendDocument 失败 (状态码 %d): %s", response.StatusCode, string(payload))
+	}
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return err
+	}
+	if !result.OK {
+		return fmt.Errorf("Telegram sendDocument 失败: %s", result.Description)
+	}
+	return nil
 }
 
 // GetUserInfo 获取用户信息

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -324,16 +325,18 @@ func (a *QQAdapter) handleMessageEvent(event map[string]interface{}) {
 	if selfID != "" && selfID == userID {
 		return
 	}
-	content := messageText(event["message"])
+	content, medias, mediaOnly := qqMessageContent(event["message"])
 	if content == "" {
 		return
 	}
 	msg := &types.Message{
-		ID:       stringValue(event["message_id"]),
-		Platform: "qq",
-		UserID:   userID,
-		Content:  content,
-		Metadata: map[string]string{"message_type": messageType},
+		ID:        stringValue(event["message_id"]),
+		Platform:  "qq",
+		UserID:    userID,
+		Content:   content,
+		Medias:    medias,
+		MediaOnly: mediaOnly,
+		Metadata:  map[string]string{"message_type": messageType},
 	}
 	chatInfo := "私聊"
 	targetID := userID
@@ -451,8 +454,16 @@ func (a *QQAdapter) SendImage(target string, imageURL string) error {
 	return a.SendMessage(target, fmt.Sprintf("[CQ:image,file=%s]", imageURL))
 }
 
+func (a *QQAdapter) SendAudio(target string, audioURL string) error {
+	return a.SendMessage(target, fmt.Sprintf("[CQ:record,file=%s]", audioURL))
+}
+
+func (a *QQAdapter) SendVideo(target string, videoURL string) error {
+	return a.SendMessage(target, fmt.Sprintf("[CQ:video,file=%s]", videoURL))
+}
+
 func (a *QQAdapter) SendFile(target string, filePath string) error {
-	return fmt.Errorf("QQ 文件发送暂未实现")
+	return a.SendMessage(target, fmt.Sprintf("[CQ:file,file=%s,name=%s]", filePath, filepath.Base(filePath)))
 }
 
 func (a *QQAdapter) GetUserInfo(userID string) (*UserInfo, error) {
@@ -645,6 +656,90 @@ func messageText(value interface{}) string {
 	default:
 		return strings.TrimSpace(fmt.Sprintf("%v", value))
 	}
+}
+
+func qqMessageContent(value interface{}) (string, []types.MessageMedia, bool) {
+	segments, ok := value.([]interface{})
+	if !ok {
+		return messageText(value), nil, false
+	}
+	var content strings.Builder
+	medias := make([]types.MessageMedia, 0)
+	mediaNames := make([]string, 0)
+	seenURLs := make(map[string]struct{})
+	for _, item := range segments {
+		segment, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		segmentType := strings.ToLower(strings.TrimSpace(stringValue(segment["type"])))
+		data, _ := segment["data"].(map[string]interface{})
+		if segmentType == "text" {
+			content.WriteString(stringValue(data["text"]))
+			continue
+		}
+		mediaType, label := qqMediaTypeAndLabel(segmentType)
+		if mediaType == "" {
+			if segmentType == "at" {
+				content.WriteString("[CQ:at,qq=" + stringValue(data["qq"]) + "]")
+			}
+			continue
+		}
+		mediaURL := firstHTTPURL(stringValue(data["url"]), stringValue(data["file"]))
+		if mediaURL == "" {
+			continue
+		}
+		if _, exists := seenURLs[mediaURL]; exists {
+			continue
+		}
+		seenURLs[mediaURL] = struct{}{}
+		name := strings.TrimSpace(stringValue(data["name"]))
+		if name == "" || strings.Contains(name, "://") {
+			name = filepath.Base(strings.SplitN(mediaURL, "?", 2)[0])
+		}
+		if name == "" || name == "." || name == "/" {
+			name = label
+		}
+		name = strings.NewReplacer("[", "［", "]", "］", "(", "（", ")", "）").Replace(name)
+		medias = append(medias, types.MessageMedia{Type: mediaType, URL: mediaURL})
+		mediaNames = append(mediaNames, name)
+	}
+	text := strings.TrimSpace(content.String())
+	for index, media := range medias {
+		link := "[" + mediaNames[index] + "](" + media.URL + ")"
+		if text == "" {
+			text = link
+		} else {
+			text += " " + link
+		}
+	}
+	return text, medias, strings.TrimSpace(content.String()) == "" && len(medias) == 1
+}
+
+func qqMediaTypeAndLabel(segmentType string) (string, string) {
+	switch segmentType {
+	case "image":
+		return types.MessageMediaTypeImage, "图片"
+	case "record", "audio":
+		return types.MessageMediaTypeAudio, "音频"
+	case "video":
+		return types.MessageMediaTypeVideo, "视频"
+	case "file":
+		return types.MessageMediaTypeFile, "文件"
+	default:
+		return "", ""
+	}
+}
+
+func firstHTTPURL(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		parsed, err := url.Parse(value)
+		if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func stringValue(value interface{}) string {
