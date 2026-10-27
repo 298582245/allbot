@@ -1001,6 +1001,83 @@ func TestQQOfficeHandleC2CMediaMessageBuildsUnifiedMedia(t *testing.T) {
 	}
 }
 
+func TestQQOfficeHandleC2CQuotedMediaBuildsUnifiedMedia(t *testing.T) {
+	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
+	got := make(chan *types.Message, 1)
+	adp.SetMessageHandler(func(msg *types.Message) { got <- msg })
+
+	adp.handleDispatch("C2C_MESSAGE_CREATE", map[string]interface{}{
+		"id":           "msg-quoted-media",
+		"content":      "",
+		"message_type": 103,
+		"author": map[string]interface{}{
+			"user_openid": "user-openid",
+		},
+		"msg_elements": []interface{}{map[string]interface{}{
+			"content": "被引用的媒体",
+			"attachments": []interface{}{
+				map[string]interface{}{
+					"content_type": "image/png",
+					"filename":     "quoted.png",
+					"url":          "https://cdn.example.com/quoted.png",
+				},
+				map[string]interface{}{
+					"content_type": "video/mp4",
+					"filename":     "quoted.mp4",
+					"url":          "https://cdn.example.com/quoted.mp4",
+				},
+				map[string]interface{}{
+					"content_type": "application/pdf",
+					"filename":     "quoted.pdf",
+					"url":          "https://cdn.example.com/quoted.pdf",
+				},
+			},
+		}},
+	})
+
+	msg := <-got
+	if !msg.MediaOnly || len(msg.Medias) != 3 {
+		t.Fatalf("quoted media message = %#v", msg)
+	}
+	if msg.Medias[0].Type != types.MessageMediaTypeImage || msg.Medias[1].Type != types.MessageMediaTypeVideo || msg.Medias[2].Type != types.MessageMediaTypeFile {
+		t.Fatalf("quoted media types = %#v", msg.Medias)
+	}
+	if msg.Content != "[quoted.png](https://cdn.example.com/quoted.png) [quoted.mp4](https://cdn.example.com/quoted.mp4) [quoted.pdf](https://cdn.example.com/quoted.pdf)" {
+		t.Fatalf("quoted media content = %q", msg.Content)
+	}
+}
+
+func TestQQOfficeQuotedMediaReferenceVariantsAreMergedAndDeduplicated(t *testing.T) {
+	data := map[string]interface{}{
+		"attachments": []interface{}{map[string]interface{}{
+			"content_type": "image/png",
+			"filename":     "same.png",
+			"url":          "https://cdn.example.com/same.png",
+		}},
+		"message_reference": map[string]interface{}{
+			"message": map[string]interface{}{
+				"attachments": []interface{}{map[string]interface{}{
+					"content_type": "image/png",
+					"filename":     "same.png",
+					"url":          "https://cdn.example.com/same.png",
+				}},
+			},
+			"referenced_message": map[string]interface{}{
+				"attachments": []interface{}{map[string]interface{}{
+					"content_type": "audio/mpeg",
+					"filename":     "quoted.mp3",
+					"url":          "https://cdn.example.com/quoted.mp3",
+				}},
+			},
+		},
+	}
+
+	medias := qqOfficeMessageMedias(data)
+	if len(medias) != 2 || medias[0].Type != types.MessageMediaTypeImage || medias[1].Type != types.MessageMediaTypeAudio {
+		t.Fatalf("reference medias = %#v", medias)
+	}
+}
+
 func TestQQOfficeHandleGroupMediaAppendsToText(t *testing.T) {
 	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
 	got := make(chan *types.Message, 1)

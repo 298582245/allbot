@@ -996,22 +996,9 @@ func qqOfficeMessageContent(data map[string]interface{}) (string, []types.Messag
 }
 
 func qqOfficeMessageMedias(data map[string]interface{}) []types.MessageMedia {
-	raw := data["attachments"]
-	if raw == nil {
-		raw = data["medias"]
-	}
-	items := make([]map[string]interface{}, 0)
-	switch values := raw.(type) {
-	case []interface{}:
-		for _, value := range values {
-			if item, ok := value.(map[string]interface{}); ok {
-				items = append(items, item)
-			}
-		}
-	case []map[string]interface{}:
-		items = append(items, values...)
-	}
+	items := qqOfficeMessageAttachmentItems(data)
 	medias := make([]types.MessageMedia, 0, len(items))
+	seenURLs := make(map[string]struct{})
 	for _, item := range items {
 		mediaType := qqOfficeMediaType(stringValue(item["type"]), stringValue(item["content_type"]), stringValue(item["filename"]))
 		if mediaType == "" {
@@ -1021,9 +1008,81 @@ func qqOfficeMessageMedias(data map[string]interface{}) []types.MessageMedia {
 		if mediaURL == "" {
 			mediaURL = strings.TrimSpace(stringValue(item["proxy_url"]))
 		}
+		if mediaURL != "" {
+			if _, exists := seenURLs[mediaURL]; exists {
+				continue
+			}
+			seenURLs[mediaURL] = struct{}{}
+		}
 		medias = append(medias, types.MessageMedia{Type: mediaType, URL: mediaURL})
 	}
 	return medias
+}
+
+// qqOfficeMessageAttachmentItems collects attachments explicitly carried by the
+// current message and by an inline quoted message. QQ quote events use
+// msg_elements[0] (message_type=103); other gateway variants expose one of the
+// quoted message fields under message_reference.
+func qqOfficeMessageAttachmentItems(data map[string]interface{}) []map[string]interface{} {
+	items := make([]map[string]interface{}, 0)
+	appendRaw := func(raw interface{}) {
+		switch values := raw.(type) {
+		case []interface{}:
+			for _, value := range values {
+				if item, ok := value.(map[string]interface{}); ok {
+					items = append(items, item)
+				}
+			}
+		case []map[string]interface{}:
+			items = append(items, values...)
+		}
+	}
+	appendSource := func(source map[string]interface{}) {
+		if source == nil {
+			return
+		}
+		raw := source["attachments"]
+		if raw == nil {
+			raw = source["medias"]
+		}
+		appendRaw(raw)
+	}
+
+	appendSource(data)
+	for _, key := range []string{"message_reference", "reference", "quote", "referenced_message", "source_message"} {
+		reference, ok := data[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		appendSource(reference)
+		for _, nestedKey := range []string{"message", "referenced_message", "source_message"} {
+			quoted, ok := reference[nestedKey].(map[string]interface{})
+			if ok {
+				appendSource(quoted)
+			}
+		}
+	}
+
+	if qqOfficeIsQuoteMessage(data) {
+		switch elements := data["msg_elements"].(type) {
+		case []interface{}:
+			if len(elements) > 0 {
+				if element, ok := elements[0].(map[string]interface{}); ok {
+					appendSource(element)
+				}
+			}
+		case []map[string]interface{}:
+			if len(elements) > 0 {
+				appendSource(elements[0])
+			}
+		}
+	}
+	return items
+}
+
+func qqOfficeIsQuoteMessage(data map[string]interface{}) bool {
+	messageType, err := strconv.ParseInt(strings.TrimSpace(stringValue(data["message_type"])), 10, 64)
+	return err == nil && messageType == 103
 }
 
 func qqOfficeMediaType(declared, contentType, filename string) string {
@@ -1069,14 +1128,16 @@ func qqOfficeMediaLabel(mediaType string) string {
 }
 
 func qqOfficeMediaName(data map[string]interface{}, mediaURL string) string {
-	raw := data["attachments"]
-	values, ok := raw.([]interface{})
-	if !ok {
+	wantedURL := strings.TrimSpace(mediaURL)
+	if wantedURL == "" {
 		return ""
 	}
-	for _, value := range values {
-		item, ok := value.(map[string]interface{})
-		if !ok || strings.TrimSpace(stringValue(item["url"])) != strings.TrimSpace(mediaURL) {
+	for _, item := range qqOfficeMessageAttachmentItems(data) {
+		itemURL := strings.TrimSpace(stringValue(item["url"]))
+		if itemURL == "" {
+			itemURL = strings.TrimSpace(stringValue(item["proxy_url"]))
+		}
+		if itemURL != wantedURL {
 			continue
 		}
 		name := strings.TrimSpace(stringValue(item["filename"]))
