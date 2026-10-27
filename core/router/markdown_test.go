@@ -1,6 +1,7 @@
 package router
 
 import (
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -60,6 +61,42 @@ func TestSendMarkdownWithFallbackUsesNativeSender(t *testing.T) {
 	markdowns := adapter.sentMarkdowns()
 	if len(markdowns) != 1 || markdowns[0].target != "target" || markdowns[0].text != "**hi**" {
 		t.Fatalf("markdowns = %#v", markdowns)
+	}
+}
+
+func TestPrepareMarkdownMediaResolvesLocalAndDataImageReferences(t *testing.T) {
+	router := NewRouter(nil)
+	pluginDir := t.TempDir()
+	resolved := make([]string, 0, 3)
+	cleaned := 0
+	router.SetMediaResolver(func(value string) (string, func()) {
+		resolved = append(resolved, value)
+		cleanup := func() { cleaned++ }
+		switch value {
+		case filepath.Join(pluginDir, "assets", "pic.png"):
+			return "https://bot.example.com/api/open/temp-media/pic.png", cleanup
+		case "data:image/png;base64,AAAA":
+			return "https://bot.example.com/api/open/temp-media/data.png", cleanup
+		default:
+			return value, cleanup
+		}
+	})
+
+	markdown := "![local](assets/pic.png) ![remote](https://example.com/remote.png) ![data](data:image/png;base64,AAAA)"
+	prepared, cleanup := router.prepareMarkdownMedia(markdown, pluginDir)
+	want := "![local](https://bot.example.com/api/open/temp-media/pic.png) ![remote](https://example.com/remote.png) ![data](https://bot.example.com/api/open/temp-media/data.png)"
+	if prepared != want {
+		t.Fatalf("prepared markdown = %q, want %q", prepared, want)
+	}
+	if len(resolved) != 2 || resolved[0] != filepath.Join(pluginDir, "assets", "pic.png") || resolved[1] != "data:image/png;base64,AAAA" {
+		t.Fatalf("resolved media = %#v", resolved)
+	}
+	if cleanup == nil {
+		t.Fatal("expected markdown cleanup")
+	}
+	cleanup()
+	if cleaned != 2 {
+		t.Fatalf("cleaned = %d, want 2", cleaned)
 	}
 }
 

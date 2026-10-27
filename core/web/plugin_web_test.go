@@ -11,7 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/deps"
 	plugincore "github.com/allbot/allbot/core/plugin"
 	"github.com/allbot/allbot/core/types"
@@ -125,6 +127,7 @@ func TestHandlePluginWebStaticServesEntryAndBlocksTraversal(t *testing.T) {
 func TestHandlePluginActionSyncsDisabledPluginToRouter(t *testing.T) {
 	withTempWorkdir(t, func() {
 		server := testServer(t)
+		server.router.SetDatabase(server.adapterManager.GetDatabase())
 		writePluginWebTestPlugin(t, "shop", "商城", 1, true)
 		loadPluginWebTestPlugin(t, server, "shop")
 		process := server.pluginManager.GetPlugin("shop")
@@ -134,6 +137,16 @@ func TestHandlePluginActionSyncsDisabledPluginToRouter(t *testing.T) {
 		if err := server.router.RegisterPlugin(process.Plugin); err != nil {
 			t.Fatal(err)
 		}
+		nextRunAt := time.Now().Add(time.Hour)
+		task := &config.ScheduledTask{PluginID: "shop", TaskKey: "daily", Name: "每日任务", Enabled: true, Cron: "17 8 * * *", Platform: "qq", UserID: "admin", Content: "shop", Source: "plugin", NextRunAt: &nextRunAt}
+		if err := server.adapterManager.GetDatabase().SaveScheduledTask(task); err != nil {
+			t.Fatal(err)
+		}
+		tasks, err := server.adapterManager.GetDatabase().ListScheduledTasks()
+		if err != nil || len(tasks) != 1 {
+			t.Fatalf("scheduled tasks=%#v error=%v", tasks, err)
+		}
+		task = tasks[0]
 
 		recorder := httptest.NewRecorder()
 		server.handlePluginAction(recorder, "shop", "disable")
@@ -149,6 +162,26 @@ func TestHandlePluginActionSyncsDisabledPluginToRouter(t *testing.T) {
 		matched := server.router.FilterPluginsForMessage(&types.Message{Platform: "qq", Content: "shop"}, true)
 		if len(matched) != 0 {
 			t.Fatalf("disabled plugin still matched: %#v", matched)
+		}
+		stored, err := server.adapterManager.GetDatabase().GetScheduledTask(task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Enabled || stored.Cron != "17 8 * * *" || stored.NextRunAt != nil {
+			t.Fatalf("plugin task should be disabled without changing its cron: %#v", stored)
+		}
+
+		enableRecorder := httptest.NewRecorder()
+		server.handlePluginAction(enableRecorder, "shop", "enable")
+		if enableRecorder.Code != http.StatusOK {
+			t.Fatalf("enable response = %d: %s", enableRecorder.Code, enableRecorder.Body.String())
+		}
+		stored, err = server.adapterManager.GetDatabase().GetScheduledTask(task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !stored.Enabled || stored.Cron != "17 8 * * *" {
+			t.Fatalf("plugin task should be enabled without changing its cron: %#v", stored)
 		}
 	})
 }

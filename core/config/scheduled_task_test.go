@@ -105,6 +105,62 @@ func TestDisablePluginScheduledTasksRejectsBlankPluginID(t *testing.T) {
 	}
 }
 
+func TestSetPluginScheduledTasksEnabledOnlySynchronizesPluginTaskState(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	nextRunAt := time.Now().Add(time.Hour)
+	items := []*ScheduledTask{
+		{PluginID: "demo", TaskKey: "plugin-task", Name: "插件任务", Enabled: false, Cron: "17 8 * * *", Platform: "qq", UserID: "1001", Content: "插件消息", Source: "plugin"},
+		{PluginID: "demo", TaskKey: "user-task", Name: "管理员任务", Enabled: false, Cron: "19 9 * * *", Platform: "qq", UserID: "1002", Content: "管理员消息", Source: "user", NextRunAt: &nextRunAt},
+	}
+	for _, item := range items {
+		if err := db.SaveScheduledTask(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	storedItems, err := db.ListScheduledTasks()
+	if err != nil || len(storedItems) != len(items) {
+		t.Fatalf("stored items=%#v error=%v", storedItems, err)
+	}
+	byKey := make(map[string]*ScheduledTask, len(storedItems))
+	for _, item := range storedItems {
+		byKey[item.TaskKey] = item
+	}
+
+	if changed, err := db.SetPluginScheduledTasksEnabled("demo", true); err != nil || changed != 1 {
+		t.Fatalf("enable changed=%d error=%v", changed, err)
+	}
+	pluginTask, err := db.GetScheduledTask(byKey["plugin-task"].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pluginTask.Enabled || pluginTask.Cron != "17 8 * * *" {
+		t.Fatalf("plugin task state/config unexpected after enable: %#v", pluginTask)
+	}
+	userTask, err := db.GetScheduledTask(byKey["user-task"].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if userTask.Enabled || userTask.Cron != "19 9 * * *" || userTask.NextRunAt == nil {
+		t.Fatalf("user task should not be synchronized: %#v", userTask)
+	}
+
+	if changed, err := db.SetPluginScheduledTasksEnabled("demo", false); err != nil || changed != 1 {
+		t.Fatalf("disable changed=%d error=%v", changed, err)
+	}
+	pluginTask, err = db.GetScheduledTask(byKey["plugin-task"].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pluginTask.Enabled || pluginTask.Cron != "17 8 * * *" || pluginTask.NextRunAt != nil {
+		t.Fatalf("plugin task state/config unexpected after disable: %#v", pluginTask)
+	}
+}
+
 func TestUpsertPluginScheduledTaskDoesNotOverwriteExistingTask(t *testing.T) {
 	db, err := NewDatabase(":memory:")
 	if err != nil {

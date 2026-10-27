@@ -220,9 +220,26 @@ func (d *Database) DeletePluginScheduledTasksExcept(pluginID string, taskKeys []
 }
 
 func (d *Database) DisablePluginScheduledTasks(pluginID string) (int64, error) {
+	return d.SetPluginScheduledTasksEnabled(pluginID, false)
+}
+
+// SetPluginScheduledTasksEnabled synchronizes plugin-owned task state with the
+// plugin state without changing any task definition such as its cron.
+func (d *Database) SetPluginScheduledTasksEnabled(pluginID string, enabled bool) (int64, error) {
 	pluginID = strings.TrimSpace(pluginID)
 	if pluginID == "" {
 		return 0, fmt.Errorf("插件 ID 不能为空")
+	}
+	if enabled {
+		result, err := d.db.Exec(`
+			UPDATE scheduled_tasks
+			SET enabled = 1, updated_at = ?
+			WHERE plugin_id = ? AND source = 'plugin' AND enabled = 0
+		`, time.Now(), pluginID)
+		if err != nil {
+			return 0, err
+		}
+		return result.RowsAffected()
 	}
 	result, err := d.db.Exec(`
 		UPDATE scheduled_tasks

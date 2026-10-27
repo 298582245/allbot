@@ -3,6 +3,7 @@ package imagehost
 import (
 	"bytes"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"image"
 	"image/color"
@@ -161,6 +162,41 @@ func TestPrepareLocalMediaWithoutPublicBaseURLKeepsPath(t *testing.T) {
 	prepared, cleanup := service.PrepareLocalMedia(source)
 	if prepared != source || cleanup != nil {
 		t.Fatalf("expected original path without public base URL, got %q", prepared)
+	}
+}
+
+func TestPrepareDataMediaCreatesTemporaryPublicCopy(t *testing.T) {
+	service, db, dir := newImageHostTestService(t)
+	settings := config.DefaultImageHostSettings()
+	settings.StorageDir = dir
+	if err := db.SaveImageHostSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	system, err := db.GetSystemSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	system.PublicBaseURL = "https://bot.example.com/"
+	if err := db.SaveSystemSettings(system); err != nil {
+		t.Fatal(err)
+	}
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(testPNG(t))
+	prepared, cleanup := service.PrepareLocalMedia(dataURL)
+	if cleanup == nil || !strings.HasPrefix(prepared, "https://bot.example.com/api/open/temp-media/") {
+		t.Fatalf("unexpected prepared data URL: %q", prepared)
+	}
+	name := strings.TrimPrefix(prepared, "https://bot.example.com/api/open/temp-media/")
+	resolved, err := service.ResolveTempMedia(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(resolved.Path)
+	if err != nil || !bytes.Equal(got, testPNG(t)) {
+		t.Fatalf("temporary data media mismatch: %v", err)
+	}
+	cleanup()
+	if _, err := os.Stat(resolved.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected cleanup to remove temporary data media, got %v", err)
 	}
 }
 

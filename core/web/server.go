@@ -708,6 +708,10 @@ func (s *Server) handlePluginAction(w http.ResponseWriter, pluginID, action stri
 		}
 		if s.router != nil {
 			s.router.SetPluginEnabled(pluginID, true)
+			if err := s.router.SyncPluginScheduledTasks(pluginID, true); err != nil {
+				s.jsonError(w, "同步插件定时任务状态失败: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 	case "disable":
 		if err := s.pluginManager.TogglePlugin(pluginID, false); err != nil {
@@ -716,6 +720,10 @@ func (s *Server) handlePluginAction(w http.ResponseWriter, pluginID, action stri
 		}
 		if s.router != nil {
 			s.router.SetPluginEnabled(pluginID, false)
+			if err := s.router.SyncPluginScheduledTasks(pluginID, false); err != nil {
+				s.jsonError(w, "同步插件定时任务状态失败: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 	case "reload", "restart":
 		if err := s.pluginManager.ReloadPlugin(pluginID); err != nil {

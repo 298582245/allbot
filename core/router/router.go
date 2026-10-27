@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -84,8 +85,30 @@ func (r *Router) SetDataViewSaver(saver func(config.DataViewConfig) error) {
 
 func (r *Router) SetDatabase(database *config.Database) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.database = database
+	plugins := make([]*types.Plugin, 0, len(r.plugins))
+	for _, plugin := range r.plugins {
+		plugins = append(plugins, plugin)
+	}
+	r.mu.Unlock()
+	for _, plugin := range plugins {
+		if err := r.SyncPluginScheduledTasks(plugin.ID, plugin.Enabled); err != nil {
+			log.Printf("[SYSTEM] 同步插件定时任务状态失败: plugin=%s err=%v", plugin.ID, err)
+		}
+	}
+}
+
+// SyncPluginScheduledTasks mirrors a plugin's enabled state to its
+// plugin-owned scheduled tasks. Task edits never call this method in reverse.
+func (r *Router) SyncPluginScheduledTasks(pluginID string, enabled bool) error {
+	r.mu.RLock()
+	database := r.database
+	r.mu.RUnlock()
+	if database == nil {
+		return nil
+	}
+	_, err := database.SetPluginScheduledTasksEnabled(pluginID, enabled)
+	return err
 }
 
 func (r *Router) SetMediaResolver(resolver func(string) (string, func())) {
@@ -288,6 +311,9 @@ func (r *Router) RegisterPlugin(plugin *types.Plugin) error {
 	plugin.Order = r.pluginOrder
 	r.plugins[plugin.ID] = plugin
 	r.mu.Unlock()
+	if err := r.SyncPluginScheduledTasks(plugin.ID, plugin.Enabled); err != nil {
+		log.Printf("[SYSTEM] 同步插件定时任务状态失败: plugin=%s err=%v", plugin.ID, err)
+	}
 
 	log.Printf("Plugin registered: %s (trigger: %s)", plugin.Name, plugin.Trigger)
 	return nil
@@ -833,6 +859,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 
 	adp := r.getAdapterForMessage(msg)
 	target := resolveReplyTarget(adp, msg)
+	pluginPath := r.pluginManager.PluginPath(plugin.ID)
 
 	responseLogID := pluginResponseLogMessageID(msg)
 	replyFunc := func(text string) error {
@@ -849,7 +876,12 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 			log.Printf("[SYSTEM] Adapter not found for platform: %s, markdown reply skipped", msg.Platform)
 			return nil
 		}
-		return sendReplyMarkdownWithFallback(adp, msg, target, markdown)
+		prepared, cleanup := r.prepareMarkdownMedia(markdown, pluginPath)
+		err := sendReplyMarkdownWithFallback(adp, msg, target, prepared)
+		if err == nil && cleanup != nil {
+			cleanup()
+		}
+		return err
 	}
 	imageFunc := func(imageURL string) error {
 		log.Printf("%s：[图片] 消息ID=%s", pluginResponseLogPrefix(msg, plugin), responseLogID)
@@ -958,7 +990,6 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 		}
 	}
 
-	pluginPath := r.pluginManager.PluginPath(plugin.ID)
 	r.mu.RLock()
 	dataViewSaver := r.dataViewSaver
 	r.mu.RUnlock()
@@ -1293,6 +1324,57 @@ func formatReplyText(adp adapter.Adapter, msg *types.Message, text string) strin
 		return formatter.FormatReplyText(msg, text)
 	}
 	return text
+}
+
+var markdownImagePattern = regexp.MustCompile(`!\[([^\]]*)\]\((<[^>]+>|[^)\s]+)([^)]*)\)`)
+
+func (r *Router) prepareMarkdownMedia(markdown, pluginPath string) (string, func()) {
+	cleanups := make([]func(), 0)
+	prepared := markdownImagePattern.ReplaceAllStringFunc(markdown, func(match string) string {
+		submatches := markdownImagePattern.FindStringSubmatch(match)
+		if len(submatches) != 4 {
+			return match
+		}
+		destination := submatches[2]
+		wrapped := strings.HasPrefix(destination, "<") && strings.HasSuffix(destination, ">")
+		pathValue := destination
+		if wrapped {
+			pathValue = strings.TrimSuffix(strings.TrimPrefix(pathValue, "<"), ">")
+		}
+		pathValue, err := url.PathUnescape(pathValue)
+		if err != nil || strings.TrimSpace(pathValue) == "" || isHTTPMediaReference(pathValue) {
+			return match
+		}
+		candidate := pathValue
+		if !strings.HasPrefix(strings.ToLower(candidate), "data:") && !filepath.IsAbs(candidate) && strings.TrimSpace(pluginPath) != "" {
+			candidate = filepath.Join(pluginPath, filepath.FromSlash(candidate))
+		}
+		resolved, cleanup := r.prepareMedia(candidate)
+		if cleanup == nil || !isHTTPMediaReference(resolved) {
+			if cleanup != nil {
+				cleanup()
+			}
+			return match
+		}
+		cleanups = append(cleanups, cleanup)
+		if wrapped {
+			resolved = "<" + resolved + ">"
+		}
+		return strings.Replace(match, destination, resolved, 1)
+	})
+	if len(cleanups) == 0 {
+		return prepared, nil
+	}
+	return prepared, func() {
+		for _, cleanup := range cleanups {
+			cleanup()
+		}
+	}
+}
+
+func isHTTPMediaReference(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
 }
 
 func sendMarkdownWithFallback(adp adapter.Adapter, target string, markdown string) error {
