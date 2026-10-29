@@ -54,6 +54,7 @@ ctx.plugin_id      # 插件 ID
 ctx.adapter_id     # 机器人适配器 ID，同一平台多机器人时用于区分
 ctx.platform       # 平台：qq、wechat、telegram
 ctx.user_id        # 发送者 ID
+ctx.nickname      # 发送者昵称
 ctx.group_id       # 群组 ID，私聊为空
 ctx.content        # 消息内容
 ctx.text           # ctx.content 的别名
@@ -61,6 +62,9 @@ ctx.medias         # 媒体列表，每项包含 type 和 url
 ctx.media_only     # 是否为单独一条媒体消息
 ctx.message_id     # 消息 ID
 ctx.metadata       # 平台原始扩展数据
+
+ctx.get_user_nickname()  # 获取当前消息发送者昵称
+ctx.getUserNickname()    # camelCase 别名
 ```
 
 ## Context 方法

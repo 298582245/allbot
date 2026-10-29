@@ -118,6 +118,7 @@ class Context:
         self.adapterId = self.adapter_id
         self.user_id = data.get("user_id", "")
         self.userId = self.user_id
+        self.nickname = data.get("nickname", "")
         self.union_id = data.get("union_id", "")
         self.unionId = self.union_id
         self.points = int(data.get("points", 0) or 0)
@@ -446,6 +447,14 @@ class Context:
     async def getUnionId(self) -> str:
         """get_union_id 的 camelCase 别名。"""
         return await self.get_union_id()
+
+    def get_user_nickname(self) -> str:
+        """返回当前消息发送者的昵称。"""
+        return self.nickname
+
+    def getUserNickname(self) -> str:
+        """get_user_nickname 的 camelCase 别名。"""
+        return self.get_user_nickname()
 
     async def consume_points(self, amount: int, **options: Any) -> int:
         try:

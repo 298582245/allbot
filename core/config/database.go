@@ -360,6 +360,7 @@ func createTables(db *sql.DB) error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		platform TEXT NOT NULL,
 		user_id TEXT NOT NULL,
+		nickname TEXT NOT NULL DEFAULT '',
 		union_id TEXT NOT NULL,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -998,6 +999,15 @@ func ensureDefaultSystemSettings(db *sql.DB) error {
 }
 
 func migrateUsersTable(db *sql.DB) error {
+	columns, err := tableColumns(db, "user_accounts")
+	if err != nil {
+		return err
+	}
+	if !columns["nickname"] {
+		if _, err := db.Exec(`ALTER TABLE user_accounts ADD COLUMN nickname TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err

@@ -72,6 +72,7 @@ type UserAccountSummary struct {
 	ID                int64     `json:"id"`
 	Platform          string    `json:"platform"`
 	UserID            string    `json:"user_id"`
+	Nickname          string    `json:"nickname"`
 	UnionID           string    `json:"union_id"`
 	Points            int64     `json:"points"`
 	Disabled          bool      `json:"disabled"`
@@ -91,6 +92,7 @@ type UserAccount struct {
 	ID        int64     `json:"id"`
 	Platform  string    `json:"platform"`
 	UserID    string    `json:"user_id"`
+	Nickname  string    `json:"nickname"`
 	UnionID   string    `json:"union_id"`
 	Points    int64     `json:"points"`
 	CreatedAt time.Time `json:"created_at"`

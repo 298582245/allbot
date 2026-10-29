@@ -316,6 +316,11 @@ func (a *QQAdapter) resolveAPIResponse(echo string, payload []byte) {
 func (a *QQAdapter) handleMessageEvent(event map[string]interface{}) {
 	messageType := stringValue(event["message_type"])
 	userID := stringValue(event["user_id"])
+	sender, _ := event["sender"].(map[string]interface{})
+	nickname := stringValue(sender["card"])
+	if nickname == "" {
+		nickname = stringValue(sender["nickname"])
+	}
 	selfID := stringValue(event["self_id"])
 	if selfID == "" {
 		a.mu.Lock()
@@ -333,6 +338,7 @@ func (a *QQAdapter) handleMessageEvent(event map[string]interface{}) {
 		ID:        stringValue(event["message_id"]),
 		Platform:  "qq",
 		UserID:    userID,
+		Nickname:  nickname,
 		Content:   content,
 		Medias:    medias,
 		MediaOnly: mediaOnly,
@@ -348,10 +354,17 @@ func (a *QQAdapter) handleMessageEvent(event map[string]interface{}) {
 	if a.isRecentSent(messageType, targetID, content) {
 		return
 	}
-	log.Printf("[接收][QQ][%s(%s)]：%s", userID, chatInfo, content)
+	log.Printf("[接收][QQ][%s%s(%s)]：%s", userID, qqNicknameSuffix(nickname), chatInfo, content)
 	if a.messageHandler != nil {
 		a.messageHandler(msg)
 	}
+}
+
+func qqNicknameSuffix(nickname string) string {
+	if strings.TrimSpace(nickname) == "" {
+		return ""
+	}
+	return "<" + strings.TrimSpace(nickname) + ">"
 }
 
 // SendMessage 发送消息。

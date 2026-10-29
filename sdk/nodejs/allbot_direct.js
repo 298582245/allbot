@@ -75,6 +75,7 @@ class Context {
         this.adapter_id = this.adapterId;
         this.userId = data.user_id || '';
         this.user_id = this.userId;
+        this.nickname = data.nickname || '';
         this.unionId = data.union_id || '';
         this.union_id = this.unionId;
         this.points = Number(data.points || 0);
@@ -405,6 +406,14 @@ class Context {
 
     async get_union_id() {
         return this.getUnionId();
+    }
+
+    getUserNickname() {
+        return this.nickname;
+    }
+
+    get_user_nickname() {
+        return this.getUserNickname();
     }
 
     async consumePoints(amount, options = {}) {

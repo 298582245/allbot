@@ -1167,6 +1167,7 @@ func (a *QQOfficeAdapter) handleDirectMessage(data map[string]interface{}) {
 		ID:        messageID,
 		Platform:  qqOfficePlatform,
 		UserID:    userID,
+		Nickname:  authorName,
 		Content:   content,
 		Medias:    medias,
 		MediaOnly: mediaOnly,
@@ -1180,7 +1181,7 @@ func (a *QQOfficeAdapter) handleDirectMessage(data map[string]interface{}) {
 		},
 	}
 	a.setQQOfficeBotMetadata(msg.Metadata, authorBot, userID)
-	log.Printf("[接收][QQ官方][%s(DMS %s)]：%s", userID, guildID, content)
+	log.Printf("[接收][QQ官方][%s%s(DMS %s)]：%s", userID, qqOfficeNicknameSuffix(authorName), guildID, content)
 	a.dispatchMessage(msg)
 }
 
@@ -1193,6 +1194,7 @@ func (a *QQOfficeAdapter) handleC2CMessage(data map[string]interface{}) {
 	messageID := stringValue(data["id"])
 	author, _ := data["author"].(map[string]interface{})
 	authorBot := qqOfficeAuthorIsBot(author)
+	authorName := qqOfficeAuthorName(author)
 	userOpenID := stringValue(author["user_openid"])
 	if userOpenID == "" {
 		userOpenID = stringValue(author["id"])
@@ -1206,6 +1208,7 @@ func (a *QQOfficeAdapter) handleC2CMessage(data map[string]interface{}) {
 		ID:        messageID,
 		Platform:  qqOfficePlatform,
 		UserID:    userOpenID,
+		Nickname:  authorName,
 		Content:   content,
 		Medias:    medias,
 		MediaOnly: mediaOnly,
@@ -1217,7 +1220,7 @@ func (a *QQOfficeAdapter) handleC2CMessage(data map[string]interface{}) {
 		},
 	}
 	a.setQQOfficeBotMetadata(msg.Metadata, authorBot, userOpenID)
-	log.Printf("[接收][QQ官方][%s(C2C)]：%s", userOpenID, content)
+	log.Printf("[接收][QQ官方][%s%s(C2C)]：%s", userOpenID, qqOfficeNicknameSuffix(authorName), content)
 	a.dispatchMessage(msg)
 }
 
@@ -1242,6 +1245,7 @@ func (a *QQOfficeAdapter) handleGroupMessage(eventType string, data map[string]i
 	if memberOpenID == "" {
 		memberOpenID = stringValue(author["user_openid"])
 	}
+	authorName := qqOfficeAuthorName(author)
 	if memberOpenID == "" {
 		memberOpenID = stringValue(author["id"])
 	}
@@ -1254,6 +1258,7 @@ func (a *QQOfficeAdapter) handleGroupMessage(eventType string, data map[string]i
 		ID:        messageID,
 		Platform:  qqOfficePlatform,
 		UserID:    memberOpenID,
+		Nickname:  authorName,
 		GroupID:   groupOpenID,
 		Content:   content,
 		Medias:    medias,
@@ -1269,7 +1274,7 @@ func (a *QQOfficeAdapter) handleGroupMessage(eventType string, data map[string]i
 		},
 	}
 	a.setQQOfficeBotMetadata(msg.Metadata, qqOfficeAuthorIsBot(author), memberOpenID)
-	log.Printf("[接收][QQ官方][%s(群 %s)]：%s", memberOpenID, groupOpenID, content)
+	log.Printf("[接收][QQ官方][%s%s(群 %s)]：%s", memberOpenID, qqOfficeNicknameSuffix(authorName), groupOpenID, content)
 	a.dispatchMessage(msg)
 }
 
@@ -1286,6 +1291,7 @@ func (a *QQOfficeAdapter) handleChannelMessage(eventType string, data map[string
 	if userID == "" {
 		userID = stringValue(author["user_id"])
 	}
+	authorName := qqOfficeAuthorName(author)
 	if userID == "" {
 		return
 	}
@@ -1294,6 +1300,7 @@ func (a *QQOfficeAdapter) handleChannelMessage(eventType string, data map[string
 		ID:        messageID,
 		Platform:  qqOfficePlatform,
 		UserID:    userID,
+		Nickname:  authorName,
 		GroupID:   channelID,
 		Content:   content,
 		Medias:    medias,
@@ -1304,13 +1311,28 @@ func (a *QQOfficeAdapter) handleChannelMessage(eventType string, data map[string
 			"qq_office_guild_id":    guildID,
 			"qq_office_channel_id":  channelID,
 			"qq_office_msg_id":      messageID,
-			"qq_office_author_name": stringValue(author["username"]),
+			"qq_office_author_name": authorName,
 			"reply_target":          "channel_" + channelID + "|msg_" + messageID,
 		},
 	}
 	a.setQQOfficeBotMetadata(msg.Metadata, authorBot, userID)
-	log.Printf("[接收][QQ官方][%s(频道 %s)]：%s", userID, channelID, content)
+	log.Printf("[接收][QQ官方][%s%s(频道 %s)]：%s", userID, qqOfficeNicknameSuffix(authorName), channelID, content)
 	a.dispatchMessage(msg)
+}
+
+func qqOfficeAuthorName(author map[string]interface{}) string {
+	name := stringValue(author["username"])
+	if name == "" {
+		name = stringValue(author["nick"])
+	}
+	return strings.TrimSpace(name)
+}
+
+func qqOfficeNicknameSuffix(nickname string) string {
+	if strings.TrimSpace(nickname) == "" {
+		return ""
+	}
+	return "<" + strings.TrimSpace(nickname) + ">"
 }
 
 func qqOfficeAuthorIsBot(author map[string]interface{}) bool {

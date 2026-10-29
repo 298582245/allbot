@@ -281,11 +281,12 @@ func (a *TelegramAdapter) handleCallbackQuery(callbackQuery map[string]interface
 		return
 	}
 
-	log.Printf("[接收][Telegram][%s(回调%s)]：%s", userID, chatID, content)
+	log.Printf("[接收][Telegram][%s%s(回调%s)]：%s", userID, telegramNicknameSuffix(fromName), chatID, content)
 	msg := &types.Message{
 		ID:       "callback_" + messageID,
 		Platform: "telegram",
 		UserID:   userID,
+		Nickname: fromName,
 		GroupID:  chatID,
 		Content:  content,
 		Metadata: map[string]string{
@@ -460,12 +461,13 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 		chatInfo = fmt.Sprintf("群组%s", chatID)
 	}
 
-	log.Printf("[接收][Telegram][%s(%s)]：%s", userID, chatInfo, content)
+	log.Printf("[接收][Telegram][%s%s(%s)]：%s", userID, telegramNicknameSuffix(fromName), chatInfo, content)
 
 	msg := &types.Message{
 		ID:        messageID,
 		Platform:  "telegram",
 		UserID:    userID,
+		Nickname:  fromName,
 		Content:   content,
 		Medias:    medias,
 		MediaOnly: mediaOnly,
@@ -483,6 +485,13 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 	if a.messageHandler != nil {
 		a.messageHandler(msg)
 	}
+}
+
+func telegramNicknameSuffix(nickname string) string {
+	if strings.TrimSpace(nickname) == "" {
+		return ""
+	}
+	return "<" + strings.TrimSpace(nickname) + ">"
 }
 
 func (a *TelegramAdapter) telegramMessageContent(message map[string]interface{}, text string) (string, []types.MessageMedia, bool) {

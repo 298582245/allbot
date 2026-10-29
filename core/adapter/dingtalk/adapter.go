@@ -349,9 +349,20 @@ func (a *DingTalkAdapter) handleChatBotMessage(ctx context.Context, data *chatbo
 	if msg == nil {
 		return nil, nil
 	}
-	log.Printf("[接收][钉钉][%s][user=%s][group=%s][conversationType=%s][conversation=%s]：%s", msg.Metadata["message_type"], msg.UserID, msg.GroupID, msg.Metadata["dingtalk_conversation_type"], msg.Metadata["dingtalk_conversation_id"], msg.Content)
+	chatInfo := "私聊"
+	if msg.GroupID != "" {
+		chatInfo = "群 " + msg.GroupID
+	}
+	log.Printf("[接收][钉钉][%s%s(%s)]：%s", msg.UserID, dingtalkNicknameSuffix(msg.Nickname), chatInfo, msg.Content)
 	go a.dispatchMessage(msg)
 	return nil, nil
+}
+
+func dingtalkNicknameSuffix(nickname string) string {
+	if strings.TrimSpace(nickname) == "" {
+		return ""
+	}
+	return "<" + strings.TrimSpace(nickname) + ">"
 }
 
 func (a *DingTalkAdapter) buildMessage(data *chatbot.BotCallbackDataModel) *types.Message {
@@ -397,6 +408,7 @@ func (a *DingTalkAdapter) buildMessage(data *chatbot.BotCallbackDataModel) *type
 		ID:        strings.TrimSpace(data.MsgId),
 		Platform:  platformName,
 		UserID:    userID,
+		Nickname:  strings.TrimSpace(data.SenderNick),
 		GroupID:   groupID,
 		Content:   content,
 		Medias:    medias,

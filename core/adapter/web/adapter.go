@@ -295,8 +295,24 @@ func (a *Adapter) ReceiveMessage(userID, content, messageType, imageURL, richJSO
 	if richJSON != "" {
 		metadata["rich_json"] = richJSON
 	}
-	log.Printf("[接收][web][%s(私聊)]：%s", userID, content)
-	handler(&types.Message{ID: fmt.Sprintf("web_%d", time.Now().UnixNano()), Platform: platformName, UserID: userID, Content: content, Metadata: metadata})
+	nickname := ""
+	a.mu.RLock()
+	database := a.database
+	a.mu.RUnlock()
+	if database != nil {
+		if user, err := database.GetWebChatUser(userID); err == nil && user != nil {
+			nickname = user.DisplayName
+		}
+	}
+	log.Printf("[接收][web][%s%s(私聊)]：%s", userID, webNicknameSuffix(nickname), content)
+	handler(&types.Message{ID: fmt.Sprintf("web_%d", time.Now().UnixNano()), Platform: platformName, UserID: userID, Nickname: nickname, Content: content, Metadata: metadata})
+}
+
+func webNicknameSuffix(nickname string) string {
+	if strings.TrimSpace(nickname) == "" {
+		return ""
+	}
+	return "<" + strings.TrimSpace(nickname) + ">"
 }
 
 func (a *Adapter) Subscribe(userID string, buffer int) (<-chan *config.WebChatMessage, func()) {

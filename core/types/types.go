@@ -7,6 +7,7 @@ type Message struct {
 	Platform  string
 	AdapterID string
 	UserID    string
+	Nickname  string
 	GroupID   string
 	Content   string
 	Medias    []MessageMedia

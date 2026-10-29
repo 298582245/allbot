@@ -30,7 +30,7 @@ func (d *Database) GetUserAccount(platform, userID string) (*UserAccount, error)
 	if platform == "" || userID == "" {
 		return nil, sql.ErrNoRows
 	}
-	return scanUserAccount(d.db.QueryRow(`SELECT ua.id, ua.platform, ua.user_id, ua.union_id, COALESCE(up.points, 0), ua.created_at, ua.updated_at FROM user_accounts ua LEFT JOIN user_points up ON up.union_id = ua.union_id WHERE ua.platform = ? AND ua.user_id = ?`, platform, userID))
+	return scanUserAccount(d.db.QueryRow(`SELECT ua.id, ua.platform, ua.user_id, ua.nickname, ua.union_id, COALESCE(up.points, 0), ua.created_at, ua.updated_at FROM user_accounts ua LEFT JOIN user_points up ON up.union_id = ua.union_id WHERE ua.platform = ? AND ua.user_id = ?`, platform, userID))
 }
 
 func (d *Database) ListUserAccountsByUnionID(unionID string) ([]*UserAccount, error) {
@@ -39,7 +39,7 @@ func (d *Database) ListUserAccountsByUnionID(unionID string) ([]*UserAccount, er
 		return []*UserAccount{}, nil
 	}
 	rows, err := d.db.Query(`
-		SELECT ua.id, ua.platform, ua.user_id, ua.union_id, COALESCE(up.points, 0), ua.created_at, ua.updated_at
+		SELECT ua.id, ua.platform, ua.user_id, ua.nickname, ua.union_id, COALESCE(up.points, 0), ua.created_at, ua.updated_at
 		FROM user_accounts ua
 		LEFT JOIN user_points up ON up.union_id = ua.union_id
 		WHERE ua.union_id = ?
@@ -58,6 +58,16 @@ func (d *Database) ListUserAccountsByUnionID(unionID string) ([]*UserAccount, er
 		result = append(result, account)
 	}
 	return result, rows.Err()
+}
+
+func (d *Database) RecordUserNickname(platform, userID, nickname string) error {
+	platform, userID = normalizeUserKey(platform, userID)
+	nickname = strings.TrimSpace(nickname)
+	if platform == "" || userID == "" || nickname == "" {
+		return nil
+	}
+	_, err := d.db.Exec(`UPDATE user_accounts SET nickname = ? WHERE platform = ? AND user_id = ? AND TRIM(nickname) = ''`, nickname, platform, userID)
+	return err
 }
 
 func (d *Database) UserUnionExists(unionID string) (bool, error) {
@@ -181,7 +191,7 @@ func (d *Database) BindUserByCode(platform, userID, code string) (*UserAccount, 
 	}
 
 	var target *UserAccount
-	target, err = scanUserAccount(tx.QueryRow(`SELECT ua.id, ua.platform, ua.user_id, ua.union_id, COALESCE(up.points, 0), ua.created_at, ua.updated_at FROM user_accounts ua LEFT JOIN user_points up ON up.union_id = ua.union_id WHERE ua.platform = ? AND ua.user_id = ?`, platform, userID))
+	target, err = scanUserAccount(tx.QueryRow(`SELECT ua.id, ua.platform, ua.user_id, ua.nickname, ua.union_id, COALESCE(up.points, 0), ua.created_at, ua.updated_at FROM user_accounts ua LEFT JOIN user_points up ON up.union_id = ua.union_id WHERE ua.platform = ? AND ua.user_id = ?`, platform, userID))
 	if err == sql.ErrNoRows {
 		if _, err = tx.Exec(`INSERT INTO user_accounts (platform, user_id, union_id, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, platform, userID, source.UnionID); err != nil {
 			return nil, nil, err
@@ -189,7 +199,7 @@ func (d *Database) BindUserByCode(platform, userID, code string) (*UserAccount, 
 		if _, err = tx.Exec(`INSERT OR IGNORE INTO user_points (union_id, points, created_at, updated_at) VALUES (?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, source.UnionID); err != nil {
 			return nil, nil, err
 		}
-		target, err = scanUserAccount(tx.QueryRow(`SELECT ua.id, ua.platform, ua.user_id, ua.union_id, COALESCE(up.points, 0), ua.created_at, ua.updated_at FROM user_accounts ua LEFT JOIN user_points up ON up.union_id = ua.union_id WHERE ua.platform = ? AND ua.user_id = ?`, platform, userID))
+		target, err = scanUserAccount(tx.QueryRow(`SELECT ua.id, ua.platform, ua.user_id, ua.nickname, ua.union_id, COALESCE(up.points, 0), ua.created_at, ua.updated_at FROM user_accounts ua LEFT JOIN user_points up ON up.union_id = ua.union_id WHERE ua.platform = ? AND ua.user_id = ?`, platform, userID))
 	}
 	if err != nil {
 		return nil, nil, err
@@ -336,7 +346,7 @@ func scanUserAccount(row interface {
 	Scan(dest ...interface{}) error
 }) (*UserAccount, error) {
 	var account UserAccount
-	if err := row.Scan(&account.ID, &account.Platform, &account.UserID, &account.UnionID, &account.Points, &account.CreatedAt, &account.UpdatedAt); err != nil {
+	if err := row.Scan(&account.ID, &account.Platform, &account.UserID, &account.Nickname, &account.UnionID, &account.Points, &account.CreatedAt, &account.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return &account, nil

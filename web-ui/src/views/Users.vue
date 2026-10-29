@@ -96,7 +96,7 @@
 
         <el-tab-pane label="按平台" name="platform">
           <div class="toolbar platform-toolbar">
-            <el-input v-model="platformQuery.keyword" clearable placeholder="搜索平台用户 ID 或 UnionID" @keyup.enter="searchPlatformAccounts" />
+            <el-input v-model="platformQuery.keyword" clearable placeholder="搜索平台用户 ID、昵称或 UnionID" @keyup.enter="searchPlatformAccounts" />
             <el-select v-model="platformQuery.disabled" clearable placeholder="全部状态" @change="searchPlatformAccounts">
               <el-option label="正常" :value="false" />
               <el-option label="已封禁" :value="true" />
@@ -119,6 +119,7 @@
               <div class="desktop-table table-wrap" v-loading="accountLoading">
                 <el-table :data="platformAccounts" border stripe height="100%" empty-text="请选择平台或该平台暂无账号">
                   <el-table-column prop="user_id" label="平台用户 ID" min-width="190" show-overflow-tooltip />
+                  <el-table-column prop="nickname" label="平台昵称" min-width="150" show-overflow-tooltip />
                   <el-table-column prop="union_id" label="UnionID" min-width="210" show-overflow-tooltip />
                   <el-table-column label="积分" width="110" align="right"><template #default="{ row }">{{ formatPoints(row.points) }}</template></el-table-column>
                   <el-table-column label="状态" width="125">
@@ -131,7 +132,7 @@
               <div class="mobile-card-list" v-loading="accountLoading">
                 <article v-for="row in platformAccounts" :key="accountKey(row)" class="mobile-user-card">
                   <div class="card-head"><strong>{{ row.user_id || '-' }}</strong><div class="tag-list"><el-tag size="small" :type="statusTagType(row)">{{ statusText(row) }}</el-tag><el-tag v-if="row.duplicate_platform" size="small" type="warning">绑定异常</el-tag></div></div>
-                  <div class="card-fields"><div><span>平台</span><b>{{ platformDisplayName(row.platform) }}</b></div><div><span>UnionID</span><b>{{ row.union_id }}</b></div><div><span>积分</span><b>{{ formatPoints(row.points) }}</b></div></div>
+                  <div class="card-fields"><div><span>平台</span><b>{{ platformDisplayName(row.platform) }}</b></div><div><span>昵称</span><b>{{ row.nickname || '-' }}</b></div><div><span>UnionID</span><b>{{ row.union_id }}</b></div><div><span>积分</span><b>{{ formatPoints(row.points) }}</b></div></div>
                   <div class="card-actions single"><el-button size="small" type="primary" @click="openDetail(row)">查看 UnionID 详情</el-button></div>
                 </article>
                 <el-empty v-if="!accountLoading && platformAccounts.length === 0" description="暂无平台账号" />

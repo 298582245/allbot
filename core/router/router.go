@@ -354,6 +354,11 @@ func (r *Router) HandleMessage(msg *types.Message) {
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}
 	}
+	if database != nil && strings.TrimSpace(msg.Nickname) != "" {
+		if err := database.RecordUserNickname(msg.Platform, msg.UserID, msg.Nickname); err != nil {
+			log.Printf("[SYSTEM] Record user nickname failed: platform=%s user=%s err=%v", msg.Platform, msg.UserID, err)
+		}
+	}
 	isEvent := isEventMessage(msg)
 	if !isEvent && r.rejectDisabledUser(msg, database) {
 		return
@@ -420,6 +425,11 @@ func (r *Router) HandleMessageForPlugin(msg *types.Message, pluginID string) err
 	}
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}
+	}
+	if database != nil && strings.TrimSpace(msg.Nickname) != "" {
+		if err := database.RecordUserNickname(msg.Platform, msg.UserID, msg.Nickname); err != nil {
+			log.Printf("[SYSTEM] Record user nickname failed: platform=%s user=%s err=%v", msg.Platform, msg.UserID, err)
+		}
 	}
 	if !isEventMessage(msg) && r.rejectDisabledUser(msg, database) {
 		return fmt.Errorf("账号已被封禁，请联系管理员")
@@ -822,11 +832,15 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 		isAdmin = adminChecker(msg.Platform, msg.UserID)
 	}
 	unionID := ""
+	nickname := strings.TrimSpace(msg.Nickname)
 	points := int64(0)
 	pointsUnit := "积分"
 	if database != nil {
 		if account, err := database.GetUserAccount(msg.Platform, msg.UserID); err == nil {
 			unionID = account.UnionID
+			if strings.TrimSpace(account.Nickname) != "" {
+				nickname = account.Nickname
+			}
 			points = account.Points
 		}
 		if unit, err := database.GetSetting("user.points_unit"); err == nil && strings.TrimSpace(unit) != "" {
@@ -839,6 +853,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 		"platform":       msg.Platform,
 		"adapter_id":     msg.AdapterID,
 		"user_id":        msg.UserID,
+		"nickname":       nickname,
 		"union_id":       unionID,
 		"points":         points,
 		"points_unit":    pointsUnit,
@@ -2353,7 +2368,7 @@ func listenLogPrefix(msg *types.Message) string {
 	if msg.GroupID != "" {
 		scope = msg.GroupID
 	}
-	return fmt.Sprintf("[监听][%s][%s(%s)]", msg.Platform, msg.UserID, scope)
+	return fmt.Sprintf("[监听][%s][%s(%s)]", msg.Platform, userLogIdentity(msg), scope)
 }
 
 func stringDefault(value, fallback string) string {
@@ -2368,7 +2383,18 @@ func pluginResponseLogPrefix(msg *types.Message, plugin *types.Plugin) string {
 	if msg.GroupID != "" {
 		scope = msg.GroupID
 	}
-	return fmt.Sprintf("[响应][%s][%s][%s(%s)][插件:%s]", msg.Platform, adapterLogName(msg), msg.UserID, scope, plugin.Name)
+	return fmt.Sprintf("[响应][%s][%s][%s%s(%s)][插件:%s]", msg.Platform, adapterLogName(msg), msg.UserID, userNicknameSuffix(msg), scope, plugin.Name)
+}
+
+func userLogIdentity(msg *types.Message) string {
+	return msg.UserID + userNicknameSuffix(msg)
+}
+
+func userNicknameSuffix(msg *types.Message) string {
+	if msg == nil || strings.TrimSpace(msg.Nickname) == "" {
+		return ""
+	}
+	return "<" + strings.TrimSpace(msg.Nickname) + ">"
 }
 
 func pluginResponseLogMessageID(msg *types.Message) string {

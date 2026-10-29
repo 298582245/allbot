@@ -104,7 +104,7 @@ func userIdentityInfo(ctx *Context) string {
 		return ""
 	}
 	unit := pointsUnit(ctx)
-	return fmt.Sprintf("用户信息\n平台：%s\n用户ID：%s\nUnionID：%s\n%s：%d", account.Platform, account.UserID, account.UnionID, unit, account.Points)
+	return fmt.Sprintf("用户信息\n平台：%s\n用户ID：%s\n用户昵称：%s\nUnionID：%s\n%s：%d", account.Platform, account.UserID, account.Nickname, account.UnionID, unit, account.Points)
 }
 
 func registerUser(ctx *Context) string {
@@ -115,6 +115,11 @@ func registerUser(ctx *Context) string {
 			return "注册失败：" + err.Error()
 		}
 		account, err = ctx.Database.EnsureUserAccount(ctx.Message.Platform, ctx.Message.UserID)
+		if err != nil {
+			return "注册失败：" + err.Error()
+		}
+		_ = ctx.Database.RecordUserNickname(account.Platform, account.UserID, ctx.Message.Nickname)
+		account, err = ctx.Database.GetUserAccount(account.Platform, account.UserID)
 		if err != nil {
 			return "注册失败：" + err.Error()
 		}
@@ -134,6 +139,7 @@ func createBindCode(ctx *Context) string {
 	if err != nil {
 		return "生成绑定码失败：" + err.Error()
 	}
+	_ = ctx.Database.RecordUserNickname(ctx.Message.Platform, ctx.Message.UserID, ctx.Message.Nickname)
 	remainingMinutes := int(math.Ceil(time.Until(code.ExpiresAt).Minutes()))
 	if remainingMinutes < 1 {
 		remainingMinutes = 1
@@ -169,6 +175,11 @@ func bindUser(ctx *Context) string {
 		return "请输入绑定码，例如：绑定 AbCdEfGhIjKlMnOpQrStUv"
 	}
 	account, source, err := ctx.Database.BindUserByCode(ctx.Message.Platform, ctx.Message.UserID, code)
+	if err != nil {
+		return "绑定失败：" + err.Error()
+	}
+	_ = ctx.Database.RecordUserNickname(account.Platform, account.UserID, ctx.Message.Nickname)
+	account, err = ctx.Database.GetUserAccount(account.Platform, account.UserID)
 	if err != nil {
 		return "绑定失败：" + err.Error()
 	}
