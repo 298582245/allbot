@@ -102,7 +102,9 @@ func (s *Server) runScheduledTaskNow(w http.ResponseWriter, id int64) {
 		return
 	}
 	var nextRunAt *time.Time
-	if task.Enabled && !isOnceScheduledTask(task.Cron) {
+	if task.DeleteAfterRun {
+		nextRunAt = task.NextRunAt
+	} else if task.Enabled && !isOnceScheduledTask(task.Cron) {
 		next, err := router.NextCronTime(task.Cron, time.Now())
 		if err != nil {
 			nextRunAt = nil

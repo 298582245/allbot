@@ -8,11 +8,13 @@
           </div>
           <div class="stat-content">
             <el-tooltip :disabled="!stat.tooltip" :content="stat.tooltip" placement="top">
-              <div class="stat-value">{{ stat.value }}</div>
+              <el-skeleton-item v-if="systemStatusLoading" variant="text" class="stat-value-skeleton" />
+              <div v-else class="stat-value">{{ stat.value }}</div>
             </el-tooltip>
             <div class="stat-title">{{ stat.title }}</div>
             <el-tooltip :disabled="!stat.subtextTooltip" :content="stat.subtextTooltip" placement="top">
-              <div v-show="stat.subtext" class="stat-subtext">{{ stat.subtext }}</div>
+              <el-skeleton-item v-if="systemStatusLoading" variant="text" class="stat-subtext-skeleton" />
+              <div v-else v-show="stat.subtext" class="stat-subtext">{{ stat.subtext }}</div>
             </el-tooltip>
           </div>
         </el-card>
@@ -54,7 +56,7 @@
               </div>
             </div>
           </template>
-          <div v-loading="messageStatsLoading" class="chart-wrap">
+          <div v-loading="messageStatsLoading || chartsLoading" class="chart-wrap">
             <div ref="messageChartRef" class="message-chart"></div>
           </div>
         </el-card>
@@ -67,7 +69,7 @@
               <span class="resource-hint">CPU / 内存实时概览</span>
             </div>
           </template>
-          <div class="resource-grid">
+          <div v-loading="systemStatusLoading || chartsLoading" class="resource-grid">
             <div class="resource-panel">
               <div class="resource-title">CPU 占用</div>
               <div ref="cpuChartRef" class="resource-chart"></div>
@@ -97,10 +99,6 @@
 <script setup>
 defineOptions({ name: 'Dashboard' })
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import * as echarts from 'echarts/core'
-import { LineChart, PieChart } from 'echarts/charts'
-import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components'
-import { CanvasRenderer } from 'echarts/renderers'
 import {
   TrendCharts,
   Grid as GridIcon,
@@ -108,8 +106,6 @@ import {
   ChatLineRound
 } from '@element-plus/icons-vue'
 import { getSystemStatus, getMessageStats } from '@/api'
-
-echarts.use([LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
 
 const stats = ref([
   { title: '当前运行', value: '--', subtext: '', icon: TrendCharts, color: 'var(--brand-500)' },
@@ -122,7 +118,9 @@ const statsMode = ref('date')
 const statsDate = ref(formatDate(new Date()))
 const chartDimension = ref('platform')
 const selectedSeriesName = ref('')
-const messageStatsLoading = ref(false)
+const systemStatusLoading = ref(true)
+const messageStatsLoading = ref(true)
+const chartsLoading = ref(true)
 const messageStats = ref({ hours: [], by_platform: [], by_adapter: [] })
 const resourceStatus = ref({
   cpuUsagePercent: 0,
@@ -149,12 +147,16 @@ const memoryChartRef = ref(null)
 let messageChart = null
 let cpuChart = null
 let memoryChart = null
+let echarts = null
+let chartsReady = false
+let chartsLoadPromise = null
 let refreshTimer = null
 let uptimeTimer = null
 let totalUptimeBaseSeconds = null
 let currentUptimeBaseSeconds = null
 let uptimeBaseAt = 0
 let uptimeLastSyncedAt = 0
+let systemStatusLoaded = false
 const uptimeSyncInterval = 60 * 1000
 
 const platformSeries = computed(() => normalizeSeries(messageStats.value.by_platform))
@@ -162,6 +164,11 @@ const adapterSeries = computed(() => normalizeSeries(messageStats.value.by_adapt
 const currentSeries = computed(() => chartDimension.value === 'platform' ? platformSeries.value : adapterSeries.value)
 
 const loadData = async () => {
+  await Promise.allSettled([loadSystemStatus(), loadMessageStats()])
+}
+
+const loadSystemStatus = async () => {
+  if (!systemStatusLoaded) systemStatusLoading.value = true
   try {
     const status = await getSystemStatus()
     syncUptime(status)
@@ -169,11 +176,13 @@ const loadData = async () => {
     setAdapterCountStat(status.adapterCount || 0, status.runningAdapterCount || 0)
     setMessageCountStat(status.messageCount || 0, status.todayMessageCount || 0)
     setResourceStatus(status)
+    systemStatusLoaded = true
     await nextTick()
     renderResourceCharts()
-    await loadMessageStats()
   } catch (error) {
     console.error('加载数据失败:', error)
+  } finally {
+    systemStatusLoading.value = false
   }
 }
 
@@ -191,12 +200,53 @@ const loadMessageStats = async () => {
   }
 }
 
+async function loadCharts() {
+  chartsLoading.value = true
+  try {
+    await ensureChartsReady()
+    await nextTick()
+    renderResourceCharts()
+    renderMessageChart()
+  } finally {
+    chartsLoading.value = false
+  }
+}
+
+async function ensureChartsReady() {
+  if (chartsReady) return true
+  if (!chartsLoadPromise) {
+    chartsLoadPromise = Promise.all([
+      import('echarts/core'),
+      import('echarts/charts'),
+      import('echarts/components'),
+      import('echarts/renderers')
+    ]).then(([core, charts, components, renderers]) => {
+      echarts = core
+      echarts.use([
+        charts.LineChart,
+        charts.PieChart,
+        components.GridComponent,
+        components.LegendComponent,
+        components.TitleComponent,
+        components.TooltipComponent,
+        renderers.CanvasRenderer
+      ])
+      chartsReady = true
+      return true
+    }).catch(error => {
+      console.error('加载图表组件失败:', error)
+      return false
+    })
+  }
+  return chartsLoadPromise
+}
+
 const handleStatsModeChange = async () => {
   await loadMessageStats()
 }
 
 const renderMessageChart = () => {
-  if (!messageChartRef.value) return
+  if (!echarts || !messageChartRef.value) return
   if (!messageChart) {
     messageChart = echarts.init(messageChartRef.value)
     messageChart.on('legendselectchanged', () => {
@@ -244,7 +294,7 @@ function renderResourceCharts() {
 }
 
 function renderUsagePie(chartRef, chartInstance, setChart, name, allBotPercent, systemPercent, allBotColor, systemColor) {
-  if (!chartRef.value) return
+  if (!echarts || !chartRef.value) return
   let chart = chartInstance
   if (!chart) {
     chart = echarts.init(chartRef.value)
@@ -525,6 +575,7 @@ watch(chartDimension, () => {
 
 onMounted(() => {
   loadData()
+  loadCharts()
   refreshTimer = setInterval(loadData, 5000)
   uptimeTimer = setInterval(updateUptimeDisplay, 1000)
   window.addEventListener('resize', resizeCharts)
@@ -630,6 +681,19 @@ onUnmounted(() => {
 .stat-content {
   flex: 1;
   min-width: 0;
+}
+
+.stat-value-skeleton {
+  display: block;
+  width: 76px;
+  height: 32px;
+  margin-bottom: 5px;
+}
+
+.stat-subtext-skeleton {
+  display: block;
+  width: 92px;
+  height: 16px;
 }
 
 .stat-value {

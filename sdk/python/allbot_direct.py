@@ -539,6 +539,7 @@ class Context:
             "description": str(options.get("description") or ""),
             "enabled": options.get("enabled", True) is not False,
             "pinned": bool(options.get("pinned", False)),
+            "delete_after_run": bool(options.get("delete_after_run", options.get("deleteAfterRun", False))),
             "cron": "\n".join([str(item) for item in options.get("cron")]) if isinstance(options.get("cron"), list) else str(options.get("cron") or ""),
             "platform": str(options.get("platform") or self.platform),
             "adapter_id": str(options.get("adapter_id") or options.get("adapterId") or self.adapter_id),
@@ -551,6 +552,14 @@ class Context:
     async def setScheduledTask(self, **options: Any) -> Dict[str, Any]:
         """set_scheduled_task 的 camelCase 别名。"""
         return await self.set_scheduled_task(**options)
+
+    async def set_one_time_scheduled_task(self, **options: Any) -> Dict[str, Any]:
+        """声明执行一次后由自动调度删除的任务；手动执行不会删除。"""
+        options["delete_after_run"] = True
+        return await self.set_scheduled_task(**options)
+
+    async def setOneTimeScheduledTask(self, **options: Any) -> Dict[str, Any]:
+        return await self.set_one_time_scheduled_task(**options)
 
     async def sync_scheduled_tasks(self, task_keys: Any = None) -> Dict[str, Any]:
         keys = task_keys if isinstance(task_keys, list) else []

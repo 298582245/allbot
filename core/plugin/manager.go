@@ -175,20 +175,21 @@ type PluginConfigAction struct {
 }
 
 type ScheduledTaskAction struct {
-	Action      string
-	TaskKey     string
-	TaskKeys    []string
-	Name        string
-	Description string
-	Enabled     bool
-	Pinned      bool
-	Cron        string
-	Platform    string
-	AdapterID   string
-	UserID      string
-	GroupID     string
-	Content     string
-	MaxCount    int
+	Action         string
+	TaskKey        string
+	TaskKeys       []string
+	Name           string
+	Description    string
+	Enabled        bool
+	Pinned         bool
+	DeleteAfterRun bool
+	Cron           string
+	Platform       string
+	AdapterID      string
+	UserID         string
+	GroupID        string
+	Content        string
+	MaxCount       int
 }
 
 type PluginAccountAction struct {
@@ -887,6 +888,7 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			Subject        string                     `json:"subject"`
 			Enabled        bool                       `json:"enabled"`
 			Pinned         bool                       `json:"pinned"`
+			DeleteAfterRun bool                       `json:"delete_after_run"`
 			MaxCount       int                        `json:"max_count"`
 			Platform       string                     `json:"platform"`
 			AdapterID      string                     `json:"adapter_id"`
@@ -1114,7 +1116,7 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 		case "set_scheduled_task", "sync_scheduled_tasks":
 			result := PluginUserResult{Success: false, Error: "定时任务执行器不可用"}
 			if scheduleFunc != nil {
-				result = scheduleFunc(plugin.ID, ScheduledTaskAction{Action: action.Action, TaskKey: action.TaskKey, TaskKeys: action.TaskKeys, Name: action.Name, Description: action.Description, Enabled: action.Enabled, Pinned: action.Pinned, Cron: action.Cron, Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, Content: action.Content, MaxCount: action.MaxCount})
+				result = scheduleFunc(plugin.ID, ScheduledTaskAction{Action: action.Action, TaskKey: action.TaskKey, TaskKeys: action.TaskKeys, Name: action.Name, Description: action.Description, Enabled: action.Enabled, Pinned: action.Pinned, DeleteAfterRun: action.DeleteAfterRun, Cron: action.Cron, Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, Content: action.Content, MaxCount: action.MaxCount})
 			}
 			response, _ := json.Marshal(map[string]interface{}{"action": "scheduled_task_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
 			response = append(response, '\n')

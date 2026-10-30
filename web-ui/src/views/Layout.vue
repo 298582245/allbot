@@ -275,7 +275,7 @@
         <router-view v-slot="{ Component }">
           <transition name="page" mode="out-in">
             <keep-alive :include="tabsStore.cachedNames">
-              <component :is="Component" :key="route.fullPath" />
+              <component :is="Component" :key="`${route.fullPath}:${tabsStore.getRefreshVersion(route.path)}`" />
             </keep-alive>
           </transition>
         </router-view>

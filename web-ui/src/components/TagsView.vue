@@ -132,7 +132,7 @@ async function handleContextAction(action) {
   switch (action) {
     case 'refresh':
       if (route.path !== tab.path) await router.push(tab.path)
-      router.go(0)
+      tabsStore.refreshTab(tab.path)
       break
     case 'close':
       handleClose(tab)

@@ -1,14 +1,19 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 
 const AFFIX_PATHS = ['/dashboard']
 
 export const useTabsStore = defineStore('tabs', () => {
   const visitedTabs = ref([])
   const activeTabPath = ref('')
+  const refreshingTabPath = ref('')
+  const refreshVersions = ref({})
 
   const cachedNames = computed(() =>
-    visitedTabs.value.map(tab => tab.name).filter(Boolean)
+    visitedTabs.value
+      .filter(tab => tab.path !== refreshingTabPath.value)
+      .map(tab => tab.name)
+      .filter(Boolean)
   )
 
   function isAffix(path) {
@@ -73,6 +78,22 @@ export const useTabsStore = defineStore('tabs', () => {
     visitedTabs.value = tabs
   }
 
+  function refreshTab(path) {
+    if (!path) return
+    const nextVersion = Number(refreshVersions.value[path] || 0) + 1
+    refreshVersions.value = { ...refreshVersions.value, [path]: nextVersion }
+    refreshingTabPath.value = path
+    nextTick(() => {
+      if (refreshVersions.value[path] === nextVersion && refreshingTabPath.value === path) {
+        refreshingTabPath.value = ''
+      }
+    })
+  }
+
+  function getRefreshVersion(path) {
+    return Number(refreshVersions.value[path] || 0)
+  }
+
   function initAffixTabs() {
     AFFIX_PATHS.forEach(path => {
       const exists = visitedTabs.value.find(t => t.path === path)
@@ -95,6 +116,8 @@ export const useTabsStore = defineStore('tabs', () => {
     removeLeft,
     removeRight,
     moveTab,
+    refreshTab,
+    getRefreshVersion,
     initAffixTabs
   }
 })

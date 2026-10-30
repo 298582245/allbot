@@ -8,29 +8,30 @@ import (
 )
 
 type ScheduledTask struct {
-	ID          int64      `json:"id"`
-	PluginID    string     `json:"plugin_id"`
-	TaskKey     string     `json:"task_key"`
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
-	Enabled     bool       `json:"enabled"`
-	Pinned      bool       `json:"pinned"`
-	Cron        string     `json:"cron"`
-	Platform    string     `json:"platform"`
-	AdapterID   string     `json:"adapter_id"`
-	UserID      string     `json:"user_id"`
-	GroupID     string     `json:"group_id"`
-	Content     string     `json:"content"`
-	Source      string     `json:"source"`
-	LastRunAt   *time.Time `json:"last_run_at,omitempty"`
-	NextRunAt   *time.Time `json:"next_run_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID             int64      `json:"id"`
+	PluginID       string     `json:"plugin_id"`
+	TaskKey        string     `json:"task_key"`
+	Name           string     `json:"name"`
+	Description    string     `json:"description"`
+	Enabled        bool       `json:"enabled"`
+	Pinned         bool       `json:"pinned"`
+	DeleteAfterRun bool       `json:"delete_after_run"`
+	Cron           string     `json:"cron"`
+	Platform       string     `json:"platform"`
+	AdapterID      string     `json:"adapter_id"`
+	UserID         string     `json:"user_id"`
+	GroupID        string     `json:"group_id"`
+	Content        string     `json:"content"`
+	Source         string     `json:"source"`
+	LastRunAt      *time.Time `json:"last_run_at,omitempty"`
+	NextRunAt      *time.Time `json:"next_run_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 func (d *Database) ListScheduledTasks() ([]*ScheduledTask, error) {
 	rows, err := d.db.Query(`
-		SELECT id, plugin_id, task_key, name, description, enabled, pinned, cron, platform, adapter_id, user_id, group_id, content, source, last_run_at, next_run_at, created_at, updated_at
+		SELECT id, plugin_id, task_key, name, description, enabled, pinned, delete_after_run, cron, platform, adapter_id, user_id, group_id, content, source, last_run_at, next_run_at, created_at, updated_at
 		FROM scheduled_tasks
 		ORDER BY pinned DESC, enabled DESC, plugin_id ASC, id DESC
 	`)
@@ -52,7 +53,7 @@ func (d *Database) ListScheduledTasks() ([]*ScheduledTask, error) {
 
 func (d *Database) ListDueScheduledTasks(now time.Time) ([]*ScheduledTask, error) {
 	rows, err := d.db.Query(`
-		SELECT id, plugin_id, task_key, name, description, enabled, pinned, cron, platform, adapter_id, user_id, group_id, content, source, last_run_at, next_run_at, created_at, updated_at
+		SELECT id, plugin_id, task_key, name, description, enabled, pinned, delete_after_run, cron, platform, adapter_id, user_id, group_id, content, source, last_run_at, next_run_at, created_at, updated_at
 		FROM scheduled_tasks
 		WHERE enabled = 1 AND LOWER(TRIM(cron)) <> '@once' AND next_run_at IS NOT NULL AND next_run_at <= ?
 		ORDER BY next_run_at ASC, id ASC
@@ -75,7 +76,7 @@ func (d *Database) ListDueScheduledTasks(now time.Time) ([]*ScheduledTask, error
 
 func (d *Database) GetScheduledTask(id int64) (*ScheduledTask, error) {
 	row := d.db.QueryRow(`
-		SELECT id, plugin_id, task_key, name, description, enabled, pinned, cron, platform, adapter_id, user_id, group_id, content, source, last_run_at, next_run_at, created_at, updated_at
+		SELECT id, plugin_id, task_key, name, description, enabled, pinned, delete_after_run, cron, platform, adapter_id, user_id, group_id, content, source, last_run_at, next_run_at, created_at, updated_at
 		FROM scheduled_tasks WHERE id = ?
 	`, id)
 	item, err := scanScheduledTask(row)
@@ -92,16 +93,16 @@ func (d *Database) SaveScheduledTask(item *ScheduledTask) error {
 	now := time.Now()
 	if item.ID == 0 {
 		_, err := d.db.Exec(`
-			INSERT INTO scheduled_tasks (plugin_id, task_key, name, description, enabled, pinned, cron, platform, adapter_id, user_id, group_id, content, source, next_run_at, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, item.PluginID, item.TaskKey, item.Name, item.Description, boolInt(item.Enabled), boolInt(item.Pinned), item.Cron, item.Platform, item.AdapterID, item.UserID, item.GroupID, item.Content, item.Source, item.NextRunAt, now, now)
+			INSERT INTO scheduled_tasks (plugin_id, task_key, name, description, enabled, pinned, delete_after_run, cron, platform, adapter_id, user_id, group_id, content, source, next_run_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, item.PluginID, item.TaskKey, item.Name, item.Description, boolInt(item.Enabled), boolInt(item.Pinned), boolInt(item.DeleteAfterRun), item.Cron, item.Platform, item.AdapterID, item.UserID, item.GroupID, item.Content, item.Source, item.NextRunAt, now, now)
 		return err
 	}
 	_, err := d.db.Exec(`
 		UPDATE scheduled_tasks
-		SET plugin_id = ?, task_key = ?, name = ?, description = ?, enabled = ?, pinned = ?, cron = ?, platform = ?, adapter_id = ?, user_id = ?, group_id = ?, content = ?, source = ?, next_run_at = ?, updated_at = ?
+		SET plugin_id = ?, task_key = ?, name = ?, description = ?, enabled = ?, pinned = ?, delete_after_run = ?, cron = ?, platform = ?, adapter_id = ?, user_id = ?, group_id = ?, content = ?, source = ?, next_run_at = ?, updated_at = ?
 		WHERE id = ?
-	`, item.PluginID, item.TaskKey, item.Name, item.Description, boolInt(item.Enabled), boolInt(item.Pinned), item.Cron, item.Platform, item.AdapterID, item.UserID, item.GroupID, item.Content, item.Source, item.NextRunAt, now, item.ID)
+	`, item.PluginID, item.TaskKey, item.Name, item.Description, boolInt(item.Enabled), boolInt(item.Pinned), boolInt(item.DeleteAfterRun), item.Cron, item.Platform, item.AdapterID, item.UserID, item.GroupID, item.Content, item.Source, item.NextRunAt, now, item.ID)
 	return err
 }
 
@@ -123,6 +124,13 @@ func (d *Database) UpsertPluginScheduledTask(pluginID string, item *ScheduledTas
 		return nil, err
 	}
 	if err == nil {
+		if _, err := d.db.Exec(`
+			UPDATE scheduled_tasks
+			SET delete_after_run = ?, updated_at = ?
+			WHERE id = ?
+		`, boolInt(item.DeleteAfterRun), time.Now(), existingID); err != nil {
+			return nil, err
+		}
 		return d.GetScheduledTask(existingID)
 	}
 	if err := normalizeScheduledTask(item); err != nil {
@@ -131,9 +139,9 @@ func (d *Database) UpsertPluginScheduledTask(pluginID string, item *ScheduledTas
 	now := time.Now()
 	{
 		result, insertErr := d.db.Exec(`
-			INSERT INTO scheduled_tasks (plugin_id, task_key, name, description, enabled, pinned, cron, platform, adapter_id, user_id, group_id, content, source, next_run_at, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'plugin', ?, ?, ?)
-		`, item.PluginID, item.TaskKey, item.Name, item.Description, boolInt(item.Enabled), boolInt(item.Pinned), item.Cron, item.Platform, item.AdapterID, item.UserID, item.GroupID, item.Content, item.NextRunAt, now, now)
+			INSERT INTO scheduled_tasks (plugin_id, task_key, name, description, enabled, pinned, delete_after_run, cron, platform, adapter_id, user_id, group_id, content, source, next_run_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'plugin', ?, ?, ?)
+		`, item.PluginID, item.TaskKey, item.Name, item.Description, boolInt(item.Enabled), boolInt(item.Pinned), boolInt(item.DeleteAfterRun), item.Cron, item.Platform, item.AdapterID, item.UserID, item.GroupID, item.Content, item.NextRunAt, now, now)
 		err = insertErr
 		if err == nil {
 			item.ID, _ = result.LastInsertId()
@@ -294,13 +302,14 @@ type scheduledTaskScanner interface {
 
 func scanScheduledTask(scanner scheduledTaskScanner) (*ScheduledTask, error) {
 	var item ScheduledTask
-	var enabled, pinned int
+	var enabled, pinned, deleteAfterRun int
 	var lastRunAt, nextRunAt sql.NullTime
-	if err := scanner.Scan(&item.ID, &item.PluginID, &item.TaskKey, &item.Name, &item.Description, &enabled, &pinned, &item.Cron, &item.Platform, &item.AdapterID, &item.UserID, &item.GroupID, &item.Content, &item.Source, &lastRunAt, &nextRunAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := scanner.Scan(&item.ID, &item.PluginID, &item.TaskKey, &item.Name, &item.Description, &enabled, &pinned, &deleteAfterRun, &item.Cron, &item.Platform, &item.AdapterID, &item.UserID, &item.GroupID, &item.Content, &item.Source, &lastRunAt, &nextRunAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return nil, err
 	}
 	item.Enabled = enabled == 1
 	item.Pinned = pinned == 1
+	item.DeleteAfterRun = deleteAfterRun == 1
 	if lastRunAt.Valid {
 		item.LastRunAt = &lastRunAt.Time
 	}

@@ -508,6 +508,7 @@ class Context {
             description: String(options.description || ''),
             enabled: options.enabled !== false,
             pinned: Boolean(options.pinned),
+            delete_after_run: Boolean(options.deleteAfterRun || options.delete_after_run),
             cron: Array.isArray(options.cron) ? options.cron.join('\n') : String(options.cron || ''),
             platform: String(options.platform || this.platform),
             adapter_id: this._adapterIdFor(options),
@@ -520,6 +521,14 @@ class Context {
 
     async set_scheduled_task(options = {}) {
         return this.setScheduledTask(options);
+    }
+
+    async setOneTimeScheduledTask(options = {}) {
+        return this.setScheduledTask({ ...options, deleteAfterRun: true });
+    }
+
+    async set_one_time_scheduled_task(options = {}) {
+        return this.setOneTimeScheduledTask(options);
     }
 
     async syncScheduledTasks(taskKeys = []) {

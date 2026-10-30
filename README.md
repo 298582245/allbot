@@ -537,6 +537,16 @@ await ctx.setScheduledTask({
   userId: ctx.userId,
   content: '你好'
 })
+
+await ctx.setOneTimeScheduledTask({
+  taskKey: 'remind-once',
+  name: '一次性提醒',
+  cron: '0 8 * * *',
+  platform: ctx.platform,
+  adapterId: ctx.adapterId,
+  userId: ctx.userId,
+  content: '提醒内容'
+})
 ```
 
 Python：
@@ -551,13 +561,24 @@ await ctx.set_scheduled_task(
     user_id=ctx.user_id,
     content='你好',
 )
+
+await ctx.set_one_time_scheduled_task(
+    task_key='remind-once',
+    name='一次性提醒',
+    cron='0 8 * * *',
+    platform=ctx.platform,
+    adapter_id=ctx.adapter_id,
+    user_id=ctx.user_id,
+    content='提醒内容',
+)
 ```
 
 说明：
 
 - `task_key` / `taskKey` 用于区分同一插件声明的任务。
-- 插件声明任务时，如果同一 `plugin_id + task_key` 已存在，后端会返回已有任务，不覆盖后台手动修改过的配置。
+- 插件声明任务时，如果同一 `plugin_id + task_key` 已存在，后端保留后台手动修改过的任务配置，并同步 SDK 声明的自动执行后删除标记。
 - `@once` 表示只允许手动执行，不参与自动 cron 调度。
+- `setOneTimeScheduledTask` / `set_one_time_scheduled_task` 声明的任务会在自动调度执行后删除；从后台手动执行不会删除。
 - 支持 5 位或 6 位 cron，支持多行表达式。
 
 ### 获取平台管理员身份

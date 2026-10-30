@@ -720,6 +720,7 @@ func createTables(db *sql.DB) error {
 		description TEXT NOT NULL DEFAULT '',
 		enabled INTEGER NOT NULL DEFAULT 1,
 		pinned INTEGER NOT NULL DEFAULT 0,
+		delete_after_run INTEGER NOT NULL DEFAULT 0,
 		cron TEXT NOT NULL,
 		platform TEXT NOT NULL,
 		adapter_id TEXT NOT NULL DEFAULT '',
@@ -1245,6 +1246,11 @@ func migrateScheduledTasksTable(db *sql.DB) error {
 	}
 	if !columns["pinned"] {
 		if _, err := db.Exec(`ALTER TABLE scheduled_tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if !columns["delete_after_run"] {
+		if _, err := db.Exec(`ALTER TABLE scheduled_tasks ADD COLUMN delete_after_run INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return err
 		}
 	}

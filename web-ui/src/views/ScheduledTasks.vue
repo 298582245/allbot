@@ -95,8 +95,18 @@
           </el-table-column>
           <el-table-column label="名称" min-width="180">
             <template #default="{ row }">
-              <div class="task-name">
-                {{ row.name || row.task_key || `任务 ${row.id}` }}
+              <div class="task-title-row">
+                <el-popover placement="top" trigger="click" :width="320">
+                  <template #reference>
+                    <button type="button" class="task-name">
+                      {{ taskNameText(row) }}
+                    </button>
+                  </template>
+                  <div class="task-name-full">{{ taskNameText(row) }}</div>
+                </el-popover>
+                <el-tag v-if="row.delete_after_run" size="small" type="warning">
+                  自动执行后删除
+                </el-tag>
               </div>
             </template>
           </el-table-column>
@@ -182,7 +192,19 @@
               @change="checked => toggleTaskSelection(row, checked)"
             />
             <div class="mobile-task-title">
-              <strong>{{ row.name || row.task_key || `任务 ${row.id}` }}</strong>
+              <div class="task-title-row">
+                <el-popover placement="top" trigger="click" :width="320">
+                  <template #reference>
+                    <button type="button" class="task-name">
+                      {{ taskNameText(row) }}
+                    </button>
+                  </template>
+                  <div class="task-name-full">{{ taskNameText(row) }}</div>
+                </el-popover>
+                <el-tag v-if="row.delete_after_run" size="small" type="warning">
+                  自动执行后删除
+                </el-tag>
+              </div>
               <span class="mobile-task-id">
                 ID <span class="id-with-pin"><span class="pin-id">{{ row.id }}</span><svg v-if="row.pinned" class="pin-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M16 9V4l1-1V2H7v1l1 1v5l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z" fill="currentColor"/></svg></span>
               </span>
@@ -713,6 +735,10 @@ function createEmptyForm() {
   };
 }
 
+function taskNameText(row) {
+  return row.name || row.task_key || `任务 ${row.id}`;
+}
+
 function normalizeAdapterPlatforms(items) {
   const options = Array.isArray(items)
     ? items
@@ -876,7 +902,38 @@ function formatTime(value) {
   display: none;
 }
 .task-name {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   font-weight: 600;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.task-name:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+.task-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.task-title-row .el-popover__reference-wrapper {
+  flex: 1;
+  min-width: 0;
+}
+.task-name-full {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .id-with-pin {
   display: inline-flex;
@@ -1008,11 +1065,13 @@ function formatTime(value) {
     flex-direction: column;
     gap: 2px;
   }
-  .mobile-task-title strong {
+  .mobile-task-title .task-title-row {
+    width: 100%;
+  }
+  .mobile-task-title .task-name {
     font-size: 14px;
     font-weight: 600;
     color: #303133;
-    word-break: break-word;
   }
   .mobile-task-id {
     font-size: 12px;
