@@ -95,23 +95,15 @@
           </el-table-column>
           <el-table-column label="名称" min-width="180">
             <template #default="{ row }">
-              <div class="task-title-row">
-                <el-popover placement="top" trigger="click" :width="320">
-                  <template #reference>
-                    <button type="button" class="task-name">
-                      {{ taskNameText(row) }}
-                    </button>
-                  </template>
-                  <div class="task-name-full">{{ taskNameText(row) }}</div>
-                </el-popover>
-                <el-tag v-if="row.delete_after_run" size="small" type="warning">
-                  自动执行后删除
-                </el-tag>
-              </div>
+              <el-popover placement="top" trigger="click" :width="320">
+                <template #reference>
+                  <button type="button" class="task-name">
+                    {{ taskNameText(row) }}
+                  </button>
+                </template>
+                <div class="task-name-full">{{ taskNameText(row) }}</div>
+              </el-popover>
             </template>
-          </el-table-column>
-          <el-table-column label="备注" min-width="220" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.description || "-" }}</template>
           </el-table-column>
           <el-table-column label="来源" width="150">
             <template #default="{ row }">
@@ -129,6 +121,9 @@
                 row.enabled ? "启用" : "禁用"
               }}</el-tag>
             </template>
+          </el-table-column>
+          <el-table-column label="是否循环" width="100">
+            <template #default="{ row }">{{ isScheduledTaskRepeating(row) ? "是" : "否" }}</template>
           </el-table-column>
           <el-table-column label="表达式" width="190" show-overflow-tooltip>
             <template #default="{ row }">{{ row.cron }}</template>
@@ -150,6 +145,9 @@
                 <div class="task-desc task-identity-line">{{ taskSessionText(row) }}</div>
               </el-tooltip>
             </template>
+          </el-table-column>
+          <el-table-column label="备注" min-width="220" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.description || "-" }}</template>
           </el-table-column>
           <el-table-column label="上次执行" width="180">
             <template #default="{ row }">{{
@@ -192,19 +190,14 @@
               @change="checked => toggleTaskSelection(row, checked)"
             />
             <div class="mobile-task-title">
-              <div class="task-title-row">
-                <el-popover placement="top" trigger="click" :width="320">
-                  <template #reference>
-                    <button type="button" class="task-name">
-                      {{ taskNameText(row) }}
-                    </button>
-                  </template>
-                  <div class="task-name-full">{{ taskNameText(row) }}</div>
-                </el-popover>
-                <el-tag v-if="row.delete_after_run" size="small" type="warning">
-                  自动执行后删除
-                </el-tag>
-              </div>
+              <el-popover placement="top" trigger="click" :width="320">
+                <template #reference>
+                  <button type="button" class="task-name">
+                    {{ taskNameText(row) }}
+                  </button>
+                </template>
+                <div class="task-name-full">{{ taskNameText(row) }}</div>
+              </el-popover>
               <span class="mobile-task-id">
                 ID <span class="id-with-pin"><span class="pin-id">{{ row.id }}</span><svg v-if="row.pinned" class="pin-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M16 9V4l1-1V2H7v1l1 1v5l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z" fill="currentColor"/></svg></span>
               </span>
@@ -214,12 +207,13 @@
             </el-tag>
           </div>
           <div class="mobile-task-fields">
-            <div><span>备注</span><strong>{{ row.description || "-" }}</strong></div>
+            <div><span>是否循环</span><strong>{{ isScheduledTaskRepeating(row) ? "是" : "否" }}</strong></div>
             <div><span>来源</span><strong>{{ sourceName(row.source) }}</strong></div>
             <div v-if="row.plugin_id"><span>插件</span><strong>{{ row.plugin_id }}</strong></div>
             <div><span>表达式</span><strong>{{ row.cron }}</strong></div>
             <div><span>身份</span><strong class="task-identity-value" :title="taskIdentityText(row)">{{ taskIdentityText(row) }}</strong></div>
             <div><span>会话</span><strong class="task-identity-value" :title="taskSessionText(row)">{{ taskSessionText(row) }}</strong></div>
+            <div><span>备注</span><strong>{{ row.description || "-" }}</strong></div>
             <div><span>上次执行</span><strong>{{ formatTime(row.last_run_at) }}</strong></div>
             <div><span>下次执行</span><strong>{{ formatTime(row.next_run_at) }}</strong></div>
           </div>
@@ -737,6 +731,10 @@ function createEmptyForm() {
 
 function taskNameText(row) {
   return row.name || row.task_key || `任务 ${row.id}`;
+}
+
+function isScheduledTaskRepeating(row) {
+  return !row.delete_after_run && String(row.cron || "").trim().toLowerCase() !== "@once";
 }
 
 function normalizeAdapterPlatforms(items) {
