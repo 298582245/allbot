@@ -476,7 +476,8 @@ func (a *QQAdapter) SendVideo(target string, videoURL string) error {
 }
 
 func (a *QQAdapter) SendFile(target string, filePath string) error {
-	return a.SendMessage(target, fmt.Sprintf("[CQ:file,file=%s,name=%s]", filePath, filepath.Base(filePath)))
+	fileName := filepath.Base(strings.ReplaceAll(filePath, "\\", "/"))
+	return a.SendMessage(target, fmt.Sprintf("[CQ:file,file=%s,name=%s]", filePath, fileName))
 }
 
 func (a *QQAdapter) GetUserInfo(userID string) (*UserInfo, error) {
