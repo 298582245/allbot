@@ -192,7 +192,7 @@ func (s *Service) StartUpgrade(ctx context.Context) (UpgradeState, error) {
 		s.setState(state)
 		return state, errors.New(message)
 	}
-	state := UpgradeState{Status: UpgradeStatusDownloading, Message: "正在下载升级包", Version: check.LatestVersion, AssetName: check.MatchedAsset.Name}
+	state := UpgradeState{Status: UpgradeStatusDownloading, Message: "准备下载升级包", Version: check.LatestVersion, AssetName: check.MatchedAsset.Name}
 	s.setState(state)
 	go s.runDownload(ctx, check.CurrentVersion, check.LatestVersion, check.MatchedAsset, check.ChecksumAsset, check.SignatureAsset)
 	return state, nil
@@ -271,10 +271,28 @@ func (s *Service) runDownload(parent context.Context, currentVersion string, lat
 		return
 	}
 	newPath := filepath.Join(stagingDir, downloadedBinaryName())
-	if err := (Downloader{ProxyURL: downloadProxy}).Download(ctx, asset, newPath); err != nil {
+	if err := (Downloader{ProxyURL: downloadProxy}).DownloadWithProgress(ctx, asset, newPath, func(downloaded, total int64) {
+		message := formatDownloadProgress(downloaded, total)
+		state := UpgradeState{Status: UpgradeStatusDownloading, Message: message, Version: latestVersion, AssetName: asset.Name}
+		s.setState(state)
+		if total > 0 && downloaded >= total {
+			if progress, ok := UpgradeProgressFromContext(ctx); ok {
+				progress(state)
+			}
+		}
+	}); err != nil {
 		_ = os.RemoveAll(stagingDir)
 		s.setState(UpgradeState{Status: UpgradeStatusFailed, Message: "下载升级包失败", Error: err.Error(), Version: latestVersion, AssetName: asset.Name})
 		return
+	}
+	if state := s.CurrentState(); strings.Contains(state.Message, "正在下载升级包(") {
+		if !strings.Contains(state.Message, "100.00%/100%") {
+			state.Message = "正在下载升级包(100.00%/100%)"
+			s.setState(state)
+			if progress, ok := UpgradeProgressFromContext(ctx); ok {
+				progress(state)
+			}
+		}
 	}
 	s.setState(UpgradeState{Status: UpgradeStatusDownloading, Message: "升级包下载完成，正在下载校验文件", Version: latestVersion, AssetName: asset.Name})
 	checksumBytes, err := downloadChecksumBytes(ctx, checksumAsset, downloadProxy)
@@ -340,6 +358,17 @@ func (s *Service) runDownload(parent context.Context, currentVersion string, lat
 			exitHandler()
 		}()
 	}
+}
+
+func formatDownloadProgress(downloaded, total int64) string {
+	percent := 0.0
+	if total > 0 {
+		percent = float64(downloaded) / float64(total) * 100
+		if percent > 100 {
+			percent = 100
+		}
+	}
+	return fmt.Sprintf("正在下载升级包(%.2f%%/100%%)", percent)
 }
 
 func (s *Service) startProgressNotifier(ctx context.Context) func() {

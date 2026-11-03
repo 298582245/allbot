@@ -35,7 +35,7 @@ func replyUpdate(ctx *Context) error {
 	}
 	requestCtx = updater.WithUpgradeNotification(requestCtx, notification)
 	requestCtx = updater.WithUpgradeProgress(requestCtx, func(state updater.UpgradeState) {
-		_ = ctx.SendUserText("更新进度：" + state.Message)
+		_ = ctx.SendText("更新进度：" + state.Message)
 	})
 	state, err := ctx.UpdateHandler.StartUpgrade(requestCtx)
 	if err != nil {

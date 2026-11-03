@@ -17,6 +17,10 @@ type Downloader struct {
 }
 
 func (d Downloader) Download(ctx context.Context, asset ReleaseAsset, targetPath string) error {
+	return d.DownloadWithProgress(ctx, asset, targetPath, nil)
+}
+
+func (d Downloader) DownloadWithProgress(ctx context.Context, asset ReleaseAsset, targetPath string, progress func(downloaded, total int64)) error {
 	url := strings.TrimSpace(asset.DownloadURL)
 	if url == "" {
 		return fmt.Errorf("下载地址不能为空")
@@ -63,7 +67,11 @@ func (d Downloader) Download(ctx context.Context, asset ReleaseAsset, targetPath
 		_ = os.Remove(tempPath)
 		return err
 	}
-	_, copyErr := io.Copy(tempFile, response.Body)
+	total := response.ContentLength
+	if total <= 0 {
+		total = asset.Size
+	}
+	_, copyErr := io.Copy(&downloadProgressWriter{writer: tempFile, total: total, progress: progress}, response.Body)
 	closeErr := tempFile.Close()
 	if copyErr != nil {
 		_ = os.Remove(tempPath)
@@ -85,4 +93,20 @@ func (d Downloader) Download(ctx context.Context, asset ReleaseAsset, targetPath
 		}
 	}
 	return os.Rename(tempPath, targetPath)
+}
+
+type downloadProgressWriter struct {
+	writer     io.Writer
+	total      int64
+	downloaded int64
+	progress   func(downloaded, total int64)
+}
+
+func (w *downloadProgressWriter) Write(data []byte) (int, error) {
+	written, err := w.writer.Write(data)
+	w.downloaded += int64(written)
+	if w.progress != nil && written > 0 {
+		w.progress(w.downloaded, w.total)
+	}
+	return written, err
 }

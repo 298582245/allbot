@@ -63,14 +63,20 @@ type fakeKeywordPluginAdminStore struct {
 }
 
 type fakeUpdateHandler struct {
-	current updater.UpgradeState
-	start   updater.UpgradeState
-	err     error
-	calls   int
+	current  updater.UpgradeState
+	start    updater.UpgradeState
+	progress updater.UpgradeState
+	err      error
+	calls    int
 }
 
 func (h *fakeUpdateHandler) StartUpgrade(ctx context.Context) (updater.UpgradeState, error) {
 	h.calls++
+	if h.progress.Message != "" {
+		if progress, ok := updater.UpgradeProgressFromContext(ctx); ok {
+			progress(h.progress)
+		}
+	}
 	return h.start, h.err
 }
 
@@ -502,6 +508,40 @@ func TestKeywordReplyUpdateAdminTriggersUpgrade(t *testing.T) {
 	messages := fake.sentMessages()
 	if len(messages) != 1 || !strings.Contains(messages[0].text, "已开始更新到 v1.0.2") || !strings.Contains(messages[0].text, "allbot-windows-amd64.exe") {
 		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestKeywordReplyUpdateProgressUsesGroupReplyTarget(t *testing.T) {
+	fake := &keywordReplyFakeAdapter{}
+	db, manager := newKeywordReplyTestManager(t, fake, true)
+	defer db.Close()
+	handler := &fakeUpdateHandler{
+		current:  updater.UpgradeState{Status: updater.UpgradeStatusIdle},
+		start:    updater.UpgradeState{Status: updater.UpgradeStatusDownloading, Message: "准备下载升级包", Version: "v1.0.2", AssetName: "allbot-linux-amd64"},
+		progress: updater.UpgradeState{Status: updater.UpgradeStatusDownloading, Message: "正在下载升级包(12.34%/100%)"},
+	}
+	manager.SetUpdateHandler(handler)
+
+	if !manager.Handle(&types.Message{Platform: "qq", UserID: "admin", GroupID: "2001", Content: "更新"}) {
+		t.Fatal("Handle returned false")
+	}
+	messages := fake.sentMessages()
+	if len(messages) != 2 {
+		t.Fatalf("messages = %#v, expected start and progress replies", messages)
+	}
+	for _, message := range messages {
+		if message.target != "2001" {
+			t.Fatalf("message target = %q, expected group 2001", message.target)
+		}
+	}
+	progressFound := false
+	for _, message := range messages {
+		if strings.Contains(message.text, "更新进度：正在下载升级包(12.34%/100%)") {
+			progressFound = true
+		}
+	}
+	if !progressFound {
+		t.Fatalf("progress message not found: %#v", messages)
 	}
 }
 
