@@ -229,7 +229,7 @@ func (a *QQOfficeAdapter) Stop() error {
 }
 
 func (a *QQOfficeAdapter) SendMessage(target string, text string) error {
-	return a.sendMessage(target, text, 0)
+	return a.sendMarkdownMessage(target, text, 0, false, true)
 }
 
 // SendMessageWithSequence 使用协议指定的回复序号发送文本消息。
@@ -237,10 +237,10 @@ func (a *QQOfficeAdapter) SendMessageWithSequence(target string, text string, se
 	if sequence <= 0 {
 		return fmt.Errorf("QQ 官方回复序号必须大于 0")
 	}
-	return a.sendMessage(target, text, sequence)
+	return a.sendMarkdownMessage(target, text, sequence, false, true)
 }
 
-func (a *QQOfficeAdapter) sendMessage(target string, text string, sequence int) error {
+func (a *QQOfficeAdapter) sendTextMessage(target string, text string, sequence int) error {
 	parts := contract.SplitTextMessage(text, contract.DefaultTextMessageLimit)
 	if len(parts) > 1 {
 		log.Printf("[WARN][QQ官方][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
@@ -397,14 +397,30 @@ func (a *QQOfficeAdapter) SendMarkdown(target string, markdown string) error {
 	if markdown == "" {
 		return fmt.Errorf("QQ 官方 Markdown 内容不能为空")
 	}
+	return a.sendMarkdownMessage(target, markdown, 0, true, false)
+}
+
+func (a *QQOfficeAdapter) sendMarkdownMessage(target string, markdown string, sequence int, convertDMSToPlainText bool, splitAsText bool) error {
+	if markdown == "" && !convertDMSToPlainText {
+		return nil
+	}
 	targetInfo, err := parseQQOfficeMessageTarget(target)
 	if err != nil {
 		return err
 	}
 	if targetInfo.kind == "dms" {
-		return a.SendMessage(target, utils.MarkdownToPlainText(markdown))
+		if convertDMSToPlainText {
+			return a.sendTextMessage(target, utils.MarkdownToPlainText(markdown), sequence)
+		}
+		return a.sendTextMessage(target, markdown, sequence)
+	}
+	if splitAsText {
+		markdown = escapeQQOfficePlainTextMarkdown(markdown)
 	}
 	splitLimit := contract.DefaultRichMessageLimit
+	if splitAsText {
+		splitLimit = contract.DefaultTextMessageLimit
+	}
 	if targetInfo.atUser != "" {
 		splitLimit -= contract.TextRuneCount(fmt.Sprintf("<@%s>\n", strings.TrimSpace(targetInfo.atUser)))
 		if splitLimit <= 0 {
@@ -412,6 +428,9 @@ func (a *QQOfficeAdapter) SendMarkdown(target string, markdown string) error {
 		}
 	}
 	parts := contract.SplitMarkdownMessage(markdown, splitLimit)
+	if splitAsText {
+		parts = contract.SplitTextMessage(markdown, splitLimit)
+	}
 	if len(parts) > 1 {
 		log.Printf("[WARN][QQ官方][%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(markdown), splitLimit, len(parts))
 	}
@@ -426,7 +445,13 @@ func (a *QQOfficeAdapter) SendMarkdown(target string, markdown string) error {
 		}
 		if targetInfo.msgID != "" {
 			body["msg_id"] = targetInfo.msgID
-			body["msg_seq"] = a.nextReplySeq(targetInfo)
+			if targetInfo.kind == "user" || targetInfo.kind == "group" {
+				partSequence := sequence
+				if partSequence > 0 {
+					partSequence += index
+				}
+				body["msg_seq"] = a.reserveReplySeq(targetInfo, partSequence)
+			}
 		}
 		path := ""
 		switch targetInfo.kind {
@@ -434,6 +459,8 @@ func (a *QQOfficeAdapter) SendMarkdown(target string, markdown string) error {
 			path = "/v2/users/" + url.PathEscape(targetInfo.id) + "/messages"
 		case "group":
 			path = "/v2/groups/" + url.PathEscape(targetInfo.id) + "/messages"
+		case "channel":
+			path = "/channels/" + url.PathEscape(targetInfo.id) + "/messages"
 		default:
 			return fmt.Errorf("QQ 官方 Markdown 目标类型无效: %s", targetInfo.kind)
 		}
@@ -475,18 +502,32 @@ func (a *QQOfficeAdapter) reserveReplySeq(target qqOfficeMessageTarget, sequence
 }
 
 func (a *QQOfficeAdapter) SendImage(target string, imageURL string) error {
+	return a.sendMedia(target, imageURL, 1, "图片")
+}
+
+// SendVideo 发送 QQ 官方机器人视频消息。videoURL 必须是 QQ 开放平台可访问的 URL。
+func (a *QQOfficeAdapter) SendVideo(target string, videoURL string) error {
+	return a.sendMedia(target, videoURL, 2, "视频")
+}
+
+// SendAudio 发送 QQ 官方机器人音频消息。audioURL 必须是 QQ 开放平台可访问的 URL。
+func (a *QQOfficeAdapter) SendAudio(target string, audioURL string) error {
+	return a.sendMedia(target, audioURL, 3, "音频")
+}
+
+func (a *QQOfficeAdapter) sendMedia(target string, mediaURL string, fileType int, mediaName string) error {
 	targetInfo, err := parseQQOfficeMessageTarget(target)
 	if err != nil {
 		return err
 	}
-	imageURL = strings.TrimSpace(imageURL)
-	if imageURL == "" {
-		return fmt.Errorf("QQ 官方图片地址不能为空")
+	mediaURL = strings.TrimSpace(mediaURL)
+	if mediaURL == "" {
+		return fmt.Errorf("QQ 官方%s地址不能为空", mediaName)
 	}
 	if targetInfo.kind == "dms" {
-		return fmt.Errorf("QQ 官方 DMS 图片发送暂未实现")
+		return fmt.Errorf("QQ 官方 DMS %s发送暂未实现", mediaName)
 	}
-	media, err := a.uploadImageMedia(targetInfo, imageURL)
+	media, err := a.uploadMedia(targetInfo, mediaURL, fileType, mediaName)
 	if err != nil {
 		return err
 	}
@@ -507,14 +548,14 @@ func (a *QQOfficeAdapter) SendImage(target string, imageURL string) error {
 	default:
 		return fmt.Errorf("QQ 官方图片目标类型无效: %s", targetInfo.kind)
 	}
-	log.Printf("[发送][QQ官方][%s]：[图片] %s", target, imageURL)
+	log.Printf("[发送][QQ官方][%s]：[%s] %s", target, mediaName, mediaURL)
 	return a.callAPIWithPassiveFallback(path, body, targetInfo)
 }
 
-func (a *QQOfficeAdapter) uploadImageMedia(target qqOfficeMessageTarget, imageURL string) (qqOfficeMedia, error) {
+func (a *QQOfficeAdapter) uploadMedia(target qqOfficeMessageTarget, mediaURL string, fileType int, mediaName string) (qqOfficeMedia, error) {
 	body := map[string]interface{}{
-		"file_type": 1,
-		"url":       imageURL,
+		"file_type": fileType,
+		"url":       mediaURL,
 	}
 	if target.msgID != "" {
 		body["srv_send_msg"] = false
@@ -526,14 +567,14 @@ func (a *QQOfficeAdapter) uploadImageMedia(target qqOfficeMessageTarget, imageUR
 	case "group":
 		path = "/v2/groups/" + url.PathEscape(target.id) + "/files"
 	default:
-		return qqOfficeMedia{}, fmt.Errorf("QQ 官方图片上传目标类型无效: %s", target.kind)
+		return qqOfficeMedia{}, fmt.Errorf("QQ 官方%s上传目标类型无效: %s", mediaName, target.kind)
 	}
 	var media qqOfficeMedia
 	if err := a.callAPI(http.MethodPost, path, body, &media); err != nil {
 		return qqOfficeMedia{}, err
 	}
 	if strings.TrimSpace(media.FileInfo) == "" {
-		return qqOfficeMedia{}, fmt.Errorf("QQ 官方图片上传响应缺少 file_info")
+		return qqOfficeMedia{}, fmt.Errorf("QQ 官方%s上传响应缺少 file_info", mediaName)
 	}
 	return media, nil
 }
@@ -931,8 +972,182 @@ func (a *QQOfficeAdapter) handleDispatch(eventType string, data map[string]inter
 	}
 }
 
+func qqOfficeMessageContent(data map[string]interface{}) (string, []types.MessageMedia, bool) {
+	original := strings.TrimSpace(stringValue(data["content"]))
+	medias := qqOfficeMessageMedias(data)
+	mediaOnly := original == "" && len(medias) > 0
+	content := original
+	for _, media := range medias {
+		label := qqOfficeMediaLabel(media.Type)
+		if name := qqOfficeMediaName(data, media.URL); name != "" {
+			label = name
+		}
+		part := "[" + label + "]"
+		if strings.TrimSpace(media.URL) != "" {
+			part += "(" + media.URL + ")"
+		}
+		if content == "" {
+			content = part
+		} else {
+			content += " " + part
+		}
+	}
+	return strings.TrimSpace(content), medias, mediaOnly
+}
+
+func qqOfficeMessageMedias(data map[string]interface{}) []types.MessageMedia {
+	items := qqOfficeMessageAttachmentItems(data)
+	medias := make([]types.MessageMedia, 0, len(items))
+	seenURLs := make(map[string]struct{})
+	for _, item := range items {
+		mediaType := qqOfficeMediaType(stringValue(item["type"]), stringValue(item["content_type"]), stringValue(item["filename"]))
+		if mediaType == "" {
+			continue
+		}
+		mediaURL := strings.TrimSpace(stringValue(item["url"]))
+		if mediaURL == "" {
+			mediaURL = strings.TrimSpace(stringValue(item["proxy_url"]))
+		}
+		if mediaURL != "" {
+			if _, exists := seenURLs[mediaURL]; exists {
+				continue
+			}
+			seenURLs[mediaURL] = struct{}{}
+		}
+		medias = append(medias, types.MessageMedia{Type: mediaType, URL: mediaURL})
+	}
+	return medias
+}
+
+// qqOfficeMessageAttachmentItems collects attachments explicitly carried by the
+// current message and by an inline quoted message. QQ quote events use
+// msg_elements[0] (message_type=103); other gateway variants expose one of the
+// quoted message fields under message_reference.
+func qqOfficeMessageAttachmentItems(data map[string]interface{}) []map[string]interface{} {
+	items := make([]map[string]interface{}, 0)
+	appendRaw := func(raw interface{}) {
+		switch values := raw.(type) {
+		case []interface{}:
+			for _, value := range values {
+				if item, ok := value.(map[string]interface{}); ok {
+					items = append(items, item)
+				}
+			}
+		case []map[string]interface{}:
+			items = append(items, values...)
+		}
+	}
+	appendSource := func(source map[string]interface{}) {
+		if source == nil {
+			return
+		}
+		raw := source["attachments"]
+		if raw == nil {
+			raw = source["medias"]
+		}
+		appendRaw(raw)
+	}
+
+	appendSource(data)
+	for _, key := range []string{"message_reference", "reference", "quote", "referenced_message", "source_message"} {
+		reference, ok := data[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		appendSource(reference)
+		for _, nestedKey := range []string{"message", "referenced_message", "source_message"} {
+			quoted, ok := reference[nestedKey].(map[string]interface{})
+			if ok {
+				appendSource(quoted)
+			}
+		}
+	}
+
+	if qqOfficeIsQuoteMessage(data) {
+		switch elements := data["msg_elements"].(type) {
+		case []interface{}:
+			if len(elements) > 0 {
+				if element, ok := elements[0].(map[string]interface{}); ok {
+					appendSource(element)
+				}
+			}
+		case []map[string]interface{}:
+			if len(elements) > 0 {
+				appendSource(elements[0])
+			}
+		}
+	}
+	return items
+}
+
+func qqOfficeIsQuoteMessage(data map[string]interface{}) bool {
+	messageType, err := strconv.ParseInt(strings.TrimSpace(stringValue(data["message_type"])), 10, 64)
+	return err == nil && messageType == 103
+}
+
+func qqOfficeMediaType(declared, contentType, filename string) string {
+	declared = strings.ToLower(strings.TrimSpace(declared))
+	switch declared {
+	case types.MessageMediaTypeImage, types.MessageMediaTypeAudio, types.MessageMediaTypeVideo, types.MessageMediaTypeFile:
+		return declared
+	}
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	if strings.HasPrefix(contentType, "image/") {
+		return types.MessageMediaTypeImage
+	}
+	if strings.HasPrefix(contentType, "audio/") {
+		return types.MessageMediaTypeAudio
+	}
+	if strings.HasPrefix(contentType, "video/") {
+		return types.MessageMediaTypeVideo
+	}
+	ext := strings.ToLower(strings.TrimSpace(filename))
+	for suffix, mediaType := range map[string]string{
+		".jpg": types.MessageMediaTypeImage, ".jpeg": types.MessageMediaTypeImage, ".png": types.MessageMediaTypeImage, ".gif": types.MessageMediaTypeImage, ".webp": types.MessageMediaTypeImage,
+		".mp3": types.MessageMediaTypeAudio, ".wav": types.MessageMediaTypeAudio, ".m4a": types.MessageMediaTypeAudio,
+		".mp4": types.MessageMediaTypeVideo, ".mov": types.MessageMediaTypeVideo, ".webm": types.MessageMediaTypeVideo,
+	} {
+		if strings.HasSuffix(ext, suffix) {
+			return mediaType
+		}
+	}
+	return types.MessageMediaTypeFile
+}
+
+func qqOfficeMediaLabel(mediaType string) string {
+	switch mediaType {
+	case types.MessageMediaTypeImage:
+		return "图片"
+	case types.MessageMediaTypeAudio:
+		return "音频"
+	case types.MessageMediaTypeVideo:
+		return "视频"
+	default:
+		return "文件"
+	}
+}
+
+func qqOfficeMediaName(data map[string]interface{}, mediaURL string) string {
+	wantedURL := strings.TrimSpace(mediaURL)
+	if wantedURL == "" {
+		return ""
+	}
+	for _, item := range qqOfficeMessageAttachmentItems(data) {
+		itemURL := strings.TrimSpace(stringValue(item["url"]))
+		if itemURL == "" {
+			itemURL = strings.TrimSpace(stringValue(item["proxy_url"]))
+		}
+		if itemURL != wantedURL {
+			continue
+		}
+		name := strings.TrimSpace(stringValue(item["filename"]))
+		return strings.NewReplacer("[", "［", "]", "］", "(", "（", ")", "）").Replace(name)
+	}
+	return ""
+}
+
 func (a *QQOfficeAdapter) handleDirectMessage(data map[string]interface{}) {
-	content := strings.TrimSpace(stringValue(data["content"]))
+	content, medias, mediaOnly := qqOfficeMessageContent(data)
 	if content == "" {
 		log.Printf("[INFO][QQ官方] 忽略空 DMS 消息: id=%s guild=%s", stringValue(data["id"]), stringValue(data["guild_id"]))
 		return
@@ -941,6 +1156,7 @@ func (a *QQOfficeAdapter) handleDirectMessage(data map[string]interface{}) {
 	guildID := stringValue(data["guild_id"])
 	channelID := stringValue(data["channel_id"])
 	author, _ := data["author"].(map[string]interface{})
+	authorBot := qqOfficeAuthorIsBot(author)
 	userID := stringValue(author["id"])
 	authorName := stringValue(author["username"])
 	if authorName == "" {
@@ -948,10 +1164,13 @@ func (a *QQOfficeAdapter) handleDirectMessage(data map[string]interface{}) {
 	}
 
 	msg := &types.Message{
-		ID:       messageID,
-		Platform: qqOfficePlatform,
-		UserID:   userID,
-		Content:  content,
+		ID:        messageID,
+		Platform:  qqOfficePlatform,
+		UserID:    userID,
+		Nickname:  authorName,
+		Content:   content,
+		Medias:    medias,
+		MediaOnly: mediaOnly,
 		Metadata: map[string]string{
 			"message_type":          "dms",
 			"qq_office_guild_id":    guildID,
@@ -961,18 +1180,21 @@ func (a *QQOfficeAdapter) handleDirectMessage(data map[string]interface{}) {
 			"reply_target":          "dms_" + guildID + "|msg_" + messageID,
 		},
 	}
-	log.Printf("[接收][QQ官方][%s(DMS %s)]：%s", userID, guildID, content)
+	a.setQQOfficeBotMetadata(msg.Metadata, authorBot, userID)
+	log.Printf("[接收][QQ官方][%s%s(DMS %s)]：%s", userID, qqOfficeNicknameSuffix(authorName), guildID, content)
 	a.dispatchMessage(msg)
 }
 
 func (a *QQOfficeAdapter) handleC2CMessage(data map[string]interface{}) {
-	content := strings.TrimSpace(stringValue(data["content"]))
+	content, medias, mediaOnly := qqOfficeMessageContent(data)
 	if content == "" {
 		log.Printf("[INFO][QQ官方] 忽略空 C2C 消息: id=%s", stringValue(data["id"]))
 		return
 	}
 	messageID := stringValue(data["id"])
 	author, _ := data["author"].(map[string]interface{})
+	authorBot := qqOfficeAuthorIsBot(author)
+	authorName := qqOfficeAuthorName(author)
 	userOpenID := stringValue(author["user_openid"])
 	if userOpenID == "" {
 		userOpenID = stringValue(author["id"])
@@ -983,10 +1205,13 @@ func (a *QQOfficeAdapter) handleC2CMessage(data map[string]interface{}) {
 	}
 
 	msg := &types.Message{
-		ID:       messageID,
-		Platform: qqOfficePlatform,
-		UserID:   userOpenID,
-		Content:  content,
+		ID:        messageID,
+		Platform:  qqOfficePlatform,
+		UserID:    userOpenID,
+		Nickname:  authorName,
+		Content:   content,
+		Medias:    medias,
+		MediaOnly: mediaOnly,
 		Metadata: map[string]string{
 			"message_type":          "c2c",
 			"qq_office_msg_id":      messageID,
@@ -994,7 +1219,8 @@ func (a *QQOfficeAdapter) handleC2CMessage(data map[string]interface{}) {
 			"reply_target":          "user_" + userOpenID + "|msg_" + messageID,
 		},
 	}
-	log.Printf("[接收][QQ官方][%s(C2C)]：%s", userOpenID, content)
+	a.setQQOfficeBotMetadata(msg.Metadata, authorBot, userOpenID)
+	log.Printf("[接收][QQ官方][%s%s(C2C)]：%s", userOpenID, qqOfficeNicknameSuffix(authorName), content)
 	a.dispatchMessage(msg)
 }
 
@@ -1003,7 +1229,7 @@ func (a *QQOfficeAdapter) handleGroupAtMessage(data map[string]interface{}) {
 }
 
 func (a *QQOfficeAdapter) handleGroupMessage(eventType string, data map[string]interface{}) {
-	content := strings.TrimSpace(stringValue(data["content"]))
+	content, medias, mediaOnly := qqOfficeMessageContent(data)
 	if content == "" {
 		log.Printf("[INFO][QQ官方] 忽略空群聊消息: id=%s group=%s", stringValue(data["id"]), stringValue(data["group_openid"]))
 		return
@@ -1019,6 +1245,7 @@ func (a *QQOfficeAdapter) handleGroupMessage(eventType string, data map[string]i
 	if memberOpenID == "" {
 		memberOpenID = stringValue(author["user_openid"])
 	}
+	authorName := qqOfficeAuthorName(author)
 	if memberOpenID == "" {
 		memberOpenID = stringValue(author["id"])
 	}
@@ -1028,11 +1255,14 @@ func (a *QQOfficeAdapter) handleGroupMessage(eventType string, data map[string]i
 	}
 
 	msg := &types.Message{
-		ID:       messageID,
-		Platform: qqOfficePlatform,
-		UserID:   memberOpenID,
-		GroupID:  groupOpenID,
-		Content:  content,
+		ID:        messageID,
+		Platform:  qqOfficePlatform,
+		UserID:    memberOpenID,
+		Nickname:  authorName,
+		GroupID:   groupOpenID,
+		Content:   content,
+		Medias:    medias,
+		MediaOnly: mediaOnly,
 		Metadata: map[string]string{
 			"message_type":            "group",
 			"qq_office_event_type":    eventType,
@@ -1043,47 +1273,86 @@ func (a *QQOfficeAdapter) handleGroupMessage(eventType string, data map[string]i
 			"reply_target":            "group_" + groupOpenID + "|msg_" + messageID + "|at_" + memberOpenID,
 		},
 	}
-	log.Printf("[接收][QQ官方][%s(群 %s)]：%s", memberOpenID, groupOpenID, content)
+	a.setQQOfficeBotMetadata(msg.Metadata, qqOfficeAuthorIsBot(author), memberOpenID)
+	log.Printf("[接收][QQ官方][%s%s(群 %s)]：%s", memberOpenID, qqOfficeNicknameSuffix(authorName), groupOpenID, content)
 	a.dispatchMessage(msg)
 }
 
 func (a *QQOfficeAdapter) handleChannelMessage(eventType string, data map[string]interface{}) {
-	content := strings.TrimSpace(stringValue(data["content"]))
+	content, medias, mediaOnly := qqOfficeMessageContent(data)
 	messageID := stringValue(data["id"])
 	channelID := stringValue(data["channel_id"])
 	if content == "" || messageID == "" || channelID == "" {
 		return
 	}
 	author, _ := data["author"].(map[string]interface{})
-	if bot, ok := author["bot"].(bool); ok && bot {
-		return
-	}
+	authorBot := qqOfficeAuthorIsBot(author)
 	userID := stringValue(author["id"])
 	if userID == "" {
 		userID = stringValue(author["user_id"])
 	}
+	authorName := qqOfficeAuthorName(author)
 	if userID == "" {
 		return
 	}
 	guildID := stringValue(data["guild_id"])
 	msg := &types.Message{
-		ID:       messageID,
-		Platform: qqOfficePlatform,
-		UserID:   userID,
-		GroupID:  channelID,
-		Content:  content,
+		ID:        messageID,
+		Platform:  qqOfficePlatform,
+		UserID:    userID,
+		Nickname:  authorName,
+		GroupID:   channelID,
+		Content:   content,
+		Medias:    medias,
+		MediaOnly: mediaOnly,
 		Metadata: map[string]string{
 			"message_type":          "channel",
 			"qq_office_event_type":  eventType,
 			"qq_office_guild_id":    guildID,
 			"qq_office_channel_id":  channelID,
 			"qq_office_msg_id":      messageID,
-			"qq_office_author_name": stringValue(author["username"]),
+			"qq_office_author_name": authorName,
 			"reply_target":          "channel_" + channelID + "|msg_" + messageID,
 		},
 	}
-	log.Printf("[接收][QQ官方][%s(频道 %s)]：%s", userID, channelID, content)
+	a.setQQOfficeBotMetadata(msg.Metadata, authorBot, userID)
+	log.Printf("[接收][QQ官方][%s%s(频道 %s)]：%s", userID, qqOfficeNicknameSuffix(authorName), channelID, content)
 	a.dispatchMessage(msg)
+}
+
+func qqOfficeAuthorName(author map[string]interface{}) string {
+	name := stringValue(author["username"])
+	if name == "" {
+		name = stringValue(author["nick"])
+	}
+	return strings.TrimSpace(name)
+}
+
+func qqOfficeNicknameSuffix(nickname string) string {
+	if strings.TrimSpace(nickname) == "" {
+		return ""
+	}
+	return "<" + strings.TrimSpace(nickname) + ">"
+}
+
+func qqOfficeAuthorIsBot(author map[string]interface{}) bool {
+	if author == nil {
+		return false
+	}
+	bot, ok := author["bot"].(bool)
+	return ok && bot
+}
+
+func (a *QQOfficeAdapter) setQQOfficeBotMetadata(metadata map[string]string, isBot bool, userID string) {
+	if !isBot || metadata == nil {
+		return
+	}
+	metadata["is_bot"] = "true"
+	metadata["sender_type"] = "bot"
+	metadata["bot_id"] = strings.TrimSpace(userID)
+	metadata["qq_office_bot_id"] = strings.TrimSpace(userID)
+	metadata["bot_identity_label"] = "机器人 App ID"
+	metadata["bot_identity_value"] = strings.TrimSpace(a.appID)
 }
 
 func (a *QQOfficeAdapter) handleInteractionCreate(data map[string]interface{}) {
@@ -1490,6 +1759,34 @@ func qqOfficeGroupAtContent(target qqOfficeMessageTarget, content string) string
 		return content
 	}
 	return fmt.Sprintf("<@%s>\n%s", strings.TrimSpace(target.atUser), content)
+}
+
+func escapeQQOfficePlainTextMarkdown(text string) string {
+	// QQ's Markdown renderer does not reliably honor backslash escapes. HTML
+	// numeric entities are decoded after Markdown parsing, so punctuation is
+	// displayed literally without changing copied text or adding hidden chars.
+	return strings.NewReplacer(
+		"&", "&#38;",
+		"\\", "&#92;",
+		"`", "&#96;",
+		"*", "&#42;",
+		"_", "&#95;",
+		"~", "&#126;",
+		"{", "&#123;",
+		"}", "&#125;",
+		"[", "&#91;",
+		"]", "&#93;",
+		"(", "&#40;",
+		")", "&#41;",
+		"#", "&#35;",
+		"!", "&#33;",
+		"|", "&#124;",
+		"<", "&#60;",
+		">", "&#62;",
+		"+", "&#43;",
+		"-", "&#45;",
+		".", "&#46;",
+	).Replace(text)
 }
 
 func parseQQOfficeDMSTarget(target string) (string, string, error) {

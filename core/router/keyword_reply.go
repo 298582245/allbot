@@ -35,6 +35,7 @@ type KeywordReplyManager struct {
 	releaseClient     updater.ReleaseClient
 	updateHandler     UpdateHandler
 	restartHandler    builtin.RestartHandler
+	mediaResolver     func(string) (string, func())
 	restartMu         sync.Mutex
 	restartRequested  bool
 }
@@ -79,6 +80,17 @@ func (m *KeywordReplyManager) SetRestartHandler(handler func(RestartRequest) err
 	defer m.restartMu.Unlock()
 	m.restartHandler = handler
 	m.restartRequested = false
+}
+
+func (m *KeywordReplyManager) SetMediaResolver(resolver func(string) (string, func())) {
+	m.mediaResolver = resolver
+}
+
+func (m *KeywordReplyManager) prepareMedia(value string) (string, func()) {
+	if m.mediaResolver == nil {
+		return value, nil
+	}
+	return m.mediaResolver(value)
 }
 
 func (m *KeywordReplyManager) Handle(msg *types.Message) bool {
@@ -143,9 +155,24 @@ func (m *KeywordReplyManager) reply(item *config.KeywordReply, msg *types.Messag
 	}
 	switch item.ReplyType {
 	case "image":
-		return adp.SendImage(target, item.Content)
+		resolved, cleanup := m.prepareMedia(item.Content)
+		err := adp.SendImage(target, resolved)
+		if err == nil && cleanup != nil {
+			cleanup()
+		}
+		return err
 	case "audio":
-		return adp.SendFile(target, item.Content)
+		resolved, cleanup := m.prepareMedia(item.Content)
+		var err error
+		if sender, ok := adp.(adapter.AudioSender); ok {
+			err = sender.SendAudio(target, resolved)
+		} else {
+			err = adp.SendFile(target, resolved)
+		}
+		if err == nil && cleanup != nil {
+			cleanup()
+		}
+		return err
 	default:
 		return adp.SendMessage(target, formatReplyText(adp, msg, item.Content))
 	}
@@ -187,10 +214,31 @@ func (m *KeywordReplyManager) replyBuiltin(keyword string, msg *types.Message) e
 			return sendReplyButtonsWithFallback(adp, msg, target, text, buttons)
 		},
 		SendImage: func(imageURL string) error {
-			return adp.SendImage(target, imageURL)
+			resolved, cleanup := m.prepareMedia(imageURL)
+			err := adp.SendImage(target, resolved)
+			if err == nil && cleanup != nil {
+				cleanup()
+			}
+			return err
 		},
 		SendRich: func(message types.RichMessage) error {
-			return sendReplyRichWithFallback(adp, msg, target, message)
+			cleanups := make([]func(), 0)
+			for index, part := range message.Parts {
+				if strings.EqualFold(strings.TrimSpace(part.Type), "image") && strings.TrimSpace(part.URL) != "" {
+					resolved, cleanup := m.prepareMedia(part.URL)
+					message.Parts[index].URL = resolved
+					if cleanup != nil {
+						cleanups = append(cleanups, cleanup)
+					}
+				}
+			}
+			err := sendReplyRichWithFallback(adp, msg, target, message)
+			if err == nil {
+				for _, cleanup := range cleanups {
+					cleanup()
+				}
+			}
+			return err
 		},
 		ReserveRestart:   m.reserveRestart,
 		ReleaseRestart:   m.releaseRestart,

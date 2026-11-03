@@ -82,7 +82,7 @@ func (d *Database) GetUserDetail(unionID string) (*UserDetail, error) {
 
 func (d *Database) listAllUserAccounts(unionID string) ([]*UserAccountSummary, error) {
 	rows, err := d.db.Query(`
-		SELECT ua.id, ua.platform, ua.user_id, ua.union_id, COALESCE(up.points, 0), u.disabled,
+		SELECT ua.id, ua.platform, ua.user_id, ua.nickname, ua.union_id, COALESCE(up.points, 0), u.disabled,
 			CASE WHEN (SELECT COUNT(*) FROM user_accounts duplicate
 				WHERE duplicate.union_id = ua.union_id AND duplicate.platform = ua.platform) > 1 THEN 1 ELSE 0 END,
 			ua.created_at, ua.updated_at
@@ -124,8 +124,8 @@ func (d *Database) ListUserAccounts(query UserQuery, unionID ...string) ([]*User
 	}
 	if keyword := strings.TrimSpace(query.Keyword); keyword != "" {
 		like := "%" + escapeLike(keyword) + "%"
-		clauses = append(clauses, `(ua.user_id LIKE ? ESCAPE '\' OR ua.union_id LIKE ? ESCAPE '\')`)
-		args = append(args, like, like)
+		clauses = append(clauses, `(ua.user_id LIKE ? ESCAPE '\' OR ua.nickname LIKE ? ESCAPE '\' OR ua.union_id LIKE ? ESCAPE '\')`)
+		args = append(args, like, like, like)
 	}
 	where := ""
 	if len(clauses) > 0 {
@@ -138,7 +138,7 @@ func (d *Database) ListUserAccounts(query UserQuery, unionID ...string) ([]*User
 	}
 	limit, offset := normalizeLimitOffset(query.Limit, query.Offset)
 	rows, err := d.db.Query(`
-		SELECT ua.id, ua.platform, ua.user_id, ua.union_id, COALESCE(up.points, 0), u.disabled,
+		SELECT ua.id, ua.platform, ua.user_id, ua.nickname, ua.union_id, COALESCE(up.points, 0), u.disabled,
 			CASE WHEN (SELECT COUNT(*) FROM user_accounts duplicate
 				WHERE duplicate.union_id = ua.union_id AND duplicate.platform = ua.platform) > 1 THEN 1 ELSE 0 END,
 			ua.created_at, ua.updated_at
@@ -308,7 +308,7 @@ func scanUserSummary(row interface{ Scan(...interface{}) error }) (*UserSummary,
 func scanUserAccountSummary(row interface{ Scan(...interface{}) error }) (*UserAccountSummary, error) {
 	var item UserAccountSummary
 	var disabled, duplicate int
-	if err := row.Scan(&item.ID, &item.Platform, &item.UserID, &item.UnionID, &item.Points, &disabled, &duplicate, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.Platform, &item.UserID, &item.Nickname, &item.UnionID, &item.Points, &disabled, &duplicate, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return nil, err
 	}
 	item.Disabled = disabled == 1

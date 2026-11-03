@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -111,6 +112,28 @@ type ImageMessageAction struct {
 	URL       string
 }
 
+type AudioMessageAction struct {
+	Platform  string
+	AdapterID string
+	UserID    string
+	GroupID   string
+	UnionID   string
+	URL       string
+}
+
+type VideoMessageAction struct {
+	Platform  string
+	AdapterID string
+	UserID    string
+	GroupID   string
+	UnionID   string
+	URL       string
+}
+
+// AudioSenderFunc and VideoSenderFunc are current-message media callbacks.
+type AudioSenderFunc func(string) error
+type VideoSenderFunc func(string) error
+
 type MuteAction struct {
 	Platform        string
 	AdapterID       string
@@ -124,6 +147,8 @@ type OpenAPIExecutors struct {
 	SendMessage     func(string, SendMessageAction) PluginUserResult
 	SendRichMessage func(string, RichMessageAction) PluginUserResult
 	SendImage       func(string, ImageMessageAction) PluginUserResult
+	SendAudio       func(string, AudioMessageAction) PluginUserResult
+	SendVideo       func(string, VideoMessageAction) PluginUserResult
 }
 
 type PluginWebResponse struct {
@@ -150,20 +175,21 @@ type PluginConfigAction struct {
 }
 
 type ScheduledTaskAction struct {
-	Action      string
-	TaskKey     string
-	TaskKeys    []string
-	Name        string
-	Description string
-	Enabled     bool
-	Pinned      bool
-	Cron        string
-	Platform    string
-	AdapterID   string
-	UserID      string
-	GroupID     string
-	Content     string
-	MaxCount    int
+	Action         string
+	TaskKey        string
+	TaskKeys       []string
+	Name           string
+	Description    string
+	Enabled        bool
+	Pinned         bool
+	DeleteAfterRun bool
+	Cron           string
+	Platform       string
+	AdapterID      string
+	UserID         string
+	GroupID        string
+	Content        string
+	MaxCount       int
 }
 
 type PluginAccountAction struct {
@@ -443,7 +469,7 @@ func (m *Manager) TogglePlugin(pluginID string, enabled bool) error {
 		return fmt.Errorf("plugin not found: %s", pluginID)
 	}
 
-	if err := m.updatePluginConfigValue(pluginID, "enabled", enabled); err != nil {
+	if err := updatePluginSystemConfigValue(filepath.Join(m.pluginDir, pluginID), "enabled", enabled); err != nil {
 		return err
 	}
 
@@ -459,30 +485,12 @@ func (m *Manager) SetPluginPinned(pluginID string, pinned bool) error {
 		return fmt.Errorf("plugin not found: %s", pluginID)
 	}
 
-	if err := m.updatePluginConfigValue(pluginID, "pinned", pinned); err != nil {
+	if err := updatePluginSystemConfigValue(filepath.Join(m.pluginDir, pluginID), "pinned", pinned); err != nil {
 		return err
 	}
 
 	process.Plugin.Pinned = pinned
 	return nil
-}
-
-func (m *Manager) updatePluginConfigValue(pluginID, key string, value interface{}) error {
-	configPath := filepath.Join(m.pluginDir, pluginID, "plugin.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return err
-	}
-	var config map[string]interface{}
-	if err := json.Unmarshal(data, &config); err != nil {
-		return err
-	}
-	config[key] = value
-	newData, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(configPath, newData, 0644)
 }
 
 func (m *Manager) ReloadPlugin(pluginID string) error {
@@ -509,21 +517,8 @@ func (m *Manager) ReloadPlugin(pluginID string) error {
 }
 
 func (m *Manager) SavePluginAccessControl(pluginID string, accessControl types.AccessControlConfig) error {
-	configPath := filepath.Join(m.pluginDir, pluginID, "plugin.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return err
-	}
-	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	raw["access_control"] = accessControl
-	updated, err := json.MarshalIndent(raw, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(configPath, updated, 0644); err != nil {
+	pluginPath := filepath.Join(m.pluginDir, pluginID)
+	if err := updatePluginSystemConfigValue(pluginPath, "access_control", accessControl); err != nil {
 		return err
 	}
 	return m.ReloadPlugin(pluginID)
@@ -620,7 +615,7 @@ func (b *pluginProcessLogBatch) Flush() {
 
 func isPluginProtocolAction(action string) bool {
 	switch action {
-	case "reply", "send_markdown", "send_rich", "send_buttons", "send_image", "send_file", "listen", "delete_message", "mute", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "send_rich_message", "send_image_message", "get_union_id", "list_platform_admins", "set_access_control", "set_user_config", "set_scheduled_task", "sync_scheduled_tasks", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "web_response", "done":
+	case "reply", "send_markdown", "send_rich", "send_buttons", "send_image", "send_audio", "send_video", "send_file", "listen", "delete_message", "mute", "set_data_view", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "fake_message", "send_message", "send_rich_message", "send_image_message", "send_audio_message", "send_video_message", "get_union_id", "list_platform_admins", "set_access_control", "set_user_config", "set_scheduled_task", "sync_scheduled_tasks", "account_save", "account_list", "account_delete", "auth_check", "auth_grant", "auth_revoke", "points_consume", "points_add", "payment_wait", "run_script", "web_response", "done":
 		return true
 	default:
 		return false
@@ -629,7 +624,7 @@ func isPluginProtocolAction(action string) bool {
 
 func isOpenAPIProtocolAction(action string) bool {
 	switch action {
-	case "http_response", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "send_message", "send_rich_message", "send_image_message", "done":
+	case "http_response", "db_create_table", "db_query", "db_insert", "db_update", "db_delete", "db_clear", "send_message", "send_rich_message", "send_image_message", "send_audio_message", "send_video_message", "done":
 		return true
 	default:
 		return false
@@ -723,6 +718,10 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 	var replyRichFunc func(types.RichMessage) error
 	var sendRichMessageFunc func(string, RichMessageAction) PluginUserResult
 	var sendImageMessageFunc func(string, ImageMessageAction) PluginUserResult
+	var sendAudioMessageFunc func(string, AudioMessageAction) PluginUserResult
+	var sendVideoMessageFunc func(string, VideoMessageAction) PluginUserResult
+	var audioFunc AudioSenderFunc
+	var videoFunc VideoSenderFunc
 	var sendButtonsFunc func(string, [][]types.ButtonOption) error
 	var deleteMessageFunc func() PluginUserResult
 	var muteFunc func(MuteAction) PluginUserResult
@@ -746,6 +745,22 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 		case func(string, ImageMessageAction) PluginUserResult:
 			if sendImageMessageFunc == nil {
 				sendImageMessageFunc = fn
+			}
+		case func(string, AudioMessageAction) PluginUserResult:
+			if sendAudioMessageFunc == nil {
+				sendAudioMessageFunc = fn
+			}
+		case func(string, VideoMessageAction) PluginUserResult:
+			if sendVideoMessageFunc == nil {
+				sendVideoMessageFunc = fn
+			}
+		case AudioSenderFunc:
+			if audioFunc == nil {
+				audioFunc = fn
+			}
+		case VideoSenderFunc:
+			if videoFunc == nil {
+				videoFunc = fn
 			}
 		case func(string, [][]types.ButtonOption) error:
 			if sendButtonsFunc == nil {
@@ -873,6 +888,7 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 			Subject        string                     `json:"subject"`
 			Enabled        bool                       `json:"enabled"`
 			Pinned         bool                       `json:"pinned"`
+			DeleteAfterRun bool                       `json:"delete_after_run"`
 			MaxCount       int                        `json:"max_count"`
 			Platform       string                     `json:"platform"`
 			AdapterID      string                     `json:"adapter_id"`
@@ -959,6 +975,18 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 					log.Printf("[SYSTEM] Plugin %s send image failed: %v", plugin.ID, err)
 				}
 			}
+		case "send_audio":
+			if audioFunc != nil && action.URL != "" {
+				if err := audioFunc(action.URL); err != nil {
+					log.Printf("[SYSTEM] Plugin %s send audio failed: %v", plugin.ID, err)
+				}
+			}
+		case "send_video":
+			if videoFunc != nil && action.URL != "" {
+				if err := videoFunc(action.URL); err != nil {
+					log.Printf("[SYSTEM] Plugin %s send video failed: %v", plugin.ID, err)
+				}
+			}
 		case "send_file":
 			if fileFunc != nil && action.Path != "" {
 				if err := fileFunc(action.Path); err != nil {
@@ -1041,6 +1069,18 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 				result = sendImageMessageFunc(plugin.ID, ImageMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, URL: action.URL})
 			}
 			writePluginUserResult(stdin, "send_image_message_response", action.RequestID, result)
+		case "send_audio_message":
+			result := PluginUserResult{Success: false, Error: "音频消息发送器不可用"}
+			if sendAudioMessageFunc != nil {
+				result = sendAudioMessageFunc(plugin.ID, AudioMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, URL: action.URL})
+			}
+			writePluginUserResult(stdin, "send_audio_message_response", action.RequestID, result)
+		case "send_video_message":
+			result := PluginUserResult{Success: false, Error: "视频消息发送器不可用"}
+			if sendVideoMessageFunc != nil {
+				result = sendVideoMessageFunc(plugin.ID, VideoMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, URL: action.URL})
+			}
+			writePluginUserResult(stdin, "send_video_message_response", action.RequestID, result)
 		case "get_union_id":
 			result := PluginUserResult{Success: false, Error: "用户身份执行器不可用"}
 			if userFunc != nil {
@@ -1076,7 +1116,7 @@ func (m *Manager) ExecutePlugin(plugin *types.Plugin, pluginPath string, message
 		case "set_scheduled_task", "sync_scheduled_tasks":
 			result := PluginUserResult{Success: false, Error: "定时任务执行器不可用"}
 			if scheduleFunc != nil {
-				result = scheduleFunc(plugin.ID, ScheduledTaskAction{Action: action.Action, TaskKey: action.TaskKey, TaskKeys: action.TaskKeys, Name: action.Name, Description: action.Description, Enabled: action.Enabled, Pinned: action.Pinned, Cron: action.Cron, Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, Content: action.Content, MaxCount: action.MaxCount})
+				result = scheduleFunc(plugin.ID, ScheduledTaskAction{Action: action.Action, TaskKey: action.TaskKey, TaskKeys: action.TaskKeys, Name: action.Name, Description: action.Description, Enabled: action.Enabled, Pinned: action.Pinned, DeleteAfterRun: action.DeleteAfterRun, Cron: action.Cron, Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, Content: action.Content, MaxCount: action.MaxCount})
 			}
 			response, _ := json.Marshal(map[string]interface{}{"action": "scheduled_task_response", "request_id": action.RequestID, "success": result.Success, "error": result.Error, "data": result.Data})
 			response = append(response, '\n')
@@ -1281,11 +1321,11 @@ func (m *Manager) ExecutePluginOpenAPI(plugin *types.Plugin, pluginPath string, 
 
 func (m *Manager) ExecutePluginWeb(plugin *types.Plugin, pluginPath string, payload []byte, dbFunc func(string, PluginDBAction) PluginDBResult, sendMessageFunc func(string, SendMessageAction) PluginUserResult, options ...OpenAPIExecutors) (PluginWebResponse, error) {
 	executors := firstOpenAPIExecutors(options)
-	response, err := m.executePluginWebViaDirect(plugin, pluginPath, payload, dbFunc, sendMessageFunc, executors.SendRichMessage, executors.SendImage)
+	response, err := m.executePluginWebViaDirect(plugin, pluginPath, payload, dbFunc, sendMessageFunc, executors.SendRichMessage, executors.SendImage, executors.SendAudio, executors.SendVideo)
 	return response, err
 }
 
-func (m *Manager) executePluginWebViaDirect(plugin *types.Plugin, pluginPath string, payload []byte, dbFunc func(string, PluginDBAction) PluginDBResult, sendMessageFunc func(string, SendMessageAction) PluginUserResult, sendRichMessageFunc func(string, RichMessageAction) PluginUserResult, sendImageMessageFunc func(string, ImageMessageAction) PluginUserResult) (PluginWebResponse, error) {
+func (m *Manager) executePluginWebViaDirect(plugin *types.Plugin, pluginPath string, payload []byte, dbFunc func(string, PluginDBAction) PluginDBResult, sendMessageFunc func(string, SendMessageAction) PluginUserResult, sendRichMessageFunc func(string, RichMessageAction) PluginUserResult, sendImageMessageFunc func(string, ImageMessageAction) PluginUserResult, sendAudioMessageFunc func(string, AudioMessageAction) PluginUserResult, sendVideoMessageFunc func(string, VideoMessageAction) PluginUserResult) (PluginWebResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), pluginRequestExecutionTimeout)
 	defer cancel()
 	cmd, err := m.newDirectCommandContext(ctx, plugin, pluginPath)
@@ -1405,6 +1445,18 @@ func (m *Manager) executePluginWebViaDirect(plugin *types.Plugin, pluginPath str
 				result = sendImageMessageFunc(plugin.ID, ImageMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, URL: action.URL})
 			}
 			writePluginUserResult(stdin, "send_image_message_response", action.RequestID, result)
+		case "send_audio_message":
+			result := PluginUserResult{Success: false, Error: "音频消息发送器不可用"}
+			if sendAudioMessageFunc != nil {
+				result = sendAudioMessageFunc(plugin.ID, AudioMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, URL: action.URL})
+			}
+			writePluginUserResult(stdin, "send_audio_message_response", action.RequestID, result)
+		case "send_video_message":
+			result := PluginUserResult{Success: false, Error: "视频消息发送器不可用"}
+			if sendVideoMessageFunc != nil {
+				result = sendVideoMessageFunc(plugin.ID, VideoMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, URL: action.URL})
+			}
+			writePluginUserResult(stdin, "send_video_message_response", action.RequestID, result)
 		case "done":
 			if !action.Success && action.Error != "" {
 				_ = waitPluginProcess(cmd, stderrDone)
@@ -1443,6 +1495,8 @@ func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string,
 	}
 	sendRichMessageFunc := executors.SendRichMessage
 	sendImageMessageFunc := executors.SendImage
+	sendAudioMessageFunc := executors.SendAudio
+	sendVideoMessageFunc := executors.SendVideo
 	maskedEndpoint := endpoint
 	if maskedEndpoint.Token != "" {
 		maskedEndpoint.Token = "***"
@@ -1580,6 +1634,18 @@ func (m *Manager) ExecuteOpenAPI(endpoint types.OpenAPIEndpoint, workDir string,
 				result = sendImageMessageFunc(endpoint.ID, ImageMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, URL: action.URL})
 			}
 			writePluginUserResult(stdin, "send_image_message_response", action.RequestID, result)
+		case "send_audio_message":
+			result := PluginUserResult{Success: false, Error: "音频消息发送器不可用"}
+			if sendAudioMessageFunc != nil {
+				result = sendAudioMessageFunc(endpoint.ID, AudioMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, URL: action.URL})
+			}
+			writePluginUserResult(stdin, "send_audio_message_response", action.RequestID, result)
+		case "send_video_message":
+			result := PluginUserResult{Success: false, Error: "视频消息发送器不可用"}
+			if sendVideoMessageFunc != nil {
+				result = sendVideoMessageFunc(endpoint.ID, VideoMessageAction{Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, UnionID: action.UnionID, URL: action.URL})
+			}
+			writePluginUserResult(stdin, "send_video_message_response", action.RequestID, result)
 		case "done":
 			if !action.Success && action.Error != "" {
 				_ = waitPluginProcess(cmd, stderrDone)
@@ -2337,6 +2403,7 @@ func (m *Manager) ValidatePluginConfig(pluginPath, pluginID string) (*types.Plug
 		Trigger:           config.Trigger,
 		TriggerRegex:      triggerRegex,
 		Enabled:           config.Enabled,
+		AcceptBotMessages: config.AcceptBotMessages,
 		UserConfig:        config.UserConfig,
 		AccessControl:     pluginAccessControl(config.AccessControl),
 		OpenAPI:           normalizeOpenAPIConfig(config.OpenAPI, config.Runtime),
@@ -2370,7 +2437,7 @@ func readPluginConfigWithData(pluginPath string) (types.PluginConfig, bool, erro
 	return config, hasData, nil
 }
 
-// ReadPluginConfigDocument reads plugin.json and overlays persisted user_config values.
+// ReadPluginConfigDocument reads plugin.json and overlays persisted system and user config values.
 func ReadPluginConfigDocument(pluginPath string) (map[string]interface{}, error) {
 	data, err := os.ReadFile(filepath.Join(pluginPath, "plugin.json"))
 	if err != nil {
@@ -2387,21 +2454,30 @@ func ReadPluginConfigDocument(pluginPath string) (map[string]interface{}, error)
 	if _, err := mergePluginData(pluginPath, &config); err != nil {
 		return nil, err
 	}
+	merged, err := pluginConfigMap(config)
+	if err != nil {
+		return nil, err
+	}
+	for key := range pluginSystemConfigKeys {
+		if value, ok := merged[key]; ok {
+			raw[key] = value
+		}
+	}
 	if config.UserConfig != nil {
 		raw["user_config"] = config.UserConfig
 	}
 	return raw, nil
 }
 
-// SavePluginData persists only user-configured values that still have a field in plugin.json.
+// SavePluginData persists user-configured values and preserves system_config.
 func SavePluginData(pluginPath string, schema []types.PluginUserConfigField, values map[string]interface{}) error {
 	config := types.PluginConfig{UserConfigSchema: schema, UserConfig: values}
 	filtered := filterPluginUserConfig(config)
-	data, err := json.MarshalIndent(map[string]interface{}{"user_config": filtered}, "", "  ")
+	systemConfig, err := readSavedPluginSystemConfig(pluginPath)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(pluginPath, PluginDataFileName), data, 0644)
+	return writePluginData(pluginPath, systemConfig, filtered)
 }
 
 func mergePluginData(pluginPath string, config *types.PluginConfig) (bool, error) {
@@ -2420,11 +2496,12 @@ func mergePluginData(pluginPath string, config *types.PluginConfig) (bool, error
 	if err != nil {
 		return false, err
 	}
-	var saved struct {
-		UserConfig map[string]interface{} `json:"user_config"`
+	saved, err := parsePluginData(data)
+	if err != nil {
+		return false, err
 	}
-	if err := json.Unmarshal(data, &saved); err != nil {
-		return false, fmt.Errorf("plugin.data 无效: %w", err)
+	if err := applyPluginSystemConfig(config, saved.SystemConfig); err != nil {
+		return false, err
 	}
 	for key, value := range saved.UserConfig {
 		if _, ok := allowed[key]; ok {
@@ -2440,6 +2517,173 @@ func migrateLegacyPluginData(pluginPath string) error {
 		return err
 	}
 	return SavePluginData(pluginPath, config.UserConfigSchema, config.UserConfig)
+}
+
+var pluginSystemConfigKeys = map[string]struct{}{
+	"name": {}, "version": {}, "runtime": {}, "entry": {}, "enabled": {}, "pinned": {},
+	"runtime_profile": {}, "trigger": {}, "priority": {},
+	"platforms": {}, "allowed_adapter_ids": {}, "accept_bot_messages": {},
+	"access_control": {}, "open_api": {}, "script_env": {}, "web_ui": {}, "web_chat": {},
+}
+
+// SystemConfigKeys returns the plugin fields whose user overrides belong in plugin.data.
+func SystemConfigKeys() map[string]struct{} {
+	keys := make(map[string]struct{}, len(pluginSystemConfigKeys))
+	for key := range pluginSystemConfigKeys {
+		keys[key] = struct{}{}
+	}
+	return keys
+}
+
+type pluginData struct {
+	SystemConfig map[string]interface{} `json:"system_config"`
+	UserConfig   map[string]interface{} `json:"user_config"`
+}
+
+func parsePluginData(data []byte) (pluginData, error) {
+	var saved pluginData
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return saved, fmt.Errorf("plugin.data 无效: %w", err)
+	}
+	if saved.SystemConfig == nil {
+		saved.SystemConfig = make(map[string]interface{})
+	}
+	if saved.UserConfig == nil {
+		saved.UserConfig = make(map[string]interface{})
+	}
+	return saved, nil
+}
+
+func readPluginData(pluginPath string) (pluginData, bool, error) {
+	data, err := os.ReadFile(filepath.Join(pluginPath, PluginDataFileName))
+	if os.IsNotExist(err) {
+		return pluginData{SystemConfig: map[string]interface{}{}, UserConfig: map[string]interface{}{}}, false, nil
+	}
+	if err != nil {
+		return pluginData{}, false, err
+	}
+	saved, err := parsePluginData(data)
+	return saved, true, err
+}
+
+func readSavedPluginSystemConfig(pluginPath string) (map[string]interface{}, error) {
+	saved, _, err := readPluginData(pluginPath)
+	return saved.SystemConfig, err
+}
+
+func writePluginData(pluginPath string, systemConfig, userConfig map[string]interface{}) error {
+	data, err := json.MarshalIndent(pluginData{SystemConfig: systemConfig, UserConfig: userConfig}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(pluginPath, PluginDataFileName), data, 0644)
+}
+
+// SavePluginSystemConfig persists system-owned plugin settings without editing plugin.json.
+func SavePluginSystemConfig(pluginPath string, values map[string]interface{}) error {
+	config, hasData, err := readPluginData(pluginPath)
+	if err != nil {
+		return err
+	}
+	if !hasData {
+		config.SystemConfig = make(map[string]interface{})
+		config.UserConfig = make(map[string]interface{})
+	}
+	for key, value := range values {
+		if _, ok := pluginSystemConfigKeys[key]; ok {
+			config.SystemConfig[key] = value
+		}
+	}
+	return writePluginData(pluginPath, config.SystemConfig, config.UserConfig)
+}
+
+func ReplacePluginSystemConfig(pluginPath string, values map[string]interface{}) error {
+	config, _, err := readPluginData(pluginPath)
+	if err != nil {
+		return err
+	}
+	filtered := make(map[string]interface{}, len(values))
+	for key, value := range values {
+		if _, ok := pluginSystemConfigKeys[key]; ok {
+			filtered[key] = value
+		}
+	}
+	return writePluginData(pluginPath, filtered, config.UserConfig)
+}
+
+func updatePluginSystemConfigValue(pluginPath, key string, value interface{}) error {
+	manifest, err := readPluginConfigManifestMap(pluginPath)
+	if err != nil {
+		return err
+	}
+	saved, _, err := readPluginData(pluginPath)
+	if err != nil {
+		return err
+	}
+	if pluginConfigValuesEqual(manifest[key], value) {
+		delete(saved.SystemConfig, key)
+		return writePluginData(pluginPath, saved.SystemConfig, saved.UserConfig)
+	}
+	return SavePluginSystemConfig(pluginPath, map[string]interface{}{key: value})
+}
+
+func pluginConfigValuesEqual(left, right interface{}) bool {
+	normalize := func(value interface{}) interface{} {
+		data, err := json.Marshal(value)
+		if err != nil {
+			return value
+		}
+		var normalized interface{}
+		if err := json.Unmarshal(data, &normalized); err != nil {
+			return value
+		}
+		return normalized
+	}
+	return reflect.DeepEqual(normalize(left), normalize(right))
+}
+
+func readPluginConfigManifestMap(pluginPath string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(filepath.Join(pluginPath, "plugin.json"))
+	if err != nil {
+		return nil, err
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+	return config, nil
+}
+
+func pluginConfigMap(config types.PluginConfig) (map[string]interface{}, error) {
+	data, err := json.Marshal(config)
+	if err != nil {
+		return nil, err
+	}
+	var values map[string]interface{}
+	if err := json.Unmarshal(data, &values); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func applyPluginSystemConfig(config *types.PluginConfig, values map[string]interface{}) error {
+	if len(values) == 0 {
+		return nil
+	}
+	merged, err := pluginConfigMap(*config)
+	if err != nil {
+		return err
+	}
+	for key, value := range values {
+		if _, ok := pluginSystemConfigKeys[key]; ok {
+			merged[key] = value
+		}
+	}
+	data, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, config)
 }
 
 func filterPluginUserConfig(config types.PluginConfig) map[string]interface{} {

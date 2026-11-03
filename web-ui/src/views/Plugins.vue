@@ -371,6 +371,10 @@
               </el-select>
               <div class="field-tip">不选择表示所有机器人都可以触发该插件。</div>
             </el-form-item>
+            <el-form-item label="接收机器人消息">
+              <el-switch v-model="currentConfig.accept_bot_messages" active-text="开启" inactive-text="关闭" />
+              <div class="field-tip">开启后，其他机器人发送的消息也可以匹配该插件；当前机器人自己发送的消息仍按平台规则处理。</div>
+            </el-form-item>
             <el-form-item label="启用状态">
               <el-switch v-model="currentConfig.enabled" />
             </el-form-item>
@@ -384,6 +388,10 @@
               <div class="field-tip">开启后使用系统权限控制；关闭后使用当前插件自己的配置。</div>
             </el-form-item>
             <template v-if="!currentConfig.access_control.inherit_system">
+              <el-form-item label="仅管理员使用">
+                <el-switch v-model="currentConfig.access_control.admin_only" />
+                <div class="field-tip">开启后平台管理员可直接使用；非管理员仅白名单 ID（个人 ID）可使用。</div>
+              </el-form-item>
               <el-form-item label="白名单群">
                 <el-select v-model="currentConfig.access_control.whitelist_groups" multiple filterable allow-create default-first-option placeholder="群 ID，可输入多个" style="width: 100%" />
               </el-form-item>
@@ -796,10 +804,6 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled, Plus } from '@element-plus/icons-vue'
 import { getAdapterPlatforms, getAdapters, getPlugins, controlPlugin, setPluginPinned, deletePlugin, getPluginRecycleBin, deletePluginBackup, getPluginTemplates, previewCreatePlugin, validateCreatePlugin, createPlugin, importPlugin, getRuntimeProfiles, getScriptEnvs } from '@/api'
 import request from '@/utils/request'
-import { EditorView, basicSetup } from 'codemirror'
-import { javascript } from '@codemirror/lang-javascript'
-import { python } from '@codemirror/lang-python'
-import { oneDark } from '@codemirror/theme-one-dark'
 import StdPagination from '@/components/StdPagination.vue'
 import { inspectPluginArchive, inspectPluginDirectory } from '@/utils/pluginImport'
 import {
@@ -874,6 +878,7 @@ const createPreview = shallowRef('')
 const createPreviewData = shallowRef(null)
 let createDraftTimer = null
 let createPreviewTimer = null
+let editorModulesPromise = null
 let parseInputEditorView = null
 let queryEditorView = null
 let afterRunEditorView = null
@@ -893,6 +898,7 @@ const currentConfig = ref({
   pinned: false,
   platforms: [],
   allowed_adapter_ids: [],
+  accept_bot_messages: false,
   access_control: createAccessControl(true),
   user_config_schema: [],
   user_config: {},
@@ -1191,6 +1197,7 @@ const handleConfig = async (plugin) => {
     const config = await request.get(`/plugins/config/${plugin.id}`)
     config.platforms = Array.isArray(config.platforms) ? config.platforms : []
     config.allowed_adapter_ids = config.allowed_adapter_ids || []
+    config.accept_bot_messages = Boolean(config.accept_bot_messages)
     config.runtime_profile = config.runtime_profile || ''
     config.priority = Number(config.priority || 0)
     config.pinned = Boolean(config.pinned)
@@ -1440,6 +1447,7 @@ const handleConfigDialogClose = () => {
     pinned: false,
     platforms: [],
     allowed_adapter_ids: [],
+    accept_bot_messages: false,
     access_control: createAccessControl(true),
     user_config_schema: [],
     user_config: {},
@@ -1454,6 +1462,7 @@ const handleConfigDialogClose = () => {
 function createAccessControl(inheritSystem = false) {
   return {
     inherit_system: inheritSystem,
+    admin_only: false,
     whitelist_groups: [],
     blocked_groups: [],
     whitelist_user_ids: [],
@@ -1734,8 +1743,30 @@ function sanitizeEnvBase(value) {
   return /^[A-Z_]/.test(normalized) ? normalized : `PLUGIN_${normalized}`
 }
 
-function createCodeEditor(container, code, onUpdate) {
+function loadEditorModules() {
+  if (!editorModulesPromise) {
+    editorModulesPromise = Promise.all([
+      import('codemirror'),
+      import('@codemirror/lang-javascript'),
+      import('@codemirror/lang-python'),
+      import('@codemirror/theme-one-dark')
+    ]).then(([codemirror, javascriptLanguage, pythonLanguage, theme]) => ({
+      EditorView: codemirror.EditorView,
+      basicSetup: codemirror.basicSetup,
+      javascript: javascriptLanguage.javascript,
+      python: pythonLanguage.python,
+      oneDark: theme.oneDark
+    })).catch((error) => {
+      editorModulesPromise = null
+      throw error
+    })
+  }
+  return editorModulesPromise
+}
+
+function createCodeEditor(editorModules, container, code, onUpdate) {
   if (!container) return null
+  const { EditorView, basicSetup, javascript, python, oneDark } = editorModules
   return new EditorView({
     doc: String(code || ''),
     extensions: [
@@ -1755,7 +1786,7 @@ function createCodeEditor(container, code, onUpdate) {
   })
 }
 
-function ensureCreateEditors() {
+async function ensureCreateEditors() {
   if (!isAccountQLTemplate.value || createActiveTab.value !== 'code') return
   const accountQL = createForm.value.account_ql
   if (!accountQL) return
@@ -1768,23 +1799,31 @@ function ensureCreateEditors() {
     checkCkEditorView = null
   }
   if (!parseInputEditorContainer.value || !queryEditorContainer.value || (accountQL.enable_after_run && !afterRunEditorContainer.value) || (accountQL.enable_ck_check && !checkCkEditorContainer.value)) return
+  let editorModules
+  try {
+    editorModules = await loadEditorModules()
+  } catch (error) {
+    ElMessage.error('代码编辑器加载失败，请刷新页面后重试')
+    return
+  }
+  if (!createDialogVisible.value || !isAccountQLTemplate.value || createActiveTab.value !== 'code') return
   if (!parseInputEditorView) {
-    parseInputEditorView = createCodeEditor(parseInputEditorContainer.value, accountQL.parse_input_code, (code) => {
+    parseInputEditorView = createCodeEditor(editorModules, parseInputEditorContainer.value, accountQL.parse_input_code, (code) => {
       if (createForm.value.account_ql) createForm.value.account_ql.parse_input_code = code
     })
   }
   if (!queryEditorView) {
-    queryEditorView = createCodeEditor(queryEditorContainer.value, accountQL.query_code, (code) => {
+    queryEditorView = createCodeEditor(editorModules, queryEditorContainer.value, accountQL.query_code, (code) => {
       if (createForm.value.account_ql) createForm.value.account_ql.query_code = code
     })
   }
   if (accountQL.enable_after_run && !afterRunEditorView) {
-    afterRunEditorView = createCodeEditor(afterRunEditorContainer.value, accountQL.after_run_code, (code) => {
+    afterRunEditorView = createCodeEditor(editorModules, afterRunEditorContainer.value, accountQL.after_run_code, (code) => {
       if (createForm.value.account_ql) createForm.value.account_ql.after_run_code = code
     })
   }
   if (accountQL.enable_ck_check && !checkCkEditorView) {
-    checkCkEditorView = createCodeEditor(checkCkEditorContainer.value, accountQL.check_ck_code, (code) => {
+    checkCkEditorView = createCodeEditor(editorModules, checkCkEditorContainer.value, accountQL.check_ck_code, (code) => {
       if (createForm.value.account_ql) createForm.value.account_ql.check_ck_code = code
     })
   }
@@ -1832,6 +1871,7 @@ function normalizeAccessControl(value, defaultInherit = false) {
   const list = (items) => Array.isArray(items) ? items.map(item => String(item).trim()).filter(Boolean) : []
   return {
     inherit_system: Object.prototype.hasOwnProperty.call(source, 'inherit_system') ? Boolean(source.inherit_system) : defaultInherit,
+    admin_only: Boolean(source.admin_only),
     whitelist_groups: list(source.whitelist_groups),
     blocked_groups: list(source.blocked_groups),
     whitelist_user_ids: list(source.whitelist_user_ids),

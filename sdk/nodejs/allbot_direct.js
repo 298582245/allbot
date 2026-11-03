@@ -75,6 +75,7 @@ class Context {
         this.adapter_id = this.adapterId;
         this.userId = data.user_id || '';
         this.user_id = this.userId;
+        this.nickname = data.nickname || '';
         this.unionId = data.union_id || '';
         this.union_id = this.unionId;
         this.points = Number(data.points || 0);
@@ -84,6 +85,9 @@ class Context {
         this.group_id = this.groupId;
         this.content = data.content || '';
         this.text = this.content;
+        this.medias = Array.isArray(data.medias) ? data.medias : [];
+        this.mediaOnly = Boolean(data.media_only);
+        this.media_only = this.mediaOnly;
         this.messageId = data.message_id || '';
         this.message_id = this.messageId;
         this.admin = Boolean(data.is_admin);
@@ -204,6 +208,40 @@ class Context {
         return this.sendImageMessage(options);
     }
 
+    async sendAudioMessage(options = {}) {
+        const targetPlatform = String(options.platform || this.platform || '');
+        return this._request({
+            action: 'send_audio_message',
+            platform: targetPlatform,
+            adapter_id: this._adapterIdFor(options, targetPlatform),
+            user_id: String(options.userId || options.user_id || this.userId || ''),
+            group_id: String(options.groupId || options.group_id || ''),
+            union_id: String(options.unionId || options.union_id || ''),
+            url: String(options.audioUrl || options.audio_url || options.url || '')
+        }, 'send_audio_message_response');
+    }
+
+    async send_audio_message(options = {}) {
+        return this.sendAudioMessage(options);
+    }
+
+    async sendVideoMessage(options = {}) {
+        const targetPlatform = String(options.platform || this.platform || '');
+        return this._request({
+            action: 'send_video_message',
+            platform: targetPlatform,
+            adapter_id: this._adapterIdFor(options, targetPlatform),
+            user_id: String(options.userId || options.user_id || this.userId || ''),
+            group_id: String(options.groupId || options.group_id || ''),
+            union_id: String(options.unionId || options.union_id || ''),
+            url: String(options.videoUrl || options.video_url || options.url || '')
+        }, 'send_video_message_response');
+    }
+
+    async send_video_message(options = {}) {
+        return this.sendVideoMessage(options);
+    }
+
     async sendMessage(options = {}) {
         const targetPlatform = String(options.platform || this.platform || '');
         const payload = {
@@ -259,6 +297,22 @@ class Context {
     
     async send_image(imageUrl) {
         return this.sendImage(imageUrl);
+    }
+
+    async sendAudio(audioUrl) {
+        return this._send({ action: 'send_audio', url: String(audioUrl ?? '') });
+    }
+
+    async send_audio(audioUrl) {
+        return this.sendAudio(audioUrl);
+    }
+
+    async sendVideo(videoUrl) {
+        return this._send({ action: 'send_video', url: String(videoUrl ?? '') });
+    }
+
+    async send_video(videoUrl) {
+        return this.sendVideo(videoUrl);
     }
 
     
@@ -354,6 +408,14 @@ class Context {
         return this.getUnionId();
     }
 
+    getUserNickname() {
+        return this.nickname;
+    }
+
+    get_user_nickname() {
+        return this.getUserNickname();
+    }
+
     async consumePoints(amount, options = {}) {
         let data;
         try {
@@ -446,6 +508,7 @@ class Context {
             description: String(options.description || ''),
             enabled: options.enabled !== false,
             pinned: Boolean(options.pinned),
+            delete_after_run: Boolean(options.deleteAfterRun || options.delete_after_run),
             cron: Array.isArray(options.cron) ? options.cron.join('\n') : String(options.cron || ''),
             platform: String(options.platform || this.platform),
             adapter_id: this._adapterIdFor(options),
@@ -458,6 +521,14 @@ class Context {
 
     async set_scheduled_task(options = {}) {
         return this.setScheduledTask(options);
+    }
+
+    async setOneTimeScheduledTask(options = {}) {
+        return this.setScheduledTask({ ...options, deleteAfterRun: true });
+    }
+
+    async set_one_time_scheduled_task(options = {}) {
+        return this.setOneTimeScheduledTask(options);
     }
 
     async syncScheduledTasks(taskKeys = []) {
@@ -622,6 +693,7 @@ function normalizeAccessControl(config = {}) {
     const list = (value) => Array.isArray(value) ? value.map(String).filter(Boolean) : [];
     return {
         inherit_system: Boolean(config.inherit_system ?? config.inheritSystem),
+        admin_only: Boolean(config.admin_only ?? config.adminOnly),
         whitelist_groups: list(config.whitelist_groups || config.whitelistGroups),
         blocked_groups: list(config.blocked_groups || config.blockedGroups),
         whitelist_user_ids: list(config.whitelist_user_ids || config.whitelistUserIds),

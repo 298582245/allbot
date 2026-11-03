@@ -9,7 +9,11 @@ import (
 )
 
 func replyMyID(ctx *Context) error {
-	return ctx.SendText(userIdentityInfo(ctx))
+	text := userIdentityInfo(ctx)
+	if text == "" {
+		return replyUserRegisterGuide(ctx)
+	}
+	return ctx.SendText(text)
 }
 
 func replyRegister(ctx *Context) error {
@@ -87,16 +91,20 @@ func qqOfficeDMSTarget(value string) string {
 }
 
 func replyMyPlatforms(ctx *Context) error {
-	return ctx.SendText(userPlatformBindings(ctx))
+	text := userPlatformBindings(ctx)
+	if text == "" {
+		return replyUserRegisterGuide(ctx)
+	}
+	return ctx.SendText(text)
 }
 
 func userIdentityInfo(ctx *Context) string {
 	account, err := ctx.Database.GetUserAccount(ctx.Message.Platform, ctx.Message.UserID)
-	if err != nil {
-		return UserRegisterGuide()
+	if err != nil || account == nil || strings.TrimSpace(account.UnionID) == "" {
+		return ""
 	}
 	unit := pointsUnit(ctx)
-	return fmt.Sprintf("用户信息\n平台：%s\n用户ID：%s\nUnionID：%s\n%s：%d", account.Platform, account.UserID, account.UnionID, unit, account.Points)
+	return fmt.Sprintf("用户信息\n平台：%s\n用户ID：%s\n用户昵称：%s\nUnionID：%s\n%s：%d", account.Platform, account.UserID, account.Nickname, account.UnionID, unit, account.Points)
 }
 
 func registerUser(ctx *Context) string {
@@ -107,6 +115,11 @@ func registerUser(ctx *Context) string {
 			return "注册失败：" + err.Error()
 		}
 		account, err = ctx.Database.EnsureUserAccount(ctx.Message.Platform, ctx.Message.UserID)
+		if err != nil {
+			return "注册失败：" + err.Error()
+		}
+		_ = ctx.Database.RecordUserNickname(account.Platform, account.UserID, ctx.Message.Nickname)
+		account, err = ctx.Database.GetUserAccount(account.Platform, account.UserID)
 		if err != nil {
 			return "注册失败：" + err.Error()
 		}
@@ -126,6 +139,7 @@ func createBindCode(ctx *Context) string {
 	if err != nil {
 		return "生成绑定码失败：" + err.Error()
 	}
+	_ = ctx.Database.RecordUserNickname(ctx.Message.Platform, ctx.Message.UserID, ctx.Message.Nickname)
 	remainingMinutes := int(math.Ceil(time.Until(code.ExpiresAt).Minutes()))
 	if remainingMinutes < 1 {
 		remainingMinutes = 1
@@ -138,8 +152,8 @@ func userPlatformBindings(ctx *Context) string {
 		return "我的平台只能私聊查看，请私聊机器人发送：我的平台"
 	}
 	account, err := ctx.Database.GetUserAccount(ctx.Message.Platform, ctx.Message.UserID)
-	if err != nil {
-		return UserRegisterGuide()
+	if err != nil || account == nil || strings.TrimSpace(account.UnionID) == "" {
+		return ""
 	}
 	accounts, err := ctx.Database.ListUserAccountsByUnionID(account.UnionID)
 	if err != nil {
@@ -164,7 +178,26 @@ func bindUser(ctx *Context) string {
 	if err != nil {
 		return "绑定失败：" + err.Error()
 	}
+	_ = ctx.Database.RecordUserNickname(account.Platform, account.UserID, ctx.Message.Nickname)
+	account, err = ctx.Database.GetUserAccount(account.Platform, account.UserID)
+	if err != nil {
+		return "绑定失败：" + err.Error()
+	}
 	return fmt.Sprintf("绑定成功\n当前平台：%s\n来源平台：%s\nUnionID：%s", account.Platform, source.Platform, account.UnionID)
+}
+
+func replyUserRegisterGuide(ctx *Context) error {
+	if ctx == nil || ctx.Database == nil || ctx.Message == nil {
+		return nil
+	}
+	allowed, err := ctx.Database.ConsumeUnregisteredPrompt(ctx.Message.Platform, ctx.Message.UserID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return nil
+	}
+	return ctx.SendText(UserRegisterGuide())
 }
 
 func pointsUnit(ctx *Context) string {

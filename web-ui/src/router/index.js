@@ -44,6 +44,7 @@ const routes = [
       { path: 'payments/config', name: 'PaymentConfig', component: () => import('@/views/PaymentConfig.vue'), meta: { title: '支付配置' } },
       { path: 'payments/orders', name: 'PaymentOrders', component: () => import('@/views/PaymentOrders.vue'), meta: { title: '订单管理' } },
       { path: 'settings', name: 'Settings', component: () => import('@/views/Settings.vue'), meta: { title: '系统设置' } },
+      { path: 'developer-apps', name: 'DeveloperApps', component: () => import('@/views/DeveloperApps.vue'), meta: { title: '开发者应用' } },
       { path: 'plugin-panels', name: 'PluginPanels', component: () => import('@/views/PluginPanels.vue'), meta: { title: '插件面板' } },
       { path: 'plugin-panels/:pluginId', name: 'PluginPanel', component: () => import('@/views/PluginPanel.vue'), meta: { title: '插件面板' } },
       { path: 'plugins/:id/edit', name: 'PluginEditor', component: () => import('@/views/PluginEditor.vue'), meta: { title: '编辑插件代码' } }

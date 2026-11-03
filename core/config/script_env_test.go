@@ -80,7 +80,7 @@ func TestScriptEnvVarsSaveListMapDelete(t *testing.T) {
 	}
 }
 
-func TestScriptEnvVarsListPinnedThenIDDesc(t *testing.T) {
+func TestScriptEnvVarsListPinnedAndEnabledThenIDDesc(t *testing.T) {
 	db, err := NewDatabase(":memory:")
 	if err != nil {
 		t.Fatalf("NewDatabase returned error: %v", err)
@@ -88,9 +88,10 @@ func TestScriptEnvVarsListPinnedThenIDDesc(t *testing.T) {
 	defer db.Close()
 
 	fixtures := []ScriptEnvVar{
-		{Name: "C_PINNED", Value: "1", Enabled: true, Pinned: true},
-		{Name: "B_NORMAL", Value: "2", Enabled: true},
-		{Name: "A_PINNED", Value: "3", Enabled: true, Pinned: true},
+		{Name: "PINNED_DISABLED", Value: "1", Enabled: false, Pinned: true},
+		{Name: "NORMAL_ENABLED", Value: "2", Enabled: true},
+		{Name: "PINNED_ENABLED", Value: "3", Enabled: true, Pinned: true},
+		{Name: "NORMAL_DISABLED", Value: "4", Enabled: false},
 	}
 	for i := range fixtures {
 		if _, err := db.SaveScriptEnvVar(&fixtures[i]); err != nil {
@@ -102,20 +103,20 @@ func TestScriptEnvVarsListPinnedThenIDDesc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListScriptEnvVars returned error: %v", err)
 	}
-	if len(items) != 3 {
+	if len(items) != 4 {
 		t.Fatalf("unexpected list length: %#v", items)
 	}
-	want := []string{"A_PINNED", "C_PINNED", "B_NORMAL"}
+	want := []string{"PINNED_ENABLED", "PINNED_DISABLED", "NORMAL_ENABLED", "NORMAL_DISABLED"}
 	for i, name := range want {
 		if items[i].Name != name {
 			t.Fatalf("items[%d].Name = %q, want %q; list=%#v", i, items[i].Name, name, items)
 		}
 	}
-	if !items[0].Pinned || !items[1].Pinned || items[2].Pinned {
+	if !items[0].Pinned || !items[1].Pinned || items[2].Pinned || items[3].Pinned {
 		t.Fatalf("pinned items should be listed before normal items: %#v", items)
 	}
-	if items[0].ID <= items[1].ID {
-		t.Fatalf("pinned items should be sorted by id desc: %#v", items)
+	if !items[0].Enabled || items[1].Enabled || !items[2].Enabled || items[3].Enabled {
+		t.Fatalf("enabled items should be listed before disabled items in each pinned group: %#v", items)
 	}
 }
 

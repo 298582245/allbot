@@ -53,6 +53,7 @@
   - `web_chat`：WebChat 入口展示配置
   - `user_config`：用户配置默认值
   - `user_config_schema`：后台插件参数面板表单
+- 插件运行配置由作者默认值和用户覆盖组成：`plugin.json` 保存作者默认值，用户在后台修改的系统字段（如 `enabled`、`pinned`、`priority`、`trigger`、平台、访问控制、Web 配置等）保存到同目录 `plugin.data.system_config`。读取时用户覆盖优先；未覆盖的字段继续使用 `plugin.json`，因此插件更新默认配置不会覆盖用户修改，也不会要求用户重复配置。
 - `user_config_schema` 字段规则：
   - `key`：配置键名，必须和 `user_config`、代码里的 `ctx.config(key)` 一致；`divider` 可不填
   - `label`：后台表单显示名
@@ -133,9 +134,12 @@
 - 需要主动推送时使用：
   - `ctx.sendMessage(...)` / `ctx.send_message(...)`
   - `ctx.push(...)`
-- 发送图片和文件时使用：
+- 发送图片、音频、视频和文件时使用：
   - `ctx.sendImage(...)` / `ctx.send_image(...)`
+  - `ctx.sendAudio(...)` / `ctx.send_audio(...)`
+  - `ctx.sendVideo(...)` / `ctx.send_video(...)`
   - `ctx.sendFile(...)` / `ctx.send_file(...)`
+- 这些方法支持本地文件路径；配置系统公网地址后，AllBot 会复制到临时目录并生成临时公开链接，发送成功后立即清理，最长保留 10 分钟。
 
 ### 交互式等待
 - 需要用户继续输入时使用 `ctx.listen(timeout)`。

@@ -7,6 +7,8 @@ PORT=${ALLBOT_WEB_PORT:-3000}
 
 cd "$SCRIPT_DIR"
 
+git pull
+
 echo "[1/4] 构建当前源码镜像（不使用缓存）"
 docker compose build --no-cache "$SERVICE"
 

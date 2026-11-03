@@ -31,6 +31,95 @@ func TestQQAdapterBotIdentityReadsCachedSelfID(t *testing.T) {
 	}
 }
 
+func TestQQAdapterHandleMessageBuildsUnifiedMedia(t *testing.T) {
+	adapter := NewQQAdapter(QQAdapterConfig{})
+	messages := make(chan *types.Message, 1)
+	adapter.SetMessageHandler(func(message *types.Message) { messages <- message })
+	adapter.handleMessageEvent(map[string]interface{}{
+		"message_type": "group",
+		"message_id":   11,
+		"user_id":      22,
+		"group_id":     33,
+		"message": []interface{}{
+			map[string]interface{}{"type": "text", "data": map[string]interface{}{"text": "说明文字"}},
+			map[string]interface{}{"type": "image", "data": map[string]interface{}{"url": "https://media.example/image.png", "file": "image.png", "name": "image.png"}},
+			map[string]interface{}{"type": "record", "data": map[string]interface{}{"url": "https://media.example/voice.amr", "name": "voice.amr"}},
+			map[string]interface{}{"type": "video", "data": map[string]interface{}{"url": "file:///tmp/video.mp4", "file": "video.mp4"}},
+			map[string]interface{}{"type": "file", "data": map[string]interface{}{"url": "https://media.example/report.pdf", "name": "report.pdf"}},
+		},
+	})
+
+	message := <-messages
+	if message.GroupID != "33" || message.UserID != "22" || message.MediaOnly || len(message.Medias) != 3 {
+		t.Fatalf("message = %#v", message)
+	}
+	if message.Medias[0].Type != types.MessageMediaTypeImage || message.Medias[1].Type != types.MessageMediaTypeAudio || message.Medias[2].Type != types.MessageMediaTypeFile {
+		t.Fatalf("medias = %#v", message.Medias)
+	}
+	if message.Content != "说明文字 [image.png](https://media.example/image.png) [voice.amr](https://media.example/voice.amr) [report.pdf](https://media.example/report.pdf)" {
+		t.Fatalf("content = %q", message.Content)
+	}
+}
+
+func TestQQAdapterHandleSingleMediaSetsMediaOnly(t *testing.T) {
+	adapter := NewQQAdapter(QQAdapterConfig{})
+	messages := make(chan *types.Message, 1)
+	adapter.SetMessageHandler(func(message *types.Message) { messages <- message })
+	adapter.handleMessageEvent(map[string]interface{}{
+		"message_type": "private",
+		"message_id":   12,
+		"user_id":      23,
+		"message": []interface{}{map[string]interface{}{
+			"type": "video",
+			"data": map[string]interface{}{"url": "https://media.example/clip.mp4", "file": "clip.mp4"},
+		}},
+	})
+
+	message := <-messages
+	if !message.MediaOnly || len(message.Medias) != 1 || message.Medias[0].Type != types.MessageMediaTypeVideo {
+		t.Fatalf("message = %#v", message)
+	}
+	if message.Content != "[clip.mp4](https://media.example/clip.mp4)" {
+		t.Fatalf("content = %q", message.Content)
+	}
+}
+
+func TestQQAdapterSendAudioVideoAndFileUseOneBotSegments(t *testing.T) {
+	actions := make(chan oneBotRequest, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var params map[string]interface{}
+		if err := json.NewDecoder(request.Body).Decode(&params); err != nil {
+			t.Fatal(err)
+		}
+		actions <- oneBotRequest{Action: strings.TrimPrefix(request.URL.Path, "/"), Params: params}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"status":"ok","retcode":0}`))
+	}))
+	defer server.Close()
+
+	adapter := NewQQAdapter(QQAdapterConfig{HTTPAPIURL: server.URL})
+	if err := adapter.SendAudio("123", "https://media.example/audio.mp3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.SendVideo("group_456", "https://media.example/video.mp4"); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.SendFile("group_456", "C:\\files\\notes.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, expected := range []string{
+		"[CQ:record,file=https://media.example/audio.mp3]",
+		"[CQ:video,file=https://media.example/video.mp4]",
+		"[CQ:file,file=C:\\files\\notes.txt,name=notes.txt]",
+	} {
+		action := <-actions
+		if action.Action != "send_msg" || action.Params["message"] != expected {
+			t.Fatalf("action = %#v, expected message %q", action, expected)
+		}
+	}
+}
+
 func TestQQAdapterDeleteAndMuteUseOneBotActions(t *testing.T) {
 	actions := make(chan oneBotRequest, 3)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

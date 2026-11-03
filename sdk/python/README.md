@@ -54,11 +54,17 @@ ctx.plugin_id      # 插件 ID
 ctx.adapter_id     # 机器人适配器 ID，同一平台多机器人时用于区分
 ctx.platform       # 平台：qq、wechat、telegram
 ctx.user_id        # 发送者 ID
+ctx.nickname      # 发送者昵称
 ctx.group_id       # 群组 ID，私聊为空
 ctx.content        # 消息内容
 ctx.text           # ctx.content 的别名
+ctx.medias         # 媒体列表，每项包含 type 和 url
+ctx.media_only     # 是否为单独一条媒体消息
 ctx.message_id     # 消息 ID
 ctx.metadata       # 平台原始扩展数据
+
+ctx.get_user_nickname()  # 获取当前消息发送者昵称
+ctx.getUserNickname()    # camelCase 别名
 ```
 
 ## Context 方法
@@ -67,7 +73,10 @@ ctx.metadata       # 平台原始扩展数据
 await ctx.reply("文本消息")
 await ctx.send_text("文本消息")
 await ctx.send_image("https://example.com/image.png")
+await ctx.send_audio("https://example.com/audio.mp3")
+await ctx.send_video("https://example.com/video.mp4")
 await ctx.send_file("/path/to/file.txt")
+# 图片、音频、视频和文件也可以传本地路径；配置系统公网地址后会自动生成临时公开链接
 reply = await ctx.listen(60)
 reply = await ctx.listen(60, 10)  # 等待 60 秒，收到的用户消息 10 秒后撤回
 await ctx.delete_message()        # 撤回当前收到的用户消息；不支持时返回 False

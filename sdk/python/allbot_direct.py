@@ -118,6 +118,7 @@ class Context:
         self.adapterId = self.adapter_id
         self.user_id = data.get("user_id", "")
         self.userId = self.user_id
+        self.nickname = data.get("nickname", "")
         self.union_id = data.get("union_id", "")
         self.unionId = self.union_id
         self.points = int(data.get("points", 0) or 0)
@@ -127,6 +128,9 @@ class Context:
         self.groupId = self.group_id
         self.content = data.get("content", "")
         self.text = self.content
+        self.medias = data.get("medias", []) or []
+        self.media_only = bool(data.get("media_only", False))
+        self.mediaOnly = self.media_only
         self.message_id = data.get("message_id", "")
         self.messageId = self.message_id
         self.admin = bool(data.get("is_admin", False))
@@ -235,6 +239,38 @@ class Context:
         """send_image_message 的 camelCase 别名。"""
         return await self.send_image_message(**options)
 
+    async def send_audio_message(self, **options: Any) -> Dict[str, Any]:
+        """主动向指定用户、群或 UnionID 发送音频。"""
+        target_platform = str(options.get("platform") or self.platform)
+        return self._request({
+            "action": "send_audio_message",
+            "platform": target_platform,
+            "adapter_id": self._adapter_id_for(options, target_platform),
+            "user_id": str(options.get("user_id") or options.get("userId") or self.user_id),
+            "group_id": str(options.get("group_id") or options.get("groupId") or ""),
+            "union_id": str(options.get("union_id") or options.get("unionId") or ""),
+            "url": str(options.get("audio_url") or options.get("audioUrl") or options.get("url") or ""),
+        }, "send_audio_message_response")
+
+    async def sendAudioMessage(self, **options: Any) -> Dict[str, Any]:
+        return await self.send_audio_message(**options)
+
+    async def send_video_message(self, **options: Any) -> Dict[str, Any]:
+        """主动向指定用户、群或 UnionID 发送视频。"""
+        target_platform = str(options.get("platform") or self.platform)
+        return self._request({
+            "action": "send_video_message",
+            "platform": target_platform,
+            "adapter_id": self._adapter_id_for(options, target_platform),
+            "user_id": str(options.get("user_id") or options.get("userId") or self.user_id),
+            "group_id": str(options.get("group_id") or options.get("groupId") or ""),
+            "union_id": str(options.get("union_id") or options.get("unionId") or ""),
+            "url": str(options.get("video_url") or options.get("videoUrl") or options.get("url") or ""),
+        }, "send_video_message_response")
+
+    async def sendVideoMessage(self, **options: Any) -> Dict[str, Any]:
+        return await self.send_video_message(**options)
+
     async def send_message(self, **options: Any) -> Dict[str, Any]:
         """主动发送私聊或群聊消息，用于定时通知。"""
         target_platform = str(options.get("platform") or self.platform)
@@ -288,11 +324,25 @@ class Context:
         return self._request(payload, "send_message_response")
 
     async def send_image(self, image_url: str) -> bool:
-        """发送图片 URL 或本地路径，具体支持取决于平台适配器。"""
+        """发送图片 URL 或本地路径；配置公网地址后本地路径会自动转为临时公开链接。"""
         return self._send({"action": "send_image", "url": image_url})
 
+    async def send_audio(self, audio_url: str) -> bool:
+        """发送音频 URL 或本地路径；配置公网地址后本地路径会自动转为临时公开链接。"""
+        return self._send({"action": "send_audio", "url": audio_url})
+
+    async def sendAudio(self, audio_url: str) -> bool:
+        return await self.send_audio(audio_url)
+
+    async def send_video(self, video_url: str) -> bool:
+        """发送视频 URL 或本地路径；配置公网地址后本地路径会自动转为临时公开链接。"""
+        return self._send({"action": "send_video", "url": video_url})
+
+    async def sendVideo(self, video_url: str) -> bool:
+        return await self.send_video(video_url)
+
     async def send_file(self, file_path: str) -> bool:
-        """发送文件路径，具体支持取决于平台适配器。"""
+        """发送文件 URL 或本地路径；配置公网地址后本地路径会自动转为临时公开链接。"""
         return self._send({"action": "send_file", "path": file_path})
 
     async def delete_message(self) -> bool:
@@ -398,6 +448,14 @@ class Context:
         """get_union_id 的 camelCase 别名。"""
         return await self.get_union_id()
 
+    def get_user_nickname(self) -> str:
+        """返回当前消息发送者的昵称。"""
+        return self.nickname
+
+    def getUserNickname(self) -> str:
+        """get_user_nickname 的 camelCase 别名。"""
+        return self.get_user_nickname()
+
     async def consume_points(self, amount: int, **options: Any) -> int:
         try:
             data = self._request({
@@ -481,6 +539,7 @@ class Context:
             "description": str(options.get("description") or ""),
             "enabled": options.get("enabled", True) is not False,
             "pinned": bool(options.get("pinned", False)),
+            "delete_after_run": bool(options.get("delete_after_run", options.get("deleteAfterRun", False))),
             "cron": "\n".join([str(item) for item in options.get("cron")]) if isinstance(options.get("cron"), list) else str(options.get("cron") or ""),
             "platform": str(options.get("platform") or self.platform),
             "adapter_id": str(options.get("adapter_id") or options.get("adapterId") or self.adapter_id),
@@ -494,9 +553,17 @@ class Context:
         """set_scheduled_task 的 camelCase 别名。"""
         return await self.set_scheduled_task(**options)
 
+    async def set_one_time_scheduled_task(self, **options: Any) -> Dict[str, Any]:
+        """声明执行一次后由自动调度删除的任务；手动执行不会删除。"""
+        options["delete_after_run"] = True
+        return await self.set_scheduled_task(**options)
+
+    async def setOneTimeScheduledTask(self, **options: Any) -> Dict[str, Any]:
+        return await self.set_one_time_scheduled_task(**options)
+
     async def sync_scheduled_tasks(self, task_keys: Any = None) -> Dict[str, Any]:
         keys = task_keys if isinstance(task_keys, list) else []
-        return await self._request(
+        return self._request(
             {"action": "sync_scheduled_tasks", "task_keys": [str(key or "").strip() for key in keys if str(key or "").strip()]},
             "scheduled_task_response",
         )
@@ -844,6 +911,7 @@ def normalize_access_control(config: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "inherit_system": bool(config.get("inherit_system", config.get("inheritSystem", False))),
+        "admin_only": bool(config.get("admin_only", config.get("adminOnly", False))),
         "whitelist_groups": list_value(config.get("whitelist_groups") or config.get("whitelistGroups")),
         "blocked_groups": list_value(config.get("blocked_groups") or config.get("blockedGroups")),
         "whitelist_user_ids": list_value(config.get("whitelist_user_ids") or config.get("whitelistUserIds")),

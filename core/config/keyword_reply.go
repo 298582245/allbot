@@ -27,7 +27,7 @@ func (d *Database) ListKeywordReplies() ([]*KeywordReply, error) {
 	rows, err := d.db.Query(`
 		SELECT id, keyword, match_type, reply_type, content, enabled, admin_only, pinned, builtin, schedule_enabled, schedule_cron, description, created_at, updated_at
 		FROM keyword_replies
-		ORDER BY pinned DESC, builtin DESC, id DESC
+		ORDER BY pinned DESC, enabled DESC, builtin DESC, id DESC
 	`)
 	if err != nil {
 		return nil, err

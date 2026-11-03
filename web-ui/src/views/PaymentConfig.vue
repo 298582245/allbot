@@ -251,7 +251,6 @@ defineOptions({ name: 'PaymentConfig' })
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled } from '@element-plus/icons-vue'
-import jsQR from 'jsqr'
 import request from '@/utils/request'
 
 const loading = ref(false)
@@ -341,7 +340,8 @@ const handleReceiptQRUpload = async (event) => {
 
 onMounted(loadPaymentSettings)
 
-function decodeQRCodeFile(file) {
+async function decodeQRCodeFile(file) {
+  const { default: jsQR } = await import('jsqr')
   return new Promise((resolve, reject) => {
     const image = new Image()
     image.onload = () => {

@@ -257,6 +257,37 @@ func TestBuildMessageIgnoresUnsupportedMessage(t *testing.T) {
 	}
 }
 
+func TestBuildMessageMapsMediaURLToUnifiedMessage(t *testing.T) {
+	adapter := NewDingTalkAdapter("client", "secret", "", "", "")
+	msg := adapter.buildMessage(&chatbot.BotCallbackDataModel{
+		Msgtype:        "picture",
+		Content:        map[string]interface{}{"picUrl": "https://media.example/photo.jpg", "fileName": "photo.jpg"},
+		MsgId:          "image-msg",
+		SenderId:       "sender",
+		ConversationId: "conversation",
+	})
+	if msg == nil || !msg.MediaOnly || len(msg.Medias) != 1 || msg.Medias[0].Type != types.MessageMediaTypeImage || msg.Medias[0].URL != "https://media.example/photo.jpg" {
+		t.Fatalf("media message = %#v", msg)
+	}
+	if msg.Content != "[photo.jpg](https://media.example/photo.jpg)" {
+		t.Fatalf("content = %q", msg.Content)
+	}
+
+	msg = adapter.buildMessage(&chatbot.BotCallbackDataModel{
+		Msgtype:  "video",
+		Text:     chatbot.BotCallbackDataTextModel{Content: "视频说明"},
+		Content:  map[string]interface{}{"videoUrl": "https://media.example/clip.mp4"},
+		MsgId:    "video-msg",
+		SenderId: "sender",
+	})
+	if msg == nil || msg.MediaOnly || len(msg.Medias) != 1 || msg.Medias[0].Type != types.MessageMediaTypeVideo {
+		t.Fatalf("text and video message = %#v", msg)
+	}
+	if msg.Content != "视频说明 [clip.mp4](https://media.example/clip.mp4)" {
+		t.Fatalf("text and video content = %q", msg.Content)
+	}
+}
+
 func TestHandleChatBotMessageDispatchesAsync(t *testing.T) {
 	adapter := NewDingTalkAdapter("client", "secret", "", "", "")
 	messages := make(chan *types.Message, 1)

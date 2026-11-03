@@ -13,26 +13,32 @@ import (
 	"github.com/allbot/allbot/core/adapter"
 	"github.com/allbot/allbot/core/adapter/_registry"
 	"github.com/allbot/allbot/core/types"
+	"github.com/allbot/allbot/core/utils"
 )
 
 type AdapterManager struct {
-	db             *Database
-	adapters       map[int64]adapter.Adapter
-	lifecycleLocks map[int64]*sync.Mutex
-	messageHandler func(*types.Message)
-	mu             sync.RWMutex
-	healthStop     chan struct{}
-	healthStopOnce sync.Once
+	db              *Database
+	adapters        map[int64]adapter.Adapter
+	lifecycleLocks  map[int64]*sync.Mutex
+	restartAttempts map[int64]int
+	restartEligible map[int64]bool
+	messageHandler  func(*types.Message)
+	mu              sync.RWMutex
+	healthStop      chan struct{}
+	healthStopOnce  sync.Once
 }
 
 const adapterHealthCheckInterval = 30 * time.Second
+const adapterAutoRestartMaxAttempts = 20
 
 func NewAdapterManager(db *Database) *AdapterManager {
 	return &AdapterManager{
-		db:             db,
-		adapters:       make(map[int64]adapter.Adapter),
-		lifecycleLocks: make(map[int64]*sync.Mutex),
-		healthStop:     make(chan struct{}),
+		db:              db,
+		adapters:        make(map[int64]adapter.Adapter),
+		lifecycleLocks:  make(map[int64]*sync.Mutex),
+		restartAttempts: make(map[int64]int),
+		restartEligible: make(map[int64]bool),
+		healthStop:      make(chan struct{}),
 	}
 }
 
@@ -53,7 +59,7 @@ func (m *AdapterManager) LoadAndStartAdapters() error {
 	for _, config := range configs {
 		if config.Enabled {
 			if err := m.startAdapter(config); err != nil {
-				log.Printf("警告：启动适配器失败 %s#%d: %v", config.Platform, config.ID, err)
+				log.Printf("警告：启动适配器失败 %s#%d: %s", config.Platform, config.ID, utils.MaskSensitiveError(err))
 			}
 		}
 	}
@@ -94,12 +100,28 @@ func (m *AdapterManager) RestartUnhealthyAdapters() {
 		return
 	}
 	for _, config := range configs {
-		if config == nil || !config.Enabled || m.IsAdapterRunning(config.ID) {
+		if config == nil || !config.Enabled {
 			continue
 		}
-		log.Printf("警告：适配器未运行，准备自动重启: %s#%d", config.Platform, config.ID)
+		// 首次启动失败时没有自动重启资格。只有已经成功启动过、
+		// 后续变得不健康的实例才允许由健康监控自动重启。
+		if !m.isRestartEligible(config.ID) {
+			continue
+		}
+		if m.IsAdapterRunning(config.ID) {
+			m.resetRestartAttempts(config.ID)
+			continue
+		}
+		attempt := m.nextRestartAttempt(config.ID)
+		if attempt > adapterAutoRestartMaxAttempts {
+			if attempt == adapterAutoRestartMaxAttempts+1 {
+				log.Printf("警告：适配器自动重启已达到上限（%d 次），停止继续重试: %s#%d", adapterAutoRestartMaxAttempts, config.Platform, config.ID)
+			}
+			continue
+		}
+		log.Printf("警告：适配器未运行，准备自动重启（第 %d/%d 次）: %s#%d", attempt, adapterAutoRestartMaxAttempts, config.Platform, config.ID)
 		if err := m.ReloadAdapterByID(config.ID); err != nil {
-			log.Printf("警告：自动重启适配器失败 %s#%d: %v", config.Platform, config.ID, err)
+			log.Printf("警告：自动重启适配器失败 %s#%d: %s", config.Platform, config.ID, utils.MaskSensitiveError(err))
 		}
 	}
 }
@@ -180,10 +202,37 @@ func (m *AdapterManager) startAdapterLocked(config *AdapterConfig) error {
 
 	m.mu.Lock()
 	m.adapters[config.ID] = adp
+	m.restartEligible[config.ID] = true
 	m.mu.Unlock()
 	log.Printf("适配器已启动: %s#%d", config.Platform, config.ID)
 
 	return nil
+}
+
+func (m *AdapterManager) nextRestartAttempt(id int64) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.restartAttempts[id]++
+	return m.restartAttempts[id]
+}
+
+func (m *AdapterManager) resetRestartAttempts(id int64) {
+	m.mu.Lock()
+	delete(m.restartAttempts, id)
+	m.mu.Unlock()
+}
+
+func (m *AdapterManager) isRestartEligible(id int64) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.restartEligible[id]
+}
+
+func (m *AdapterManager) clearRestartState(id int64) {
+	m.mu.Lock()
+	delete(m.restartAttempts, id)
+	delete(m.restartEligible, id)
+	m.mu.Unlock()
 }
 
 func (m *AdapterManager) StopAdapter(platform string) error {
@@ -206,7 +255,11 @@ func (m *AdapterManager) StopAdapterByID(id int64) error {
 	lifecycleLock := m.adapterLifecycleLock(id)
 	lifecycleLock.Lock()
 	defer lifecycleLock.Unlock()
-	return m.stopAdapterLocked(id)
+	if err := m.stopAdapterLocked(id); err != nil {
+		return err
+	}
+	m.clearRestartState(id)
+	return nil
 }
 
 func (m *AdapterManager) stopAdapterLocked(id int64) error {
@@ -266,6 +319,7 @@ func (m *AdapterManager) ReloadAdapterByID(id int64) error {
 		return m.startAdapterLocked(config)
 	}
 
+	m.clearRestartState(id)
 	return nil
 }
 
@@ -378,7 +432,7 @@ func (m *AdapterManager) StopAll() {
 	m.mu.RUnlock()
 	for _, id := range ids {
 		if err := m.StopAdapterByID(id); err != nil {
-			log.Printf("警告：停止适配器失败 #%d: %v", id, err)
+			log.Printf("警告：停止适配器失败 #%d: %s", id, utils.MaskSensitiveError(err))
 		}
 	}
 }

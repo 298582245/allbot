@@ -36,6 +36,26 @@ func TestAdapterManagerKeepsEnabledAfterStartFailure(t *testing.T) {
 	}
 }
 
+func TestAdapterManagerDoesNotRestartAdapterThatNeverStarted(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatalf("NewDatabase returned error: %v", err)
+	}
+	defer db.Close()
+
+	manager := NewAdapterManager(db)
+	if err := manager.SaveAdapterConfig(0, "unknown", "", "", true, map[string]interface{}{}); err == nil {
+		t.Fatal("expected initial adapter start to fail")
+	}
+	manager.RestartUnhealthyAdapters()
+
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	if len(manager.restartAttempts) != 0 {
+		t.Fatalf("expected no restart attempts for adapter that never started, got %#v", manager.restartAttempts)
+	}
+}
+
 func TestAdapterManagerMergesMaskedSMTPPassword(t *testing.T) {
 	db, err := NewDatabase(":memory:")
 	if err != nil {

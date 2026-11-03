@@ -108,6 +108,14 @@ class PaySdkTest(unittest.TestCase):
         ctx._request = fake_request
         return ctx, calls
 
+    def test_sync_scheduled_tasks_uses_request_response(self):
+        ctx, calls = self.make_context()
+        result = asyncio.run(ctx.sync_scheduled_tasks([" task-a ", "", "task-b"]))
+        self.assertEqual(result, {"status": "paid", "order_no": "P1"})
+        self.assertEqual(calls[0]["expected_action"], "scheduled_task_response")
+        self.assertEqual(calls[0]["action"]["action"], "sync_scheduled_tasks")
+        self.assertEqual(calls[0]["action"]["task_keys"], ["task-a", "task-b"])
+
     def test_send_markdown_outputs_protocol_action(self):
         ctx, _ = self.make_context()
         actions = []

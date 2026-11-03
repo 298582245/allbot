@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -33,6 +34,7 @@ type Router struct {
 	messageGetter  func(msg *types.Message) adapter.Adapter
 	dataViewSaver  func(config.DataViewConfig) error
 	database       *config.Database
+	mediaResolver  func(string) (string, func())
 	adminChecker   func(platform, userID string) bool
 	keywordReplies *KeywordReplyManager
 	messageCount   uint64
@@ -83,8 +85,64 @@ func (r *Router) SetDataViewSaver(saver func(config.DataViewConfig) error) {
 
 func (r *Router) SetDatabase(database *config.Database) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.database = database
+	plugins := make([]*types.Plugin, 0, len(r.plugins))
+	for _, plugin := range r.plugins {
+		plugins = append(plugins, plugin)
+	}
+	r.mu.Unlock()
+	for _, plugin := range plugins {
+		if err := r.SyncPluginScheduledTasks(plugin.ID, plugin.Enabled); err != nil {
+			log.Printf("[SYSTEM] 同步插件定时任务状态失败: plugin=%s err=%v", plugin.ID, err)
+		}
+	}
+}
+
+// SyncPluginScheduledTasks mirrors a plugin's enabled state to its
+// plugin-owned scheduled tasks. Task edits never call this method in reverse.
+func (r *Router) SyncPluginScheduledTasks(pluginID string, enabled bool) error {
+	r.mu.RLock()
+	database := r.database
+	r.mu.RUnlock()
+	if database == nil {
+		return nil
+	}
+	_, err := database.SetPluginScheduledTasksEnabled(pluginID, enabled)
+	return err
+}
+
+func (r *Router) SetMediaResolver(resolver func(string) (string, func())) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mediaResolver = resolver
+}
+
+func (r *Router) prepareMedia(value string) (string, func()) {
+	r.mu.RLock()
+	resolver := r.mediaResolver
+	r.mu.RUnlock()
+	if resolver == nil {
+		return value, nil
+	}
+	return resolver(value)
+}
+
+func (r *Router) prepareRichMedia(message types.RichMessage) (types.RichMessage, func()) {
+	cleanups := make([]func(), 0)
+	for index, part := range message.Parts {
+		if strings.EqualFold(strings.TrimSpace(part.Type), "image") && strings.TrimSpace(part.URL) != "" {
+			resolved, cleanup := r.prepareMedia(part.URL)
+			message.Parts[index].URL = resolved
+			if cleanup != nil {
+				cleanups = append(cleanups, cleanup)
+			}
+		}
+	}
+	return message, func() {
+		for _, cleanup := range cleanups {
+			cleanup()
+		}
+	}
 }
 
 func (r *Router) SetAdminChecker(checker func(platform, userID string) bool) {
@@ -253,6 +311,9 @@ func (r *Router) RegisterPlugin(plugin *types.Plugin) error {
 	plugin.Order = r.pluginOrder
 	r.plugins[plugin.ID] = plugin
 	r.mu.Unlock()
+	if err := r.SyncPluginScheduledTasks(plugin.ID, plugin.Enabled); err != nil {
+		log.Printf("[SYSTEM] 同步插件定时任务状态失败: plugin=%s err=%v", plugin.ID, err)
+	}
 
 	log.Printf("Plugin registered: %s (trigger: %s)", plugin.Name, plugin.Trigger)
 	return nil
@@ -264,6 +325,20 @@ func (r *Router) UnregisterPlugin(pluginID string) {
 	r.mu.Unlock()
 
 	log.Printf("Plugin unregistered: %s", pluginID)
+}
+
+// SetPluginEnabled updates the enabled flag in the router's matching table.
+// Plugin manager reloads can replace the manager's plugin object while the
+// router still holds the previous object, so toggles must update this copy too.
+func (r *Router) SetPluginEnabled(pluginID string, enabled bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	plugin := r.plugins[pluginID]
+	if plugin == nil {
+		return false
+	}
+	plugin.Enabled = enabled
+	return true
 }
 
 func (r *Router) HandleMessage(msg *types.Message) {
@@ -279,11 +354,16 @@ func (r *Router) HandleMessage(msg *types.Message) {
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}
 	}
+	if database != nil && strings.TrimSpace(msg.Nickname) != "" {
+		if err := database.RecordUserNickname(msg.Platform, msg.UserID, msg.Nickname); err != nil {
+			log.Printf("[SYSTEM] Record user nickname failed: platform=%s user=%s err=%v", msg.Platform, msg.UserID, err)
+		}
+	}
 	isEvent := isEventMessage(msg)
 	if !isEvent && r.rejectDisabledUser(msg, database) {
 		return
 	}
-	if !isEvent && msg.Metadata["fake"] != "true" && r.sessionManager.HandleMessageWithMessage(messageSessionScope(msg, ""), msg) {
+	if !isEvent && !isBotMessage(msg) && msg.Metadata["fake"] != "true" && r.sessionManager.HandleMessageWithMessage(messageSessionScope(msg, ""), msg) {
 		log.Printf("%s Message intercepted by waiting session", listenLogPrefix(msg))
 		return
 	}
@@ -295,21 +375,21 @@ func (r *Router) HandleMessage(msg *types.Message) {
 		log.Printf("[SYSTEM] Message blocked by system access control: platform=%s user=%s group=%s", msg.Platform, msg.UserID, msg.GroupID)
 		return
 	}
-	if !isEvent && keywordReplies != nil && keywordReplies.Handle(msg) {
+	if !isEvent && !isBotMessage(msg) && keywordReplies != nil && keywordReplies.Handle(msg) {
 		return
 	}
 
 	matchedPlugins := r.matchPlugins(msg)
 	if len(matchedPlugins) == 0 {
-		log.Printf("[SYSTEM] No plugin matched")
+		if r.hasWhitelistBlockedPlugin(msg) {
+			log.Printf("[SYSTEM] No plugin matched(非白名单)")
+		} else {
+			log.Printf("[SYSTEM] No plugin matched")
+		}
 		return
 	}
-	if database != nil && !isEvent {
-		if _, err := database.GetUserAccount(msg.Platform, msg.UserID); err != nil {
-			adp := r.getAdapterForMessage(msg)
-			if adp != nil {
-				_ = adp.SendMessage(resolveReplyTarget(adp, msg), formatReplyText(adp, msg, userRegisterGuide()))
-			}
+	if database != nil && !isEvent && !isBotMessage(msg) {
+		if !r.requireRegisteredUser(msg, database) {
 			return
 		}
 	}
@@ -346,6 +426,11 @@ func (r *Router) HandleMessageForPlugin(msg *types.Message, pluginID string) err
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}
 	}
+	if database != nil && strings.TrimSpace(msg.Nickname) != "" {
+		if err := database.RecordUserNickname(msg.Platform, msg.UserID, msg.Nickname); err != nil {
+			log.Printf("[SYSTEM] Record user nickname failed: platform=%s user=%s err=%v", msg.Platform, msg.UserID, err)
+		}
+	}
 	if !isEventMessage(msg) && r.rejectDisabledUser(msg, database) {
 		return fmt.Errorf("账号已被封禁，请联系管理员")
 	}
@@ -369,11 +454,7 @@ func (r *Router) HandleMessageForPlugin(msg *types.Message, pluginID string) err
 		return fmt.Errorf("无权访问该插件")
 	}
 	if database != nil {
-		if _, err := database.GetUserAccount(msg.Platform, msg.UserID); err != nil {
-			adp := r.getAdapterForMessage(msg)
-			if adp != nil {
-				_ = adp.SendMessage(resolveReplyTarget(adp, msg), formatReplyText(adp, msg, userRegisterGuide()))
-			}
+		if !r.requireRegisteredUser(msg, database) {
 			return fmt.Errorf("用户未注册")
 		}
 		if err := database.RecordPluginTriggerStat(plugin, msg); err != nil {
@@ -382,6 +463,27 @@ func (r *Router) HandleMessageForPlugin(msg *types.Message, pluginID string) err
 	}
 	go r.callPlugin(plugin, msg)
 	return nil
+}
+
+func (r *Router) requireRegisteredUser(msg *types.Message, database *config.Database) bool {
+	account, err := database.GetUserAccount(msg.Platform, msg.UserID)
+	if err == nil && account != nil && strings.TrimSpace(account.UnionID) != "" {
+		return true
+	}
+	adp := r.getAdapterForMessage(msg)
+	if adp == nil {
+		return false
+	}
+	allowed, err := database.ConsumeUnregisteredPrompt(msg.Platform, msg.UserID)
+	if err != nil {
+		log.Printf("[SYSTEM] Record unregistered user prompt failed: platform=%s user=%s err=%v", msg.Platform, msg.UserID, err)
+		return false
+	}
+	if !allowed {
+		return false
+	}
+	_ = adp.SendMessage(resolveReplyTarget(adp, msg), formatReplyText(adp, msg, userRegisterGuide()))
+	return false
 }
 
 func (r *Router) MessageCount() uint64 {
@@ -424,6 +526,53 @@ func (r *Router) matchPlugins(msg *types.Message) []*types.Plugin {
 	return matched
 }
 
+func (r *Router) hasWhitelistBlockedPlugin(msg *types.Message) bool {
+	if msg == nil {
+		return false
+	}
+	unionID := r.messageUnionID(msg)
+	systemAccess := r.systemAccessControl()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	adminChecker := r.adminChecker
+	isAdmin := adminChecker != nil && adminChecker(msg.Platform, msg.UserID)
+	for _, plugin := range r.plugins {
+		if plugin == nil || !plugin.Enabled || !r.supportsPlatform(plugin, msg.Platform) || !r.supportsAdapter(plugin, msg.AdapterID) {
+			continue
+		}
+		if isBotMessage(msg) && !plugin.AcceptBotMessages {
+			continue
+		}
+		if !pluginTriggerMatchesMessage(plugin, msg) {
+			continue
+		}
+		accessControl := plugin.AccessControl
+		if accessControl.InheritSystem {
+			accessControl = systemAccess
+		}
+		if whitelistBlocksMessage(accessControl, msg, unionID, isAdmin) {
+			return true
+		}
+	}
+	return false
+}
+
+func whitelistBlocksMessage(config types.AccessControlConfig, msg *types.Message, unionID string, isAdmin bool) bool {
+	if config.AdminOnly && isAdmin {
+		return false
+	}
+	if len(config.WhitelistUserIDs) > 0 && !containsString(config.WhitelistUserIDs, msg.UserID) {
+		return true
+	}
+	if len(config.WhitelistUnionIDs) > 0 && (unionID == "" || !containsString(config.WhitelistUnionIDs, unionID)) {
+		return true
+	}
+	if msg.GroupID != "" && len(config.WhitelistGroups) > 0 && !containsString(config.WhitelistGroups, msg.GroupID) {
+		return true
+	}
+	return false
+}
+
 func (r *Router) FilterPluginsForMessage(msg *types.Message, requireTrigger bool) []*types.Plugin {
 	if msg == nil {
 		return nil
@@ -442,10 +591,13 @@ func (r *Router) FilterPluginsForMessage(msg *types.Message, requireTrigger bool
 		if !r.supportsAdapter(plugin, msg.AdapterID) {
 			continue
 		}
+		if isBotMessage(msg) && !plugin.AcceptBotMessages {
+			continue
+		}
 		if !r.allowPluginMessage(plugin, msg) {
 			continue
 		}
-		if requireTrigger && (plugin.TriggerRegex == nil || !plugin.TriggerRegex.MatchString(msg.Content)) {
+		if requireTrigger && !pluginTriggerMatchesMessage(plugin, msg) {
 			continue
 		}
 		matched = append(matched, plugin)
@@ -461,6 +613,52 @@ func (r *Router) FilterPluginsForMessage(msg *types.Message, requireTrigger bool
 		return matched[i].Priority > matched[j].Priority
 	})
 	return matched
+}
+
+func pluginTriggerMatchesMessage(plugin *types.Plugin, msg *types.Message) bool {
+	if plugin == nil || msg == nil {
+		return false
+	}
+	if mediaType := mediaTriggerType(plugin.Trigger); mediaType != "" {
+		if !msg.MediaOnly || len(msg.Medias) != 1 {
+			return false
+		}
+		if mediaType == "media" {
+			switch strings.ToLower(strings.TrimSpace(msg.Medias[0].Type)) {
+			case types.MessageMediaTypeImage, types.MessageMediaTypeAudio, types.MessageMediaTypeVideo, types.MessageMediaTypeFile:
+				return true
+			default:
+				return false
+			}
+		}
+		return strings.EqualFold(strings.TrimSpace(msg.Medias[0].Type), mediaType)
+	}
+	return plugin.TriggerRegex != nil && plugin.TriggerRegex.MatchString(msg.Content)
+}
+
+func mediaTriggerType(trigger string) string {
+	switch strings.TrimSpace(trigger) {
+	case "[媒体]":
+		return "media"
+	case "[图片]":
+		return types.MessageMediaTypeImage
+	case "[音频]":
+		return types.MessageMediaTypeAudio
+	case "[视频]":
+		return types.MessageMediaTypeVideo
+	case "[文件]":
+		return types.MessageMediaTypeFile
+	default:
+		return ""
+	}
+}
+
+func isBotMessage(msg *types.Message) bool {
+	if msg == nil || msg.Metadata == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(msg.Metadata["is_bot"]), "true") ||
+		strings.EqualFold(strings.TrimSpace(msg.Metadata["sender_type"]), "bot")
 }
 
 func (r *Router) systemAccessControl() types.AccessControlConfig {
@@ -480,10 +678,14 @@ func (r *Router) systemAccessControl() types.AccessControlConfig {
 func (r *Router) allowPluginMessage(plugin *types.Plugin, msg *types.Message) bool {
 	config := plugin.AccessControl
 	unionID := r.messageUnionID(msg)
+	r.mu.RLock()
+	adminChecker := r.adminChecker
+	r.mu.RUnlock()
+	isAdmin := adminChecker != nil && adminChecker(msg.Platform, msg.UserID)
 	if config.InheritSystem {
-		return allowMessageByAccessControl(r.systemAccessControl(), msg, unionID)
+		return allowMessageByAccessControlWithAdmin(r.systemAccessControl(), msg, unionID, isAdmin)
 	}
-	return allowMessageByAccessControl(config, msg, unionID)
+	return allowMessageByAccessControlWithAdmin(config, msg, unionID, isAdmin)
 }
 
 func messageSessionGroupID(msg *types.Message) string {
@@ -550,6 +752,10 @@ func allowSystemHardBlock(config types.AccessControlConfig, msg *types.Message, 
 }
 
 func allowMessageByAccessControl(config types.AccessControlConfig, msg *types.Message, unionID string) bool {
+	return allowMessageByAccessControlWithAdmin(config, msg, unionID, false)
+}
+
+func allowMessageByAccessControlWithAdmin(config types.AccessControlConfig, msg *types.Message, unionID string, isAdmin bool) bool {
 	if containsString(config.BlockedUserIDs, msg.UserID) {
 		return false
 	}
@@ -558,6 +764,9 @@ func allowMessageByAccessControl(config types.AccessControlConfig, msg *types.Me
 	}
 	if msg.GroupID != "" && containsString(config.BlockedGroups, msg.GroupID) {
 		return false
+	}
+	if config.AdminOnly {
+		return isAdmin || containsString(config.WhitelistUserIDs, msg.UserID)
 	}
 	if len(config.WhitelistUserIDs) > 0 && !containsString(config.WhitelistUserIDs, msg.UserID) {
 		return false
@@ -623,11 +832,15 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 		isAdmin = adminChecker(msg.Platform, msg.UserID)
 	}
 	unionID := ""
+	nickname := strings.TrimSpace(msg.Nickname)
 	points := int64(0)
 	pointsUnit := "积分"
 	if database != nil {
 		if account, err := database.GetUserAccount(msg.Platform, msg.UserID); err == nil {
 			unionID = account.UnionID
+			if strings.TrimSpace(account.Nickname) != "" {
+				nickname = account.Nickname
+			}
 			points = account.Points
 		}
 		if unit, err := database.GetSetting("user.points_unit"); err == nil && strings.TrimSpace(unit) != "" {
@@ -640,11 +853,14 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 		"platform":       msg.Platform,
 		"adapter_id":     msg.AdapterID,
 		"user_id":        msg.UserID,
+		"nickname":       nickname,
 		"union_id":       unionID,
 		"points":         points,
 		"points_unit":    pointsUnit,
 		"group_id":       msg.GroupID,
 		"content":        msg.Content,
+		"medias":         msg.Medias,
+		"media_only":     msg.MediaOnly,
 		"message_id":     msg.ID,
 		"is_admin":       isAdmin,
 		"metadata":       msg.Metadata,
@@ -658,6 +874,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 
 	adp := r.getAdapterForMessage(msg)
 	target := resolveReplyTarget(adp, msg)
+	pluginPath := r.pluginManager.PluginPath(plugin.ID)
 
 	responseLogID := pluginResponseLogMessageID(msg)
 	replyFunc := func(text string) error {
@@ -674,14 +891,56 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 			log.Printf("[SYSTEM] Adapter not found for platform: %s, markdown reply skipped", msg.Platform)
 			return nil
 		}
-		return sendReplyMarkdownWithFallback(adp, msg, target, markdown)
+		prepared, cleanup := r.prepareMarkdownMedia(markdown, pluginPath)
+		err := sendReplyMarkdownWithFallback(adp, msg, target, prepared)
+		if err == nil && cleanup != nil {
+			cleanup()
+		}
+		return err
 	}
 	imageFunc := func(imageURL string) error {
 		log.Printf("%s：[图片] 消息ID=%s", pluginResponseLogPrefix(msg, plugin), responseLogID)
 		if adp == nil {
 			return fmt.Errorf("适配器不存在: %s", msg.Platform)
 		}
-		return adp.SendImage(target, imageURL)
+		resolved, cleanup := r.prepareMedia(imageURL)
+		err := adp.SendImage(target, resolved)
+		if err == nil && cleanup != nil {
+			cleanup()
+		}
+		return err
+	}
+	audioFunc := func(audioURL string) error {
+		log.Printf("%s：[音频] 消息ID=%s", pluginResponseLogPrefix(msg, plugin), responseLogID)
+		if adp == nil {
+			return fmt.Errorf("适配器不存在: %s", msg.Platform)
+		}
+		sender, ok := adp.(adapter.AudioSender)
+		if !ok {
+			return adapter.ErrUnsupported
+		}
+		resolved, cleanup := r.prepareMedia(audioURL)
+		err := sender.SendAudio(target, resolved)
+		if err == nil && cleanup != nil {
+			cleanup()
+		}
+		return err
+	}
+	videoFunc := func(videoURL string) error {
+		log.Printf("%s：[视频] 消息ID=%s", pluginResponseLogPrefix(msg, plugin), responseLogID)
+		if adp == nil {
+			return fmt.Errorf("适配器不存在: %s", msg.Platform)
+		}
+		sender, ok := adp.(adapter.VideoSender)
+		if !ok {
+			return adapter.ErrUnsupported
+		}
+		resolved, cleanup := r.prepareMedia(videoURL)
+		err := sender.SendVideo(target, resolved)
+		if err == nil && cleanup != nil {
+			cleanup()
+		}
+		return err
 	}
 	fileFunc := func(filePath string) error {
 		log.Printf("%s：[文件] 消息ID=%s", pluginResponseLogPrefix(msg, plugin), responseLogID)
@@ -689,7 +948,12 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 			log.Printf("[SYSTEM] Adapter not found for platform: %s, file skipped", msg.Platform)
 			return nil
 		}
-		return adp.SendFile(target, filePath)
+		resolved, cleanup := r.prepareMedia(filePath)
+		err := adp.SendFile(target, resolved)
+		if err == nil && cleanup != nil {
+			cleanup()
+		}
+		return err
 	}
 	buttonsFunc := func(text string, buttons [][]types.ButtonOption) error {
 		log.Printf("%s：[按钮] 消息ID=%s", pluginResponseLogPrefix(msg, plugin), responseLogID)
@@ -705,7 +969,12 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 			log.Printf("[SYSTEM] Adapter not found for platform: %s, rich reply skipped", msg.Platform)
 			return nil
 		}
-		return sendReplyRichWithFallback(adp, msg, target, message)
+		message, cleanup := r.prepareRichMedia(message)
+		err := sendReplyRichWithFallback(adp, msg, target, message)
+		if err == nil && cleanup != nil {
+			cleanup()
+		}
+		return err
 	}
 
 	listenFunc := func(timeout int, retractTimeout int) string {
@@ -736,7 +1005,6 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 		}
 	}
 
-	pluginPath := r.pluginManager.PluginPath(plugin.ID)
 	r.mu.RLock()
 	dataViewSaver := r.dataViewSaver
 	r.mu.RUnlock()
@@ -755,6 +1023,12 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 	}
 	sendImageMessageFunc := func(pluginID string, action plugincore.ImageMessageAction) plugincore.PluginUserResult {
 		return r.SendPluginImageMessage(pluginID, action)
+	}
+	sendAudioMessageFunc := func(pluginID string, action plugincore.AudioMessageAction) plugincore.PluginUserResult {
+		return r.SendPluginAudioMessage(pluginID, action)
+	}
+	sendVideoMessageFunc := func(pluginID string, action plugincore.VideoMessageAction) plugincore.PluginUserResult {
+		return r.SendPluginVideoMessage(pluginID, action)
 	}
 	sendRichMessageFunc := func(pluginID string, action plugincore.RichMessageAction) plugincore.PluginUserResult {
 		return r.sendPluginRichMessage(pluginID, action)
@@ -856,7 +1130,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 			}
 			return plugincore.PluginUserResult{Success: true, Data: map[string]interface{}{"removed": removed}}
 		}
-		task := &config.ScheduledTask{TaskKey: action.TaskKey, Name: action.Name, Description: action.Description, Enabled: action.Enabled, Pinned: action.Pinned, Cron: action.Cron, Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, Content: action.Content}
+		task := &config.ScheduledTask{TaskKey: action.TaskKey, Name: action.Name, Description: action.Description, Enabled: action.Enabled, Pinned: action.Pinned, DeleteAfterRun: action.DeleteAfterRun, Cron: action.Cron, Platform: action.Platform, AdapterID: action.AdapterID, UserID: action.UserID, GroupID: action.GroupID, Content: action.Content}
 		if task.Platform == "" {
 			task.Platform = msg.Platform
 		}
@@ -1008,7 +1282,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 		return plugincore.PluginUserResult{Success: true, Error: "", Data: result}
 	}
 
-	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc, paymentFunc, buttonsFunc, replyMarkdownFunc, replyRichFunc, sendRichMessageFunc, sendImageMessageFunc, deleteMessageFunc, muteFunc, plugincore.PluginTaskInfo{Platform: msg.Platform, AdapterID: msg.AdapterID, UserID: msg.UserID, GroupID: msg.GroupID, UnionID: unionID, MessageID: msg.ID, Content: msg.Content}); err != nil {
+	if err := r.pluginManager.ExecutePlugin(plugin, pluginPath, messageJSON, replyFunc, imageFunc, fileFunc, listenFunc, dataViewSaver, dbFunc, fakeMessageFunc, sendMessageFunc, userFunc, adminFunc, configFunc, scheduleFunc, accountFunc, authFunc, scriptFunc, paymentFunc, buttonsFunc, replyMarkdownFunc, replyRichFunc, sendRichMessageFunc, sendImageMessageFunc, sendAudioMessageFunc, sendVideoMessageFunc, plugincore.AudioSenderFunc(audioFunc), plugincore.VideoSenderFunc(videoFunc), deleteMessageFunc, muteFunc, plugincore.PluginTaskInfo{Platform: msg.Platform, AdapterID: msg.AdapterID, UserID: msg.UserID, GroupID: msg.GroupID, UnionID: unionID, MessageID: msg.ID, Content: msg.Content}); err != nil {
 		log.Printf("Failed to execute plugin %s: %v", plugin.Name, err)
 		return err
 	}
@@ -1065,6 +1339,57 @@ func formatReplyText(adp adapter.Adapter, msg *types.Message, text string) strin
 		return formatter.FormatReplyText(msg, text)
 	}
 	return text
+}
+
+var markdownImagePattern = regexp.MustCompile(`!\[([^\]]*)\]\((<[^>]+>|[^)\s]+)([^)]*)\)`)
+
+func (r *Router) prepareMarkdownMedia(markdown, pluginPath string) (string, func()) {
+	cleanups := make([]func(), 0)
+	prepared := markdownImagePattern.ReplaceAllStringFunc(markdown, func(match string) string {
+		submatches := markdownImagePattern.FindStringSubmatch(match)
+		if len(submatches) != 4 {
+			return match
+		}
+		destination := submatches[2]
+		wrapped := strings.HasPrefix(destination, "<") && strings.HasSuffix(destination, ">")
+		pathValue := destination
+		if wrapped {
+			pathValue = strings.TrimSuffix(strings.TrimPrefix(pathValue, "<"), ">")
+		}
+		pathValue, err := url.PathUnescape(pathValue)
+		if err != nil || strings.TrimSpace(pathValue) == "" || isHTTPMediaReference(pathValue) {
+			return match
+		}
+		candidate := pathValue
+		if !strings.HasPrefix(strings.ToLower(candidate), "data:") && !filepath.IsAbs(candidate) && strings.TrimSpace(pluginPath) != "" {
+			candidate = filepath.Join(pluginPath, filepath.FromSlash(candidate))
+		}
+		resolved, cleanup := r.prepareMedia(candidate)
+		if cleanup == nil || !isHTTPMediaReference(resolved) {
+			if cleanup != nil {
+				cleanup()
+			}
+			return match
+		}
+		cleanups = append(cleanups, cleanup)
+		if wrapped {
+			resolved = "<" + resolved + ">"
+		}
+		return strings.Replace(match, destination, resolved, 1)
+	})
+	if len(cleanups) == 0 {
+		return prepared, nil
+	}
+	return prepared, func() {
+		for _, cleanup := range cleanups {
+			cleanup()
+		}
+	}
+}
+
+func isHTTPMediaReference(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
 }
 
 func sendMarkdownWithFallback(adp adapter.Adapter, target string, markdown string) error {
@@ -1260,6 +1585,7 @@ func (r *Router) dispatchFakeMessage(pluginID string, action plugincore.FakeMess
 	if platform == "" {
 		return fmt.Errorf("平台不能为空")
 	}
+	userID, groupID = r.normalizeFakeMessageIdentity(platform, userID, groupID)
 	msg := &types.Message{
 		ID:        fmt.Sprintf("fake-%s-%d", pluginID, time.Now().UnixNano()),
 		Platform:  platform,
@@ -1272,6 +1598,10 @@ func (r *Router) dispatchFakeMessage(pluginID string, action plugincore.FakeMess
 			"fake_source_plugin": pluginID,
 		},
 	}
+	if platform == "qq_office" && groupID != "" {
+		msg.Metadata["qq_office_group_openid"] = groupID
+		msg.Metadata["qq_office_member_openid"] = userID
+	}
 	if adapterID != "" {
 		msg.Metadata["adapter_id"] = adapterID
 		msg.Metadata["adapter_platform"] = platform
@@ -1281,6 +1611,31 @@ func (r *Router) dispatchFakeMessage(pluginID string, action plugincore.FakeMess
 	log.Printf("[SYSTEM] Plugin %s fake message: platform=%s adapter_id=%s user=%s group=%s content=%s", pluginID, platform, adapterID, userID, groupID, content)
 	go r.HandleMessage(msg)
 	return nil
+}
+
+func (r *Router) normalizeFakeMessageIdentity(platform, userID, groupID string) (string, string) {
+	if strings.EqualFold(strings.TrimSpace(platform), "qq_office") {
+		groupID = strings.TrimPrefix(groupID, "group_")
+	}
+	r.mu.RLock()
+	database := r.database
+	r.mu.RUnlock()
+	if database == nil {
+		return userID, groupID
+	}
+	if _, err := database.GetUserAccount(platform, userID); err == nil {
+		return userID, groupID
+	}
+	accounts, err := database.ListUserAccountsByUnionID(userID)
+	if err != nil {
+		return userID, groupID
+	}
+	for _, account := range accounts {
+		if account != nil && strings.EqualFold(strings.TrimSpace(account.Platform), strings.TrimSpace(platform)) {
+			return account.UserID, groupID
+		}
+	}
+	return userID, groupID
 }
 
 func (r *Router) DispatchFakeMessage(pluginID string, platform string, userID string, groupID string, content string) error {
@@ -1432,6 +1787,32 @@ func (r *Router) SendPluginImageMessage(pluginID string, action plugincore.Image
 	return plugincore.PluginUserResult{Success: true, Data: true}
 }
 
+func (r *Router) SendPluginAudioMessage(pluginID string, action plugincore.AudioMessageAction) plugincore.PluginUserResult {
+	if err := r.sendPluginMediaMessage(pluginID, action.Platform, action.AdapterID, action.UserID, action.GroupID, action.UnionID, action.URL, "音频", func(adp adapter.Adapter, target, mediaURL string) error {
+		sender, ok := adp.(adapter.AudioSender)
+		if !ok {
+			return adapter.ErrUnsupported
+		}
+		return sender.SendAudio(target, mediaURL)
+	}); err != nil {
+		return plugincore.PluginUserResult{Success: false, Error: err.Error()}
+	}
+	return plugincore.PluginUserResult{Success: true, Data: true}
+}
+
+func (r *Router) SendPluginVideoMessage(pluginID string, action plugincore.VideoMessageAction) plugincore.PluginUserResult {
+	if err := r.sendPluginMediaMessage(pluginID, action.Platform, action.AdapterID, action.UserID, action.GroupID, action.UnionID, action.URL, "视频", func(adp adapter.Adapter, target, mediaURL string) error {
+		sender, ok := adp.(adapter.VideoSender)
+		if !ok {
+			return adapter.ErrUnsupported
+		}
+		return sender.SendVideo(target, mediaURL)
+	}); err != nil {
+		return plugincore.PluginUserResult{Success: false, Error: err.Error()}
+	}
+	return plugincore.PluginUserResult{Success: true, Data: true}
+}
+
 func (r *Router) SendPluginRichMessage(pluginID string, action plugincore.RichMessageAction) plugincore.PluginUserResult {
 	return r.sendPluginRichMessage(pluginID, action)
 }
@@ -1544,7 +1925,77 @@ func (r *Router) sendPluginImageMessage(pluginID string, action plugincore.Image
 	}
 	target := resolveSendTarget(adp, userID, groupID)
 	log.Printf("[SYSTEM] Plugin %s send image message: platform=%s adapter_id=%s user=%s group=%s", pluginID, platform, adapterID, userID, groupID)
-	return adp.SendImage(target, imageURL)
+	resolved, cleanup := r.prepareMedia(imageURL)
+	err = adp.SendImage(target, resolved)
+	if err == nil && cleanup != nil {
+		cleanup()
+	}
+	if err != nil {
+		log.Printf("[SYSTEM] Plugin %s send image failed: %v", pluginID, err)
+	}
+	return err
+}
+
+func (r *Router) sendPluginMediaMessage(pluginID, platform, adapterID, userID, groupID, unionID, mediaURL, mediaName string, send func(adapter.Adapter, string, string) error) error {
+	platform = strings.TrimSpace(platform)
+	adapterID = strings.TrimSpace(adapterID)
+	userID = strings.TrimSpace(userID)
+	groupID = strings.TrimSpace(groupID)
+	unionID = strings.TrimSpace(unionID)
+	mediaURL = strings.TrimSpace(mediaURL)
+	if mediaURL == "" {
+		return fmt.Errorf("%s地址不能为空", mediaName)
+	}
+	if platform == "" && adapterID == "" && unionID == "" {
+		return fmt.Errorf("平台不能为空")
+	}
+	if userID == "" && groupID == "" && unionID == "" {
+		return fmt.Errorf("用户 ID 和群组 ID 不能同时为空")
+	}
+	if unionID != "" && groupID == "" {
+		if adapterID != "" {
+			resolvedPlatform, _, _, _, _, err := r.resolveSendAdapterInfo(platform, adapterID)
+			if err != nil {
+				return err
+			}
+			platform = resolvedPlatform
+		}
+		sent, err := r.sendPluginActionToUnion(pluginID, unionID, platform, adapterID, strings.ToLower(mediaName), func(account *config.UserAccount, currentAdapterID string) error {
+			return r.sendPluginMediaMessage(pluginID, account.Platform, currentAdapterID, account.UserID, "", "", mediaURL, mediaName, send)
+		})
+		if sent {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if (platform == "" && adapterID == "") || userID == "" {
+			return fmt.Errorf("UnionID %s 没有可用平台账号", unionID)
+		}
+	}
+	resolvedPlatform, resolvedAdapterID, _, _, adp, err := r.resolveSendAdapterInfo(platform, adapterID)
+	if err != nil {
+		return err
+	}
+	platform = resolvedPlatform
+	adapterID = resolvedAdapterID
+	if platform == "" {
+		return fmt.Errorf("平台不能为空")
+	}
+	if adp == nil {
+		return fmt.Errorf("适配器不存在: %s", platform)
+	}
+	target := resolveSendTarget(adp, userID, groupID)
+	log.Printf("[SYSTEM] Plugin %s send %s message: platform=%s adapter_id=%s user=%s group=%s", pluginID, mediaName, platform, adapterID, userID, groupID)
+	resolved, cleanup := r.prepareMedia(mediaURL)
+	err = send(adp, target, resolved)
+	if err == nil && cleanup != nil {
+		cleanup()
+	}
+	if err != nil {
+		log.Printf("[SYSTEM] Plugin %s send %s failed: %v", pluginID, mediaName, err)
+	}
+	return err
 }
 
 func (r *Router) sendPluginRichMessage(pluginID string, action plugincore.RichMessageAction) plugincore.PluginUserResult {
@@ -1597,8 +2048,14 @@ func (r *Router) sendPluginRichMessage(pluginID string, action plugincore.RichMe
 	}
 	target := resolveSendTarget(adp, userID, groupID)
 	log.Printf("[SYSTEM] Plugin %s send rich message: platform=%s adapter_id=%s user=%s group=%s parts=%d", pluginID, platform, adapterID, userID, groupID, len(message.Parts))
-	if err := sendRichWithFallback(adp, target, message); err != nil {
+	message, cleanup := r.prepareRichMedia(message)
+	err = sendRichWithFallback(adp, target, message)
+	if err != nil {
+		log.Printf("[SYSTEM] Plugin %s send rich message failed: %v", pluginID, err)
 		return plugincore.PluginUserResult{Success: false, Error: err.Error()}
+	}
+	if cleanup != nil {
+		cleanup()
 	}
 	return plugincore.PluginUserResult{Success: true, Data: true}
 }
@@ -1911,7 +2368,7 @@ func listenLogPrefix(msg *types.Message) string {
 	if msg.GroupID != "" {
 		scope = msg.GroupID
 	}
-	return fmt.Sprintf("[监听][%s][%s(%s)]", msg.Platform, msg.UserID, scope)
+	return fmt.Sprintf("[监听][%s][%s(%s)]", msg.Platform, userLogIdentity(msg), scope)
 }
 
 func stringDefault(value, fallback string) string {
@@ -1926,7 +2383,18 @@ func pluginResponseLogPrefix(msg *types.Message, plugin *types.Plugin) string {
 	if msg.GroupID != "" {
 		scope = msg.GroupID
 	}
-	return fmt.Sprintf("[响应][%s][%s][%s(%s)][插件:%s]", msg.Platform, adapterLogName(msg), msg.UserID, scope, plugin.Name)
+	return fmt.Sprintf("[响应][%s][%s][%s%s(%s)][插件:%s]", msg.Platform, adapterLogName(msg), msg.UserID, userNicknameSuffix(msg), scope, plugin.Name)
+}
+
+func userLogIdentity(msg *types.Message) string {
+	return msg.UserID + userNicknameSuffix(msg)
+}
+
+func userNicknameSuffix(msg *types.Message) string {
+	if msg == nil || strings.TrimSpace(msg.Nickname) == "" {
+		return ""
+	}
+	return "<" + strings.TrimSpace(msg.Nickname) + ">"
 }
 
 func pluginResponseLogMessageID(msg *types.Message) string {

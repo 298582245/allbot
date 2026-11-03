@@ -680,13 +680,11 @@ func (d *Database) ImportTables(data []byte, replace bool) error {
 	if len(payload.Tables) == 0 {
 		return fmt.Errorf("导入文件没有表数据")
 	}
-
-	tx, err := d.db.Begin()
-	if err != nil {
-		return err
+	type validatedTable struct {
+		data      TableRows
+		columnMap map[string]bool
 	}
-	defer tx.Rollback()
-
+	validatedTables := make([]validatedTable, 0, len(payload.Tables))
 	for _, tableData := range payload.Tables {
 		if err := d.ensureDataAdminTableName(tableData.Table); err != nil {
 			return err
@@ -695,10 +693,21 @@ func (d *Database) ImportTables(data []byte, replace bool) error {
 		if err != nil {
 			return err
 		}
-		columnMap := make(map[string]bool)
+		columnMap := make(map[string]bool, len(columns))
 		for _, column := range columns {
 			columnMap[column.Name] = true
 		}
+		validatedTables = append(validatedTables, validatedTable{data: tableData, columnMap: columnMap})
+	}
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, validated := range validatedTables {
+		tableData := validated.data
 
 		if replace {
 			if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s`, quoteIdentifier(tableData.Table))); err != nil {
@@ -709,7 +718,7 @@ func (d *Database) ImportTables(data []byte, replace bool) error {
 		for _, row := range tableData.Rows {
 			names := make([]string, 0)
 			for name := range row {
-				if name != "__rowid__" && columnMap[name] {
+				if name != "__rowid__" && validated.columnMap[name] {
 					names = append(names, name)
 				}
 			}

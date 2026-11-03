@@ -2,15 +2,178 @@ package telegram
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/allbot/allbot/core/adapter/_contract"
+	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/types"
 )
+
+func telegramTestDatabase(t *testing.T) *config.Database {
+	t.Helper()
+	db, err := config.NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := config.DefaultImageHostSettings()
+	settings.StorageDir = t.TempDir()
+	settings.PublicBaseURL = "https://bot.example"
+	if err := db.SaveImageHostSettings(settings); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func TestTelegramHandleMediaBuildsUnifiedMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/botTOKEN/getFile" {
+			var body map[string]interface{}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["file_id"] == "" {
+				t.Fatalf("getFile body = %#v", body)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"ok":true,"result":{"file_path":"photos/photo.jpg"}}`))
+			return
+		}
+		_, _ = writer.Write([]byte("downloaded media"))
+	}))
+	defer server.Close()
+	adapter := NewTelegramAdapter("TOKEN", "")
+	adapter.apiURL = server.URL + "/botTOKEN"
+	adapter.SetDatabase(telegramTestDatabase(t))
+	messages := make(chan *types.Message, 1)
+	adapter.SetMessageHandler(func(message *types.Message) { messages <- message })
+	adapter.handleUpdate(map[string]interface{}{
+		"message": map[string]interface{}{
+			"message_id": float64(8),
+			"text":       "说明文字",
+			"from":       map[string]interface{}{"id": float64(9), "username": "tester"},
+			"chat":       map[string]interface{}{"id": float64(10), "type": "private"},
+			"photo":      []interface{}{map[string]interface{}{"file_id": "photo-id", "file_size": float64(100), "file_unique_id": "photo-unique"}},
+			"audio":      map[string]interface{}{"file_id": "audio-id", "file_name": "voice.mp3"},
+		},
+	})
+
+	message := <-messages
+	if message.MediaOnly || len(message.Medias) != 2 || message.Medias[0].Type != types.MessageMediaTypeImage || message.Medias[1].Type != types.MessageMediaTypeAudio {
+		t.Fatalf("message = %#v", message)
+	}
+	if !strings.HasPrefix(message.Medias[0].URL, "https://bot.example/api/open/temp-media/") || !strings.HasPrefix(message.Medias[1].URL, "https://bot.example/api/open/temp-media/") {
+		t.Fatalf("medias = %#v", message.Medias)
+	}
+	if strings.Contains(message.Content, "TOKEN") || !strings.Contains(message.Content, "说明文字 [图片]("+message.Medias[0].URL+") [voice.mp3]("+message.Medias[1].URL+")") {
+		t.Fatalf("content = %q", message.Content)
+	}
+}
+
+func TestTelegramHandleSingleVideoSetsMediaOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/botTOKEN/getFile" {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"ok":true,"result":{"file_path":"videos/clip.mp4"}}`))
+			return
+		}
+		_, _ = writer.Write([]byte("video bytes"))
+	}))
+	defer server.Close()
+	adapter := NewTelegramAdapter("TOKEN", "")
+	adapter.apiURL = server.URL + "/botTOKEN"
+	adapter.SetDatabase(telegramTestDatabase(t))
+	messages := make(chan *types.Message, 1)
+	adapter.SetMessageHandler(func(message *types.Message) { messages <- message })
+	adapter.handleUpdate(map[string]interface{}{"message": map[string]interface{}{
+		"message_id": float64(18),
+		"from":       map[string]interface{}{"id": float64(19)},
+		"chat":       map[string]interface{}{"id": float64(20), "type": "group"},
+		"video":      map[string]interface{}{"file_id": "video-id", "file_name": "clip.mp4"},
+	}})
+	message := <-messages
+	if !message.MediaOnly || message.GroupID != "20" || len(message.Medias) != 1 || message.Medias[0].Type != types.MessageMediaTypeVideo || !strings.HasPrefix(message.Medias[0].URL, "https://bot.example/api/open/temp-media/") {
+		t.Fatalf("message = %#v", message)
+	}
+}
+
+func TestTelegramSendAudioAndVideo(t *testing.T) {
+	requests := make(chan map[string]interface{}, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		requests <- map[string]interface{}{"path": request.URL.Path, "body": body}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	adapter := NewTelegramAdapter("TOKEN", "")
+	adapter.apiURL = server.URL + "/botTOKEN"
+	if err := adapter.SendAudio("123", "https://media.example/audio.mp3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.SendVideo("456", "https://media.example/video.mp4"); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []struct{ path, field, url string }{
+		{"/botTOKEN/sendAudio", "audio", "https://media.example/audio.mp3"},
+		{"/botTOKEN/sendVideo", "video", "https://media.example/video.mp4"},
+	} {
+		request := <-requests
+		body := request["body"].(map[string]interface{})
+		if request["path"] != expected.path || body[expected.field] != expected.url {
+			t.Fatalf("request = %#v", request)
+		}
+	}
+}
+
+func TestTelegramSendFileUploadsLocalFileAsMultipart(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(filePath, []byte("file contents"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/botTOKEN/sendDocument" || !strings.HasPrefix(request.Header.Get("Content-Type"), "multipart/form-data;") {
+			t.Fatalf("request path/content-type = %q / %q", request.URL.Path, request.Header.Get("Content-Type"))
+		}
+		if err := request.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		if request.FormValue("chat_id") != "123" {
+			t.Fatalf("chat_id = %q", request.FormValue("chat_id"))
+		}
+		file, header, err := request.FormFile("document")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		content, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Filename != "notes.txt" || string(content) != "file contents" {
+			t.Fatalf("uploaded file = %q, %q", header.Filename, content)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	adapter := NewTelegramAdapter("TOKEN", "")
+	adapter.apiURL = server.URL + "/botTOKEN"
+	if err := adapter.SendFile("123", filePath); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestTelegramVerifyTokenCachesBotIdentity(t *testing.T) {
 	var calls atomic.Int32

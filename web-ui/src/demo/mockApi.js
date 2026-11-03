@@ -82,7 +82,7 @@ const demoState = {
     { name: 'users', view_name: '用户', group: '用户数据', columns: ['union_id', 'points', 'disabled'] },
     { name: 'keyword_replies', view_name: '关键字回复', group: '回复配置', columns: ['keyword', 'reply_type', 'enabled'] }
   ],
-  settings: { access_enabled: false, access_code: '', github_proxy_url: '', log_retention_days: 30 },
+  settings: { access_enabled: false, access_code: '', github_proxy_url: '', public_base_url: '', log_retention_days: 30 },
   logSettings: { retention_days: 30 },
   paymentSettings: { max_payment_amount_cents: 10000, points_per_rmb: 100 },
   update: { current_version: 'v1.0.5-demo', latest_version: 'v1.0.5-demo', release_url: '', url: '', html_url: '' }
@@ -271,7 +271,7 @@ function handleRequest(request) {
   if (path === '/backups/settings') return { enabled: true, cron: '0 3 * * *', retention: 7, ...data }
   if (path === '/backups' && method === 'post') return { name: `allbot-demo-${Date.now()}.zip`, message: '演示备份已创建' }
   if (segments[0] === 'backups' && method === 'delete') return { ok: true }
-  if (path === '/images/settings' && method === 'get') return { storage_dir: '', public_base_url: '', max_size: 5 * 1024 * 1024, allowed_types: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }
+  if (path === '/images/settings' && method === 'get') return { storage_dir: '', max_size: 5 * 1024 * 1024, allowed_types: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }
   if (path === '/images/settings' && method === 'put') return { ...data }
   if (path === '/images' && method === 'get') return { items: [], total: 0 }
   if (path === '/images' && method === 'post') return { id: `demo-image-${Date.now()}`, url: '' }

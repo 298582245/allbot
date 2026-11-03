@@ -410,6 +410,8 @@ plugins/demo/
 | `user_config` | 用户配置值 |
 | `access_control` | 插件访问控制 |
 
+插件作者默认配置保存在 `plugin.json`。后台修改的插件系统配置（包括启用、置顶、优先级、触发规则、平台、访问控制和 Web 配置）保存在同目录 `plugin.data.system_config`，用户配置仍保存在 `plugin.data.user_config`。加载时只覆盖用户实际修改的字段，插件更新默认配置不会覆盖这些修改。
+
 ### Node.js 插件示例
 
 ```js
@@ -475,6 +477,8 @@ Node.js：
 await ctx.reply('文本')
 await ctx.sendMessage({ platform: 'qq', userId: '10001', text: '主动消息' })
 await ctx.sendImage('https://example.com/a.png')
+await ctx.sendAudio('https://example.com/a.mp3')
+await ctx.sendVideo('https://example.com/a.mp4')
 await ctx.sendFile('/path/to/file')
 ```
 
@@ -484,6 +488,8 @@ Python：
 await ctx.reply('文本')
 await ctx.send_message(platform='qq', user_id='10001', text='主动消息')
 await ctx.send_image('https://example.com/a.png')
+await ctx.send_audio('https://example.com/a.mp3')
+await ctx.send_video('https://example.com/a.mp4')
 await ctx.send_file('/path/to/file')
 ```
 
@@ -531,6 +537,16 @@ await ctx.setScheduledTask({
   userId: ctx.userId,
   content: '你好'
 })
+
+await ctx.setOneTimeScheduledTask({
+  taskKey: 'remind-once',
+  name: '一次性提醒',
+  cron: '0 8 * * *',
+  platform: ctx.platform,
+  adapterId: ctx.adapterId,
+  userId: ctx.userId,
+  content: '提醒内容'
+})
 ```
 
 Python：
@@ -545,13 +561,24 @@ await ctx.set_scheduled_task(
     user_id=ctx.user_id,
     content='你好',
 )
+
+await ctx.set_one_time_scheduled_task(
+    task_key='remind-once',
+    name='一次性提醒',
+    cron='0 8 * * *',
+    platform=ctx.platform,
+    adapter_id=ctx.adapter_id,
+    user_id=ctx.user_id,
+    content='提醒内容',
+)
 ```
 
 说明：
 
 - `task_key` / `taskKey` 用于区分同一插件声明的任务。
-- 插件声明任务时，如果同一 `plugin_id + task_key` 已存在，后端会返回已有任务，不覆盖后台手动修改过的配置。
+- 插件声明任务时，如果同一 `plugin_id + task_key` 已存在，后端保留后台手动修改过的任务配置，并同步 SDK 声明的自动执行后删除标记。
 - `@once` 表示只允许手动执行，不参与自动 cron 调度。
+- `setOneTimeScheduledTask` / `set_one_time_scheduled_task` 声明的任务会在自动调度执行后删除；从后台手动执行不会删除。
 - 支持 5 位或 6 位 cron，支持多行表达式。
 
 ### 获取平台管理员身份
@@ -652,6 +679,72 @@ Token 可从以下位置传入：
 - Form body：`token`
 
 接口脚本可使用 Open API 形式的 SDK 上下文处理请求并返回响应。
+
+### 开发者 API 与 MCP
+
+开发者 API 与 MCP 是面向外部系统的管理接口，和上面的自定义 Open API 是两套独立功能。开发者 API 复用后台已开放的业务接口；管理员在“开发者应用”中创建应用并按模块授权。REST API 通过 `/api/v1/open-api/token` 使用应用凭据换取 Bearer 令牌，MCP 地址为 `/api/v1/mcp`，可使用应用 Basic 凭据或 Bearer 令牌。
+
+自定义 Open API 则由管理员逐个创建 HTTP 接口，并通过 Node.js/Python 脚本实现业务逻辑；它使用每个自定义接口自身的 Token，不会因为创建开发者应用而获得访问权限，也不会继承开发者 API 的模块授权。
+
+开发者 API 与 MCP 的接口、参数和使用说明见 [AllBot Apifox 文档](https://allbot.apifox.cn/)。
+
+### 在 IDE 中配置 MCP
+
+AllBot 的 MCP 地址是面板地址后加 `/api/v1/mcp`。例如本机地址为：
+
+```text
+http://127.0.0.1:3000/api/v1/mcp
+```
+
+在管理员后台“开发者应用”中创建应用并授予需要的模块权限后，可以直接使用 `appKey:appSecret` 做 Basic 鉴权。先将两者用英文冒号拼接，再进行 Base64 编码：
+
+PowerShell：
+
+```powershell
+$pair = "appKey:appSecret"
+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pair))
+```
+
+如果 IDE 支持远程 Streamable HTTP MCP，可在它的 MCP 配置文件中填写以下结构。将 `<base64(appKey:appSecret)>` 替换为上一步的结果：
+
+```json
+{
+  "mcpServers": {
+    "AllBot 开发者 MCP": {
+      "url": "http://127.0.0.1:3000/api/v1/mcp",
+      "headers": {
+        "Authorization": "Basic <base64(appKey:appSecret)>"
+      }
+    }
+  }
+}
+```
+
+如果 IDE 只支持 stdio MCP，可以使用 `mcp-remote` 作为本地桥接。下面的配置把鉴权值放到环境变量中，避免直接写进命令参数：
+
+```json
+{
+  "mcpServers": {
+    "AllBot 开发者 MCP": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://127.0.0.1:3000/api/v1/mcp",
+        "--header",
+        "Authorization:${ALLBOT_MCP_AUTH}"
+      ],
+      "env": {
+        "ALLBOT_MCP_AUTH": "Basic <base64(appKey:appSecret)>"
+      }
+    }
+  }
+}
+```
+
+也可以先调用 `POST /api/v1/open-api/token` 换取 24 小时应用令牌，再把配置中的 Authorization 改为 `Bearer <access_token>`。REST 开发者接口只能使用这个 Bearer 令牌；MCP 才支持直接使用 Basic 应用凭据。不要把 `appSecret` 直接当作 Bearer 令牌，也不要把管理员后台登录令牌用于 REST 接口。
+
+上面的配置是 AllBot 开发者 MCP，不是 Apifox 的 MCP 配置，也不是后台“自定义 Open API”。自定义 Open API 使用管理员为每个脚本接口配置的独立 Token；Apifox 的 `apifox-mcp-server` 只用于访问 Apifox 文档，不能替代 AllBot 的 `/api/v1/mcp` 地址。
 
 ## 数据管理
 

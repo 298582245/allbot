@@ -61,6 +61,30 @@ func (a *managerHealthTestAdapter) Stop() error {
 func (a *managerHealthTestAdapter) SetMessageHandler(handler func(*types.Message)) {}
 func (a *managerHealthTestAdapter) IsHealthy() bool                                { return a.healthy }
 
+type managerAlwaysUnhealthyAdapter struct {
+	platform string
+	starts   *int32
+}
+
+func (a *managerAlwaysUnhealthyAdapter) GetPlatform() string                            { return a.platform }
+func (a *managerAlwaysUnhealthyAdapter) SendMessage(target string, text string) error   { return nil }
+func (a *managerAlwaysUnhealthyAdapter) SendImage(target string, imageURL string) error { return nil }
+func (a *managerAlwaysUnhealthyAdapter) SendFile(target string, filePath string) error  { return nil }
+func (a *managerAlwaysUnhealthyAdapter) GetUserInfo(userID string) (*adapter.UserInfo, error) {
+	return nil, nil
+}
+func (a *managerAlwaysUnhealthyAdapter) GetGroupInfo(groupID string) (*adapter.GroupInfo, error) {
+	return nil, nil
+}
+func (a *managerAlwaysUnhealthyAdapter) AtUser(groupID string, userID string) error { return nil }
+func (a *managerAlwaysUnhealthyAdapter) Start() error {
+	atomic.AddInt32(a.starts, 1)
+	return nil
+}
+func (a *managerAlwaysUnhealthyAdapter) Stop() error                                    { return nil }
+func (a *managerAlwaysUnhealthyAdapter) SetMessageHandler(handler func(*types.Message)) {}
+func (a *managerAlwaysUnhealthyAdapter) IsHealthy() bool                                { return false }
+
 func newAdapterManagerSelectionTest(t *testing.T) (*Database, *AdapterManager, int64, int64) {
 	t.Helper()
 	db, err := NewDatabase(":memory:")
@@ -122,6 +146,7 @@ func TestAdapterManagerRestartUnhealthyEnabledAdapter(t *testing.T) {
 	}
 	manager := NewAdapterManager(db)
 	manager.adapters[adapterConfig.ID] = &managerHealthTestAdapter{platform: platform, healthy: false, starts: &starts, stops: &stops}
+	manager.restartEligible[adapterConfig.ID] = true
 
 	manager.RestartUnhealthyAdapters()
 
@@ -130,5 +155,40 @@ func TestAdapterManagerRestartUnhealthyEnabledAdapter(t *testing.T) {
 	}
 	if !manager.IsAdapterRunning(adapterConfig.ID) {
 		t.Fatal("expected restarted adapter to be healthy")
+	}
+}
+
+func TestAdapterManagerStopsAutomaticRestartAfterLimit(t *testing.T) {
+	db, err := NewDatabase(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	platform := "health_test_limit_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	var starts int32
+	registry.Register(registry.Descriptor{
+		Platform:    platform,
+		DisplayName: "Health Limit Test",
+		ParseConfig: func(raw string) (interface{}, error) { return nil, nil },
+		NewAdapter: func(config interface{}) (adapter.Adapter, error) {
+			return &managerAlwaysUnhealthyAdapter{platform: platform, starts: &starts}, nil
+		},
+	})
+
+	adapterConfig := &AdapterConfig{Platform: platform, Enabled: true, Config: `{}`}
+	if err := db.SaveAdapter(adapterConfig); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewAdapterManager(db)
+	manager.adapters[adapterConfig.ID] = &managerAlwaysUnhealthyAdapter{platform: platform, starts: &starts}
+	manager.restartEligible[adapterConfig.ID] = true
+
+	for i := 0; i < adapterAutoRestartMaxAttempts+5; i++ {
+		manager.RestartUnhealthyAdapters()
+	}
+
+	if got := atomic.LoadInt32(&starts); got != adapterAutoRestartMaxAttempts {
+		t.Fatalf("starts=%d, expected %d automatic restart attempts", got, adapterAutoRestartMaxAttempts)
 	}
 }

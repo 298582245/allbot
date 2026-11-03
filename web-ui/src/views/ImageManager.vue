@@ -116,10 +116,6 @@
           <el-input v-model.trim="settingsForm.storage_dir" placeholder="例如：runtime/images" />
           <div class="field-tip">图片存储目录，留空会导致后端无法确定保存位置。</div>
         </el-form-item>
-        <el-form-item label="public_base_url">
-          <el-input v-model.trim="settingsForm.public_base_url" placeholder="例如：https://example.com/images" />
-          <div class="field-tip">用于拼接图片直链，通常填写外部可访问的图床根地址。</div>
-        </el-form-item>
         <el-form-item label="max_size" required>
           <el-input-number v-model="settingsForm.max_size" :min="1" :step="1024 * 1024" style="width: 100%" />
           <div class="field-tip">单张图片最大字节数，例如 5242880 表示 5 MB。</div>
@@ -286,14 +282,13 @@ const showPageDescription = () => {
 }
 
 function createDefaultSettings() {
-  return { storage_dir: '', public_base_url: '', max_size: 5 * 1024 * 1024, allowed_types: [...defaultAllowedTypes] }
+  return { storage_dir: '', max_size: 5 * 1024 * 1024, allowed_types: [...defaultAllowedTypes] }
 }
 
 function normalizeSettings(data) {
   const settings = data?.settings || data || {}
   return {
     storage_dir: String(settings.storage_dir || settings.storageDir || ''),
-    public_base_url: String(settings.public_base_url || settings.publicBaseUrl || ''),
     max_size: Number(settings.max_size || settings.maxSize || 5 * 1024 * 1024),
     allowed_types: normalizeAllowedTypes(settings.allowed_types || settings.allowedTypes)
   }
@@ -316,7 +311,6 @@ function normalizeImageList(data) {
 
 function buildSettingsPayload() {
   const storageDir = settingsForm.storage_dir.trim()
-  const publicBaseUrl = settingsForm.public_base_url.trim()
   const maxSize = Number(settingsForm.max_size || 0)
   const allowedTypes = settingsForm.allowed_types.map(item => String(item).trim()).filter(Boolean)
   if (!storageDir) {
@@ -331,7 +325,7 @@ function buildSettingsPayload() {
     ElMessage.warning('请至少设置一种 allowed_types')
     return null
   }
-  return { storage_dir: storageDir, public_base_url: publicBaseUrl, max_size: maxSize, allowed_types: allowedTypes }
+  return { storage_dir: storageDir, max_size: maxSize, allowed_types: allowedTypes }
 }
 
 async function chooseStorageDirAction(storageDir) {

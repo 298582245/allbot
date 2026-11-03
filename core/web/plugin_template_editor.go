@@ -375,6 +375,7 @@ func preserveUnmanagedPluginConfig(target *types.PluginConfig, current types.Plu
 	}
 	target.AllowedAdapterIDs = append([]string(nil), current.AllowedAdapterIDs...)
 	target.Pinned = current.Pinned
+	target.AcceptBotMessages = current.AcceptBotMessages
 	target.Dependencies = cloneStringMap(current.Dependencies)
 	target.AccessControl = cloneAccessControl(current.AccessControl)
 	target.OpenAPI = current.OpenAPI

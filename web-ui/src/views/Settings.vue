@@ -35,6 +35,10 @@
           <el-form-item label="管理端口">
             <el-alert title="管理后台端口由启动环境变量 ALLBOT_WEB_PORT 控制，修改后需要重启服务。" type="info" :closable="false" show-icon />
           </el-form-item>
+          <el-form-item label="公网地址">
+            <el-input v-model.trim="form.public_base_url" clearable placeholder="例如：https://bot.example.com" />
+            <span class="hint">用于生成本地图片、音频、视频和文件的临时公开链接，留空则直接交给适配器发送。</span>
+          </el-form-item>
           <el-form-item label="自动刷新">
             <el-switch v-model="form.auto_refresh" />
             <span class="hint">{{ form.auto_refresh ? '启用' : '禁用' }}</span>
@@ -60,6 +64,10 @@
           </el-form-item>
           <el-form-item label="积分单位">
             <el-input v-model="form.points_unit" placeholder="积分" />
+          </el-form-item>
+          <el-form-item label="未注册提示上限">
+            <el-input-number v-model="form.unregistered_prompt_limit" :min="0" :max="1000000" controls-position="right" />
+            <span class="hint">未注册用户收到注册引导的最多次数，0 表示不提示</span>
           </el-form-item>
         </section>
 
@@ -194,7 +202,9 @@ const form = reactive({
   auto_load_plugins: true,
   script_task_concurrent_limit: 1,
   points_unit: '积分',
+  unregistered_prompt_limit: 10,
   github_proxy_url: '',
+  public_base_url: '',
   access_control: createAccessControl()
 })
 
@@ -289,7 +299,9 @@ const loadSettings = async () => {
       auto_load_plugins: data.auto_load_plugins,
       script_task_concurrent_limit: Number(data.script_task_concurrent_limit || 1),
       points_unit: data.points_unit || '积分',
+      unregistered_prompt_limit: Math.max(0, Number(data.unregistered_prompt_limit ?? 10)),
       github_proxy_url: data.github_proxy_url || '',
+      public_base_url: data.public_base_url || '',
       access_control: normalizeAccessControl(data.access_control)
     })
   } finally {
@@ -400,6 +412,7 @@ const handleChangePassword = async () => {
 const handleSave = async () => {
   form.access_code = String(form.access_code || '').trim()
   form.script_task_concurrent_limit = Math.max(1, Number(form.script_task_concurrent_limit || 1))
+  form.unregistered_prompt_limit = Math.max(0, Math.min(1000000, Number(form.unregistered_prompt_limit ?? 10)))
   if (form.access_code_enabled && !form.access_code) {
     ElMessage.warning('开启安全访问入口时必须填写访问码')
     return
@@ -416,7 +429,9 @@ const handleSave = async () => {
       auto_load_plugins: form.auto_load_plugins,
       script_task_concurrent_limit: form.script_task_concurrent_limit,
       points_unit: form.points_unit,
-      github_proxy_url: form.github_proxy_url
+      unregistered_prompt_limit: form.unregistered_prompt_limit,
+      github_proxy_url: form.github_proxy_url,
+      public_base_url: form.public_base_url
     })
     authStore.username = form.admin_username
     localStorage.setItem('username', form.admin_username)

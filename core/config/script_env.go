@@ -105,7 +105,7 @@ func (d *Database) ListScriptEnvVars(query ScriptEnvQuery) ([]*ScriptEnvVar, err
 		SELECT id, name, value, remark, enabled, pinned, created_at, updated_at
 		FROM script_env_vars
 		WHERE `+strings.Join(conditions, " AND ")+`
-		ORDER BY pinned DESC, id DESC
+		ORDER BY pinned DESC, enabled DESC, id DESC
 	`, args...)
 	if err != nil {
 		return nil, err

@@ -254,6 +254,31 @@ func copyFile(sourcePath, targetPath string) error {
 }
 
 func createTables(db *sql.DB) error {
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS developer_apps (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			client_id TEXT NOT NULL UNIQUE,
+			client_secret_hash TEXT NOT NULL,
+			permissions TEXT NOT NULL DEFAULT '[]',
+			credential_version INTEGER NOT NULL DEFAULT 1,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			last_used_at DATETIME,
+			deleted_at DATETIME
+		);
+		CREATE TABLE IF NOT EXISTS developer_app_audit (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			app_id TEXT,
+			action TEXT NOT NULL,
+			actor TEXT NOT NULL DEFAULT 'admin',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_developer_apps_client_id ON developer_apps(client_id);
+		CREATE INDEX IF NOT EXISTS idx_developer_app_audit_app_id ON developer_app_audit(app_id, created_at);
+	`); err != nil {
+		return err
+	}
 	if err := migrateAdaptersTable(db); err != nil {
 		return err
 	}
@@ -335,6 +360,7 @@ func createTables(db *sql.DB) error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		platform TEXT NOT NULL,
 		user_id TEXT NOT NULL,
+		nickname TEXT NOT NULL DEFAULT '',
 		union_id TEXT NOT NULL,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -342,6 +368,14 @@ func createTables(db *sql.DB) error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_user_accounts_union_id ON user_accounts(union_id);
+
+	CREATE TABLE IF NOT EXISTS unregistered_prompt_stats (
+		platform TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		prompt_count INTEGER NOT NULL DEFAULT 0,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY(platform, user_id)
+	);
 
 	CREATE TABLE IF NOT EXISTS plugin_accounts (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -686,6 +720,7 @@ func createTables(db *sql.DB) error {
 		description TEXT NOT NULL DEFAULT '',
 		enabled INTEGER NOT NULL DEFAULT 1,
 		pinned INTEGER NOT NULL DEFAULT 0,
+		delete_after_run INTEGER NOT NULL DEFAULT 0,
 		cron TEXT NOT NULL,
 		platform TEXT NOT NULL,
 		adapter_id TEXT NOT NULL DEFAULT '',
@@ -925,6 +960,7 @@ func ensureDefaultSystemSettings(db *sql.DB) error {
 		"plugin_tasks.run_timeout_seconds":          "0",
 		"plugin_tasks.timeout_notify_admin_enabled": "false",
 		"user.points_unit":                          "积分",
+		"user.unregistered_prompt_limit":            "10",
 		"access_control":                            "{}",
 		"payment.points_per_rmb":                    "100",
 		"payment.config":                            defaultPaymentConfigJSON(),
@@ -945,6 +981,7 @@ func ensureDefaultSystemSettings(db *sql.DB) error {
 		"plugin_tasks.run_timeout_seconds":          "插件任务运行超时时间，0 表示不限制",
 		"plugin_tasks.timeout_notify_admin_enabled": "插件任务超时自动停止后是否通知平台管理员",
 		"user.points_unit":                          "用户积分单位",
+		"user.unregistered_prompt_limit":            "未注册用户提示次数上限，0 表示不提示",
 		"access_control":                            "系统访问控制配置",
 		"payment.points_per_rmb":                    "积分兑换比例",
 		"payment.config":                            "支付配置",
@@ -963,6 +1000,15 @@ func ensureDefaultSystemSettings(db *sql.DB) error {
 }
 
 func migrateUsersTable(db *sql.DB) error {
+	columns, err := tableColumns(db, "user_accounts")
+	if err != nil {
+		return err
+	}
+	if !columns["nickname"] {
+		if _, err := db.Exec(`ALTER TABLE user_accounts ADD COLUMN nickname TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -1200,6 +1246,11 @@ func migrateScheduledTasksTable(db *sql.DB) error {
 	}
 	if !columns["pinned"] {
 		if _, err := db.Exec(`ALTER TABLE scheduled_tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if !columns["delete_after_run"] {
+		if _, err := db.Exec(`ALTER TABLE scheduled_tasks ADD COLUMN delete_after_run INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return err
 		}
 	}

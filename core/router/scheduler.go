@@ -115,11 +115,15 @@ func (r *ScheduledTaskRunner) initializeNextRun(now time.Time) error {
 }
 
 func (r *ScheduledTaskRunner) runTask(task *config.ScheduledTask, now time.Time) {
-	next, err := NextCronTime(task.Cron, now)
-	if err != nil {
-		log.Printf("[SYSTEM] 定时任务 %d 表达式无效: %v", task.ID, err)
-		_ = r.database.MarkScheduledTaskRun(task.ID, now, nil)
-		return
+	var next time.Time
+	if !task.DeleteAfterRun {
+		var err error
+		next, err = NextCronTime(task.Cron, now)
+		if err != nil {
+			log.Printf("[SYSTEM] 定时任务 %d 表达式无效: %v", task.ID, err)
+			_ = r.database.MarkScheduledTaskRun(task.ID, now, nil)
+			return
+		}
 	}
 	pluginID := strings.TrimSpace(task.PluginID)
 	if pluginID == "" {
@@ -128,6 +132,12 @@ func (r *ScheduledTaskRunner) runTask(task *config.ScheduledTask, now time.Time)
 	log.Printf("[SYSTEM] 执行定时伪造消息: id=%d plugin=%s platform=%s adapter_id=%s user=%s group=%s content=%s", task.ID, task.PluginID, task.Platform, task.AdapterID, task.UserID, task.GroupID, task.Content)
 	if err := r.router.dispatchFakeMessage(pluginID, plugincore.FakeMessageAction{Platform: task.Platform, AdapterID: task.AdapterID, UserID: task.UserID, GroupID: task.GroupID, Content: task.Content}); err != nil {
 		log.Printf("[SYSTEM] 定时伪造消息失败: id=%d err=%v", task.ID, err)
+	}
+	if task.DeleteAfterRun {
+		if err := r.database.DeleteScheduledTask(task.ID); err != nil {
+			log.Printf("[SYSTEM] 删除一次性定时任务失败: id=%d err=%v", task.ID, err)
+		}
+		return
 	}
 	if err := r.database.MarkScheduledTaskRun(task.ID, now, &next); err != nil {
 		log.Printf("[SYSTEM] 更新定时任务执行时间失败: id=%d err=%v", task.ID, err)

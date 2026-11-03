@@ -7,10 +7,27 @@ type Message struct {
 	Platform  string
 	AdapterID string
 	UserID    string
+	Nickname  string
 	GroupID   string
 	Content   string
+	Medias    []MessageMedia
+	MediaOnly bool
 	Metadata  map[string]string
 }
+
+// MessageMedia describes media received in a message. Adapters should use
+// image, audio, video, or file as Type and provide a public URL when available.
+type MessageMedia struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
+}
+
+const (
+	MessageMediaTypeImage = "image"
+	MessageMediaTypeAudio = "audio"
+	MessageMediaTypeVideo = "video"
+	MessageMediaTypeFile  = "file"
+)
 
 type ButtonOption struct {
 	Text   string `json:"text"`
@@ -34,6 +51,7 @@ type RichMessage struct {
 
 type AccessControlConfig struct {
 	InheritSystem     bool     `json:"inherit_system"`
+	AdminOnly         bool     `json:"admin_only"`
 	WhitelistGroups   []string `json:"whitelist_groups"`
 	BlockedGroups     []string `json:"blocked_groups"`
 	WhitelistUserIDs  []string `json:"whitelist_user_ids"`
@@ -57,6 +75,7 @@ type Plugin struct {
 	TriggerRegex      *regexp.Regexp
 	Order             int
 	Enabled           bool
+	AcceptBotMessages bool
 	UserConfig        map[string]interface{}
 	AccessControl     AccessControlConfig
 	OpenAPI           OpenAPIConfig
@@ -165,6 +184,7 @@ type PluginConfig struct {
 	Pinned            bool                    `json:"pinned"`
 	Trigger           string                  `json:"trigger"`
 	Enabled           bool                    `json:"enabled"`
+	AcceptBotMessages bool                    `json:"accept_bot_messages,omitempty"`
 	Dependencies      map[string]string       `json:"dependencies"`
 	UserConfigSchema  []PluginUserConfigField `json:"user_config_schema,omitempty"`
 	UserConfig        map[string]interface{}  `json:"user_config,omitempty"`

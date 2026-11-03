@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"image"
@@ -12,11 +13,15 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/allbot/allbot/core/config"
 )
@@ -224,11 +229,7 @@ func (s *Service) PublicURL(asset *config.ImageAsset, requestHost, requestScheme
 	if asset == nil {
 		return ""
 	}
-	settings, err := s.Settings()
-	if err != nil {
-		settings = config.DefaultImageHostSettings()
-	}
-	base := settings.PublicBaseURL
+	base := s.publicBaseURL()
 	if base == "" && strings.TrimSpace(requestHost) != "" {
 		scheme := strings.TrimSpace(requestScheme)
 		if scheme == "" {
@@ -241,6 +242,218 @@ func (s *Service) PublicURL(asset *config.ImageAsset, requestHost, requestScheme
 		return path
 	}
 	return strings.TrimRight(base, "/") + path
+}
+
+// PrepareLocalMedia makes a temporary copy of local files and data URLs for
+// adapter media sending. With a public address it returns a public URL;
+// otherwise it returns the temporary local path for adapters that support it.
+func (s *Service) PrepareLocalMedia(mediaValue string) (string, func()) {
+	original := strings.TrimSpace(mediaValue)
+	if strings.HasPrefix(strings.ToLower(original), "data:") {
+		return s.prepareDataMedia(original)
+	}
+	base := ""
+	if s != nil && s.db != nil {
+		base = s.publicBaseURL()
+	}
+	if original == "" || base == "" {
+		return original, nil
+	}
+	info, err := os.Stat(original)
+	if err != nil || info.IsDir() {
+		return original, nil
+	}
+	settings, err := s.Settings()
+	if err != nil {
+		return original, nil
+	}
+	tempDir := filepath.Join(settings.StorageDir, ".temp")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return original, nil
+	}
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(original)), ".")
+	if ext == "" || strings.ContainsAny(ext, `/\\`) {
+		ext = "bin"
+	}
+	name, err := randomPublicID()
+	if err != nil {
+		return original, nil
+	}
+	name += "." + ext
+	target := filepath.Join(tempDir, name)
+	if err := copyFile(original, target); err != nil {
+		return original, nil
+	}
+	contentType := mime.TypeByExtension(filepath.Ext(name))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() { _ = os.Remove(target) })
+	}
+	time.AfterFunc(10*time.Minute, cleanup)
+	return strings.TrimRight(base, "/") + "/api/open/temp-media/" + name, cleanup
+}
+
+func (s *Service) prepareDataMedia(dataURL string) (string, func()) {
+	if s == nil || s.db == nil {
+		return dataURL, nil
+	}
+	settings, err := s.Settings()
+	if err != nil {
+		return dataURL, nil
+	}
+	contentType, data, err := decodeDataMedia(dataURL, settings.MaxSize)
+	if err != nil {
+		return dataURL, nil
+	}
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = detectImageContentType(data)
+	}
+	ext := mediaExtension(contentType)
+	if ext == "" {
+		ext = "bin"
+	}
+	if err := os.MkdirAll(filepath.Join(settings.StorageDir, ".temp"), 0755); err != nil {
+		return dataURL, nil
+	}
+	name, err := randomPublicID()
+	if err != nil {
+		return dataURL, nil
+	}
+	name += "." + ext
+	target := filepath.Join(settings.StorageDir, ".temp", name)
+	if err := os.WriteFile(target, data, 0644); err != nil {
+		return dataURL, nil
+	}
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() { _ = os.Remove(target) })
+	}
+	time.AfterFunc(10*time.Minute, cleanup)
+	base := s.publicBaseURL()
+	if base == "" {
+		return target, cleanup
+	}
+	return strings.TrimRight(base, "/") + "/api/open/temp-media/" + name, cleanup
+}
+
+func decodeDataMedia(dataURL string, maxSize int64) (string, []byte, error) {
+	comma := strings.IndexByte(dataURL, ',')
+	if comma <= len("data:") {
+		return "", nil, fmt.Errorf("data URL 格式无效")
+	}
+	header := strings.TrimPrefix(dataURL[:comma], "data:")
+	payload := dataURL[comma+1:]
+	parts := strings.Split(header, ";")
+	contentType := "application/octet-stream"
+	if strings.TrimSpace(parts[0]) != "" {
+		contentType = strings.ToLower(strings.TrimSpace(parts[0]))
+		if parsed, _, err := mime.ParseMediaType(contentType); err == nil {
+			contentType = parsed
+		}
+	}
+	base64Payload := false
+	for _, part := range parts[1:] {
+		if strings.EqualFold(strings.TrimSpace(part), "base64") {
+			base64Payload = true
+			break
+		}
+	}
+	if maxSize <= 0 {
+		maxSize = config.DefaultImageHostSettings().MaxSize
+	}
+	if base64Payload {
+		if int64(len(payload))*3/4 > maxSize+3 {
+			return "", nil, fmt.Errorf("data URL 内容超过大小限制")
+		}
+		data, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil {
+			data, err = base64.RawStdEncoding.DecodeString(payload)
+		}
+		if err != nil {
+			return "", nil, fmt.Errorf("data URL Base64 无效")
+		}
+		if int64(len(data)) > maxSize {
+			return "", nil, fmt.Errorf("data URL 内容超过大小限制")
+		}
+		return contentType, data, nil
+	}
+	decoded, err := url.PathUnescape(payload)
+	if err != nil {
+		return "", nil, fmt.Errorf("data URL 内容无效")
+	}
+	data := []byte(decoded)
+	if int64(len(data)) > maxSize {
+		return "", nil, fmt.Errorf("data URL 内容超过大小限制")
+	}
+	return contentType, data, nil
+}
+
+func mediaExtension(contentType string) string {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "image/jpeg":
+		return "jpg"
+	case "audio/mpeg":
+		return "mp3"
+	case "audio/mp4":
+		return "m4a"
+	case "video/mp4":
+		return "mp4"
+	}
+	if extensions, err := mime.ExtensionsByType(contentType); err == nil {
+		for _, ext := range extensions {
+			return strings.TrimPrefix(ext, ".")
+		}
+	}
+	return ""
+}
+
+func (s *Service) ResolveTempMedia(name string) (*TempMedia, error) {
+	name = strings.Trim(strings.TrimSpace(name), "/")
+	if name == "" || strings.ContainsAny(name, `/\\`) || strings.Contains(name, "..") {
+		return nil, ErrInvalidInput
+	}
+	settings, err := s.Settings()
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(settings.StorageDir, ".temp", name)
+	root, err := filepath.Abs(filepath.Join(settings.StorageDir, ".temp"))
+	if err != nil {
+		return nil, err
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil || (absolute != root && !strings.HasPrefix(absolute, root+string(os.PathSeparator))) {
+		return nil, ErrInvalidInput
+	}
+	info, err := os.Stat(absolute)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, ErrNotFound
+	}
+	contentType := mime.TypeByExtension(filepath.Ext(name))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return &TempMedia{Path: absolute, ContentType: contentType}, nil
+}
+
+func (s *Service) publicBaseURL() string {
+	if s == nil || s.db == nil {
+		return ""
+	}
+	settings, err := s.db.GetSystemSettings()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(settings.PublicBaseURL), "/")
 }
 
 func (s *Service) assetResponse(asset *config.ImageAsset, requestHost, requestScheme string) *ImageAssetResponse {

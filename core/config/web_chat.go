@@ -520,7 +520,7 @@ func (d *Database) BindWebChatUserByCode(userID, code string) (*UserAccount, *Us
 		return nil, nil, err
 	}
 	defer tx.Rollback()
-	webAccount, err := scanUserAccount(tx.QueryRow(`SELECT ua.id, ua.platform, ua.user_id, ua.union_id, COALESCE(up.points, 0), ua.created_at, ua.updated_at FROM user_accounts ua LEFT JOIN user_points up ON up.union_id = ua.union_id WHERE ua.platform = ? AND ua.user_id = ?`, WebChatPlatform, userID))
+	webAccount, err := scanUserAccount(tx.QueryRow(`SELECT ua.id, ua.platform, ua.user_id, ua.nickname, ua.union_id, COALESCE(up.points, 0), ua.created_at, ua.updated_at FROM user_accounts ua LEFT JOIN user_points up ON up.union_id = ua.union_id WHERE ua.platform = ? AND ua.user_id = ?`, WebChatPlatform, userID))
 	if err != nil {
 		return nil, nil, err
 	}

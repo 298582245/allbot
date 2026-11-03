@@ -215,7 +215,8 @@ func TestQQOfficeSendTargetPrivateUserUsesC2CPath(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode message body failed: %v", err)
 			}
-			if body["content"] != "你好" || body["msg_type"] != float64(0) {
+			markdown, ok := body["markdown"].(map[string]interface{})
+			if !ok || body["msg_type"] != float64(2) || markdown["content"] != "你好" {
 				t.Fatalf("message body = %#v", body)
 			}
 			w.WriteHeader(http.StatusOK)
@@ -265,6 +266,17 @@ func TestQQOfficeSendMessageWithSequenceC2CAndGroup(t *testing.T) {
 		body := <-bodies
 		if body["msg_id"] != expectedID || body["msg_seq"] != float64(2) {
 			t.Fatalf("body = %#v, expected msg_id=%q msg_seq=2", body, expectedID)
+		}
+		markdown, ok := body["markdown"].(map[string]interface{})
+		if !ok || body["msg_type"] != float64(2) {
+			t.Fatalf("body = %#v, expected Markdown message", body)
+		}
+		wantContent := "私聊"
+		if expectedID == "msg-group" {
+			wantContent = "<@member-openid>\n群聊"
+		}
+		if markdown["content"] != wantContent {
+			t.Fatalf("markdown content = %#v, want %q", markdown["content"], wantContent)
 		}
 	}
 }
@@ -362,7 +374,10 @@ func TestQQOfficeSendMessageSplitsLongTextAndIncrementsReplySeq(t *testing.T) {
 	if first["msg_seq"] != float64(1) || second["msg_seq"] != float64(2) || third["msg_seq"] != float64(3) {
 		t.Fatalf("msg_seq = %v/%v/%v", first["msg_seq"], second["msg_seq"], third["msg_seq"])
 	}
-	joined := first["content"].(string) + second["content"].(string) + third["content"].(string)
+	firstMarkdown := first["markdown"].(map[string]interface{})
+	secondMarkdown := second["markdown"].(map[string]interface{})
+	thirdMarkdown := third["markdown"].(map[string]interface{})
+	joined := firstMarkdown["content"].(string) + secondMarkdown["content"].(string) + thirdMarkdown["content"].(string)
 	if joined != text {
 		t.Fatal("sent content does not reassemble to original text")
 	}
@@ -611,6 +626,52 @@ func TestQQOfficeSendImageUploadsAndSendsMedia(t *testing.T) {
 	}
 }
 
+func TestQQOfficeSendAudioAndVideoUploadMediaTypes(t *testing.T) {
+	var uploadTypes []float64
+	var messageTypes int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/v2/users/user-openid/files":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode upload body failed: %v", err)
+			}
+			uploadTypes = append(uploadTypes, body["file_type"].(float64))
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"file_info": "file-info"})
+		case "/v2/users/user-openid/messages":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode message body failed: %v", err)
+			}
+			if body["msg_type"] != float64(7) {
+				t.Fatalf("message body = %#v", body)
+			}
+			messageTypes++
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	if err := adp.SendAudio("user_user-openid", "https://example.com/a.mp3"); err != nil {
+		t.Fatalf("SendAudio returned error: %v", err)
+	}
+	if err := adp.SendVideo("user_user-openid", "https://example.com/a.mp4"); err != nil {
+		t.Fatalf("SendVideo returned error: %v", err)
+	}
+	if len(uploadTypes) != 2 || uploadTypes[0] != 3 || uploadTypes[1] != 2 {
+		t.Fatalf("upload file types = %#v, expected [3 2]", uploadTypes)
+	}
+	if messageTypes != 2 {
+		t.Fatalf("message count = %d, expected 2", messageTypes)
+	}
+}
+
 func TestQQOfficeSendButtonsPostsKeyboard(t *testing.T) {
 	var body map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -714,10 +775,10 @@ func TestQQOfficeSendMessagePostsC2CAndGroup(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
 		case "/v2/users/user-openid/messages":
 			atomic.AddInt32(&userCalls, 1)
-			assertQQOfficeMessageRequest(t, r, "你好", "msg-c2c")
+			assertQQOfficeMarkdownRequest(t, r, "你好", "msg-c2c")
 		case "/v2/groups/group-openid/messages":
 			atomic.AddInt32(&groupCalls, 1)
-			assertQQOfficeMessageRequest(t, r, "群回复", "msg-group")
+			assertQQOfficeMarkdownRequest(t, r, "<@member-openid>\n群回复", "msg-group")
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -736,6 +797,78 @@ func TestQQOfficeSendMessagePostsC2CAndGroup(t *testing.T) {
 	}
 }
 
+func TestQQOfficeSendMessageEscapesMarkdownCharacters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/v2/groups/group-openid/messages":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode message body failed: %v", err)
+			}
+			markdown, ok := body["markdown"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("markdown body = %#v", body)
+			}
+			want := "&#96;代码&#96; &#42;星号&#42; &#95;下划线&#95; &#126;删除线&#126; &#35;标题 " +
+				"&#91;链接&#93;&#40;url&#41; &#33;"
+			if markdown["content"] != want {
+				t.Fatalf("markdown content = %q, want %q", markdown["content"], want)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	text := "`代码` *星号* _下划线_ ~删除线~ #标题 [链接](url) !"
+	if err := adp.SendMessage("group_group-openid|msg_msg-group", text); err != nil {
+		t.Fatalf("SendMessage returned error: %v", err)
+	}
+}
+
+func TestEscapeQQOfficePlainTextMarkdownKeepsNumericAndURLPunctuation(t *testing.T) {
+	text := "[数字] [文字](文字) +0.18元 https%3A-0\n+ 列表\n1. 列表"
+	want := "&#91;数字&#93; &#91;文字&#93;&#40;文字&#41; &#43;0&#46;18元 https%3A&#45;0\n" +
+		"&#43; 列表\n1&#46; 列表"
+	if got := escapeQQOfficePlainTextMarkdown(text); got != want {
+		t.Fatalf("escaped text = %q, want %q", got, want)
+	}
+}
+
+func TestQQOfficeSendMessagePostsChannelMarkdown(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "test-token", "expires_in": 7200})
+		case "/channels/channel-openid/messages":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode message body failed: %v", err)
+			}
+			markdown, ok := body["markdown"].(map[string]interface{})
+			if !ok || body["msg_type"] != float64(2) || body["msg_id"] != "msg-channel" || markdown["content"] != "频道回复" {
+				t.Fatalf("message body = %#v", body)
+			}
+			if _, ok := body["msg_seq"]; ok {
+				t.Fatalf("channel body should omit msg_seq: %#v", body)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	adp := NewQQOfficeAdapter("app123", "secret456", server.URL, server.URL+"/token")
+	if err := adp.SendMessage("channel_channel-openid|msg_msg-channel", "频道回复"); err != nil {
+		t.Fatalf("SendMessage channel returned error: %v", err)
+	}
+}
+
 func assertQQOfficeMarkdownRequest(t *testing.T, r *http.Request, content string, msgID string) {
 	t.Helper()
 	if r.Method != http.MethodPost {
@@ -750,23 +883,6 @@ func assertQQOfficeMarkdownRequest(t *testing.T, r *http.Request, content string
 		t.Fatalf("markdown body = %#v", body)
 	}
 	if body["msg_type"] != float64(2) || body["msg_id"] != msgID || body["msg_seq"] != float64(1) || markdown["content"] != content {
-		t.Fatalf("message body = %#v", body)
-	}
-}
-
-func assertQQOfficeMessageRequest(t *testing.T, r *http.Request, content string, msgID string) {
-	t.Helper()
-	if r.Method != http.MethodPost {
-		t.Fatalf("method = %s, expected POST", r.Method)
-	}
-	if got := r.Header.Get("Authorization"); got != "QQBot test-token" {
-		t.Fatalf("Authorization = %q", got)
-	}
-	var body map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		t.Fatalf("decode message body failed: %v", err)
-	}
-	if body["content"] != content || body["msg_id"] != msgID || body["msg_type"] != float64(0) || body["msg_seq"] != float64(1) {
 		t.Fatalf("message body = %#v", body)
 	}
 }
@@ -855,6 +971,138 @@ func TestQQOfficeHandleC2CMessageBuildsMessage(t *testing.T) {
 	}
 	if msg.Metadata["message_type"] != "c2c" || msg.Metadata["reply_target"] != "user_user-openid|msg_msg-c2c" {
 		t.Fatalf("metadata = %#v", msg.Metadata)
+	}
+}
+
+func TestQQOfficeHandleC2CMediaMessageBuildsUnifiedMedia(t *testing.T) {
+	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
+	got := make(chan *types.Message, 1)
+	adp.SetMessageHandler(func(msg *types.Message) { got <- msg })
+
+	adp.handleDispatch("C2C_MESSAGE_CREATE", map[string]interface{}{
+		"id":      "msg-image",
+		"content": "",
+		"author": map[string]interface{}{
+			"user_openid": "user-openid",
+		},
+		"attachments": []interface{}{map[string]interface{}{
+			"content_type": "image/png",
+			"filename":     "photo.png",
+			"url":          "https://cdn.example.com/photo.png",
+		}},
+	})
+
+	msg := <-got
+	if !msg.MediaOnly || len(msg.Medias) != 1 || msg.Medias[0].Type != types.MessageMediaTypeImage || msg.Medias[0].URL != "https://cdn.example.com/photo.png" {
+		t.Fatalf("media message = %#v", msg)
+	}
+	if msg.Content != "[photo.png](https://cdn.example.com/photo.png)" {
+		t.Fatalf("media content = %q", msg.Content)
+	}
+}
+
+func TestQQOfficeHandleC2CQuotedMediaBuildsUnifiedMedia(t *testing.T) {
+	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
+	got := make(chan *types.Message, 1)
+	adp.SetMessageHandler(func(msg *types.Message) { got <- msg })
+
+	adp.handleDispatch("C2C_MESSAGE_CREATE", map[string]interface{}{
+		"id":           "msg-quoted-media",
+		"content":      "",
+		"message_type": 103,
+		"author": map[string]interface{}{
+			"user_openid": "user-openid",
+		},
+		"msg_elements": []interface{}{map[string]interface{}{
+			"content": "被引用的媒体",
+			"attachments": []interface{}{
+				map[string]interface{}{
+					"content_type": "image/png",
+					"filename":     "quoted.png",
+					"url":          "https://cdn.example.com/quoted.png",
+				},
+				map[string]interface{}{
+					"content_type": "video/mp4",
+					"filename":     "quoted.mp4",
+					"url":          "https://cdn.example.com/quoted.mp4",
+				},
+				map[string]interface{}{
+					"content_type": "application/pdf",
+					"filename":     "quoted.pdf",
+					"url":          "https://cdn.example.com/quoted.pdf",
+				},
+			},
+		}},
+	})
+
+	msg := <-got
+	if !msg.MediaOnly || len(msg.Medias) != 3 {
+		t.Fatalf("quoted media message = %#v", msg)
+	}
+	if msg.Medias[0].Type != types.MessageMediaTypeImage || msg.Medias[1].Type != types.MessageMediaTypeVideo || msg.Medias[2].Type != types.MessageMediaTypeFile {
+		t.Fatalf("quoted media types = %#v", msg.Medias)
+	}
+	if msg.Content != "[quoted.png](https://cdn.example.com/quoted.png) [quoted.mp4](https://cdn.example.com/quoted.mp4) [quoted.pdf](https://cdn.example.com/quoted.pdf)" {
+		t.Fatalf("quoted media content = %q", msg.Content)
+	}
+}
+
+func TestQQOfficeQuotedMediaReferenceVariantsAreMergedAndDeduplicated(t *testing.T) {
+	data := map[string]interface{}{
+		"attachments": []interface{}{map[string]interface{}{
+			"content_type": "image/png",
+			"filename":     "same.png",
+			"url":          "https://cdn.example.com/same.png",
+		}},
+		"message_reference": map[string]interface{}{
+			"message": map[string]interface{}{
+				"attachments": []interface{}{map[string]interface{}{
+					"content_type": "image/png",
+					"filename":     "same.png",
+					"url":          "https://cdn.example.com/same.png",
+				}},
+			},
+			"referenced_message": map[string]interface{}{
+				"attachments": []interface{}{map[string]interface{}{
+					"content_type": "audio/mpeg",
+					"filename":     "quoted.mp3",
+					"url":          "https://cdn.example.com/quoted.mp3",
+				}},
+			},
+		},
+	}
+
+	medias := qqOfficeMessageMedias(data)
+	if len(medias) != 2 || medias[0].Type != types.MessageMediaTypeImage || medias[1].Type != types.MessageMediaTypeAudio {
+		t.Fatalf("reference medias = %#v", medias)
+	}
+}
+
+func TestQQOfficeHandleGroupMediaAppendsToText(t *testing.T) {
+	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
+	got := make(chan *types.Message, 1)
+	adp.SetMessageHandler(func(msg *types.Message) { got <- msg })
+
+	adp.handleDispatch("GROUP_AT_MESSAGE_CREATE", map[string]interface{}{
+		"id":           "msg-group-media",
+		"group_openid": "group-openid",
+		"content":      "说明文字",
+		"author": map[string]interface{}{
+			"member_openid": "member-openid",
+		},
+		"attachments": []interface{}{map[string]interface{}{
+			"content_type": "video/mp4",
+			"filename":     "clip.mp4",
+			"url":          "https://cdn.example.com/clip.mp4",
+		}},
+	})
+
+	msg := <-got
+	if msg.MediaOnly || len(msg.Medias) != 1 || msg.Medias[0].Type != types.MessageMediaTypeVideo {
+		t.Fatalf("group media message = %#v", msg)
+	}
+	if msg.Content != "说明文字 [clip.mp4](https://cdn.example.com/clip.mp4)" {
+		t.Fatalf("group media content = %q", msg.Content)
 	}
 }
 
@@ -969,6 +1217,29 @@ func TestQQOfficeHandleChannelMessageBuildsDeletableMessage(t *testing.T) {
 	}
 	if msg.Metadata["reply_target"] != "channel_channel-openid|msg_msg-channel" {
 		t.Fatalf("reply target = %q", msg.Metadata["reply_target"])
+	}
+}
+
+func TestQQOfficeHandleChannelBotMessageBuildsMessage(t *testing.T) {
+	adp := NewQQOfficeAdapter("app123", "secret456", "", "")
+	got := make(chan *types.Message, 1)
+	adp.SetMessageHandler(func(msg *types.Message) { got <- msg })
+
+	adp.handleDispatch("MESSAGE_CREATE", map[string]interface{}{
+		"id":         "msg-bot",
+		"guild_id":   "guild-openid",
+		"channel_id": "channel-openid",
+		"content":    "机器人回复",
+		"author": map[string]interface{}{
+			"id":       "bot-openid",
+			"username": "另一个机器人",
+			"bot":      true,
+		},
+	})
+
+	msg := <-got
+	if msg.Content != "机器人回复" || msg.Metadata["is_bot"] != "true" || msg.Metadata["sender_type"] != "bot" || msg.Metadata["bot_id"] != "bot-openid" || msg.Metadata["qq_office_bot_id"] != "bot-openid" || msg.Metadata["bot_identity_value"] != "app123" {
+		t.Fatalf("bot message = %#v", msg)
 	}
 }
 

@@ -322,6 +322,8 @@ func TestBuildRestartCommand(t *testing.T) {
 }
 
 func TestSaveRestartContext(t *testing.T) {
+	contextPath := filepath.Join(t.TempDir(), "runtime", "restart", "context.json")
+	t.Setenv("ALLBOT_RESTART_CONTEXT_PATH", contextPath)
 	request := router.RestartRequest{
 		MessageKey: "message-key",
 		Platform:   "qq",
@@ -348,6 +350,16 @@ func TestSaveRestartContext(t *testing.T) {
 	}
 	if os.Getenv("ALLBOT_RESTART_STARTED_AT_NS") != "123456" {
 		t.Fatal("started time was not saved")
+	}
+	if got := readRestartStartedAtFromContextFile(); got != "123456" {
+		t.Fatalf("started time fallback = %q, expected 123456", got)
+	}
+}
+
+func TestRestartContextValuesRejectsMissingStartedAt(t *testing.T) {
+	request := router.RestartRequest{MessageKey: "message-key"}
+	if _, err := restartContextValues(request); err == nil || err.Error() != "重启开始时间为空" {
+		t.Fatalf("restartContextValues error = %v, expected missing started time", err)
 	}
 }
 

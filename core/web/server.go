@@ -12,10 +12,12 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -90,6 +92,8 @@ type Server struct {
 	lastPersistedRuntimeSeconds  int64
 	sessionMu                    sync.RWMutex
 	sessions                     map[string]adminSession
+	developerSigningKeyMu        sync.Mutex
+	developerSigningKey          []byte
 	loginLimiterMu               sync.Mutex
 	loginLimiter                 *adminLoginLimiter
 	pluginExecutionMu            sync.Mutex
@@ -159,6 +163,7 @@ func (s *Server) SetWebChatEmailSender(sender webChatEmailSender) {
 
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
+	s.registerDeveloperRoutes(mux)
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/logout", s.handleLogout)
 	mux.HandleFunc("/api/open/payments/notify/epay", s.handlePaymentNotifyEpay)
@@ -166,6 +171,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/open/payments/qrcode/", s.handlePaymentQRCode)
 	mux.HandleFunc("/api/open/payments/alipay-bill/cashier/", s.handleAlipayBillCashier)
 	mux.HandleFunc("/api/open/images/", s.handleOpenImage)
+	mux.HandleFunc("/api/open/temp-media/", s.handleOpenTempMedia)
 	mux.HandleFunc("/api/open/web-chat/", s.handleWebChatAPI)
 	mux.HandleFunc("/api/open/adapters/feishu/", s.handleFeishuAdapterCallback)
 	mux.HandleFunc("/api/open/adapters/wechat-official/", s.handleWechatOfficialAdapterCallback)
@@ -454,7 +460,11 @@ func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	sort.SliceStable(result, func(i, j int) bool {
-		return boolValue(result[i], "pinned", false) && !boolValue(result[j], "pinned", false)
+		pinnedI, pinnedJ := boolValue(result[i], "pinned", false), boolValue(result[j], "pinned", false)
+		if pinnedI != pinnedJ {
+			return pinnedI
+		}
+		return boolValue(result[i], "enabled", true) && !boolValue(result[j], "enabled", true)
 	})
 	s.jsonResponse(w, result)
 }
@@ -696,10 +706,24 @@ func (s *Server) handlePluginAction(w http.ResponseWriter, pluginID, action stri
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if s.router != nil {
+			s.router.SetPluginEnabled(pluginID, true)
+			if err := s.router.SyncPluginScheduledTasks(pluginID, true); err != nil {
+				s.jsonError(w, "同步插件定时任务状态失败: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
 	case "disable":
 		if err := s.pluginManager.TogglePlugin(pluginID, false); err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if s.router != nil {
+			s.router.SetPluginEnabled(pluginID, false)
+			if err := s.router.SyncPluginScheduledTasks(pluginID, false); err != nil {
+				s.jsonError(w, "同步插件定时任务状态失败: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 	case "reload", "restart":
 		if err := s.pluginManager.ReloadPlugin(pluginID); err != nil {
@@ -983,6 +1007,9 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 		if _, ok := config["pinned"]; !ok {
 			config["pinned"] = false
 		}
+		if _, ok := config["accept_bot_messages"]; !ok {
+			config["accept_bot_messages"] = false
+		}
 		if _, ok := config["user_config_schema"]; !ok {
 			config["user_config_schema"] = []interface{}{}
 		}
@@ -990,7 +1017,7 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 			config["user_config"] = map[string]interface{}{}
 		}
 		if _, ok := config["access_control"]; !ok {
-			config["access_control"] = map[string]interface{}{"inherit_system": true, "whitelist_groups": []string{}, "blocked_groups": []string{}, "whitelist_user_ids": []string{}, "blocked_user_ids": []string{}, "whitelist_union_ids": []string{}, "blocked_union_ids": []string{}}
+			config["access_control"] = map[string]interface{}{"inherit_system": true, "admin_only": false, "whitelist_groups": []string{}, "blocked_groups": []string{}, "whitelist_user_ids": []string{}, "blocked_user_ids": []string{}, "whitelist_union_ids": []string{}, "blocked_union_ids": []string{}}
 		}
 		if _, ok := config["runtime_profile"]; !ok {
 			config["runtime_profile"] = ""
@@ -1023,7 +1050,6 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		_, hasUserConfig := config["user_config"]
 		originalData, err := os.ReadFile(configPath)
 		if err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
@@ -1039,8 +1065,23 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 		} else {
 			delete(config, "user_config")
 		}
+		systemConfig := make(map[string]interface{})
+		for key := range plugin.SystemConfigKeys() {
+			if value, exists := config[key]; exists && (!reflect.DeepEqual(value, original[key]) || original[key] == nil) {
+				systemConfig[key] = value
+			}
+			if value, exists := original[key]; exists {
+				config[key] = value
+			} else {
+				delete(config, key)
+			}
+		}
 		data, err := json.MarshalIndent(config, "", "  ")
 		if err != nil {
+			s.jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := plugin.ReplacePluginSystemConfig(pluginPath, systemConfig); err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1048,12 +1089,10 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if hasUserConfig {
-			if err := plugin.SavePluginData(pluginPath, typedConfig.UserConfigSchema, typedConfig.UserConfig); err != nil {
-				_ = os.WriteFile(configPath, originalData, 0644)
-				s.jsonError(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+		if err := plugin.SavePluginData(pluginPath, typedConfig.UserConfigSchema, typedConfig.UserConfig); err != nil {
+			_ = os.WriteFile(configPath, originalData, 0644)
+			s.jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		if err := s.pluginManager.ReloadPlugin(pluginID); err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
@@ -1321,6 +1360,30 @@ func (s *Server) handlePluginFiles(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "不能预览文件夹", http.StatusBadRequest)
 			return
 		}
+		if r.URL.Query().Get("raw") == "1" {
+			data, err := os.ReadFile(fullPath)
+			if err != nil {
+				s.jsonError(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			contentType := pluginFileContentType(filePath, data)
+			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = w.Write(data)
+			return
+		}
+		if isPluginImageFile(filePath) {
+			s.jsonResponse(w, map[string]interface{}{
+				"path":         filepath.ToSlash(filePath),
+				"filename":     filepath.Base(filePath),
+				"editable":     false,
+				"text":         false,
+				"preview":      "image",
+				"content_type": pluginFileContentType(filePath, nil),
+				"size":         info.Size(),
+			})
+			return
+		}
 		data, err := os.ReadFile(fullPath)
 		if err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
@@ -1485,7 +1548,11 @@ func buildPluginFileTree(root, relative string) ([]map[string]interface{}, error
 		if err != nil {
 			return nil, err
 		}
-		item := map[string]interface{}{"name": name, "path": relPath, "type": "file", "text": true, "size": info.Size()}
+		isImage := !entry.IsDir() && isPluginImageFile(relPath)
+		item := map[string]interface{}{"name": name, "path": relPath, "type": "file", "text": !isImage, "size": info.Size()}
+		if isImage {
+			item["preview"] = "image"
+		}
 		if entry.IsDir() {
 			children, err := buildPluginFileTree(root, relPath)
 			if err != nil {
@@ -1498,6 +1565,22 @@ func buildPluginFileTree(root, relative string) ([]map[string]interface{}, error
 		result = append(result, item)
 	}
 	return result, nil
+}
+
+func isPluginImageFile(path string) bool {
+	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+	return strings.HasPrefix(contentType, "image/")
+}
+
+func pluginFileContentType(path string, data []byte) string {
+	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+	if contentType != "" {
+		return contentType
+	}
+	if len(data) > 0 {
+		return http.DetectContentType(data)
+	}
+	return "application/octet-stream"
 }
 
 func safePluginPath(root, relative string) (string, error) {
@@ -1738,7 +1821,7 @@ func (s *Server) requestHasAccessPass(r *http.Request, code string) bool {
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/login" || strings.HasPrefix(r.URL.Path, "/api/open/") {
+		if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/login" || strings.HasPrefix(r.URL.Path, "/api/open/") || strings.HasPrefix(r.URL.Path, "/api/v1/") {
 			next.ServeHTTP(w, r)
 			return
 		}
