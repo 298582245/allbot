@@ -831,9 +831,9 @@ func TestQQOfficeSendMessageEscapesMarkdownCharacters(t *testing.T) {
 }
 
 func TestEscapeQQOfficePlainTextMarkdownKeepsNumericAndURLPunctuation(t *testing.T) {
-	text := "[数字] [文字](文字) +0.18元 https%3A-0\n+ 列表\n1. 列表"
+	text := "[数字] [文字](文字) +0.18元 https%3A-0\n+ 列表\n1. 列表\nhttps://example.com/a?x=1&y=2"
 	want := "&#91;数字&#93; &#91;文字&#93;&#40;文字&#41; &#43;0&#46;18元 https%3A&#45;0\n" +
-		"&#43; 列表\n1&#46; 列表"
+		"&#43; 列表\n1&#46; 列表\nhttps://example.com/a?x=1&y=2"
 	if got := escapeQQOfficePlainTextMarkdown(text); got != want {
 		t.Fatalf("escaped text = %q, want %q", got, want)
 	}

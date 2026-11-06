@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -1761,32 +1762,45 @@ func qqOfficeGroupAtContent(target qqOfficeMessageTarget, content string) string
 	return fmt.Sprintf("<@%s>\n%s", strings.TrimSpace(target.atUser), content)
 }
 
+var qqOfficePlainTextURLRegexp = regexp.MustCompile(`(?i)(?:https?://|www\.)[^\s<>\[\]"']+`)
+
+var qqOfficePlainTextMarkdownEscaper = strings.NewReplacer(
+	"&", "&#38;",
+	"\\", "&#92;",
+	"`", "&#96;",
+	"*", "&#42;",
+	"_", "&#95;",
+	"~", "&#126;",
+	"{", "&#123;",
+	"}", "&#125;",
+	"[", "&#91;",
+	"]", "&#93;",
+	"(", "&#40;",
+	")", "&#41;",
+	"#", "&#35;",
+	"!", "&#33;",
+	"|", "&#124;",
+	"<", "&#60;",
+	">", "&#62;",
+	"+", "&#43;",
+	"-", "&#45;",
+	".", "&#46;",
+)
+
 func escapeQQOfficePlainTextMarkdown(text string) string {
-	// QQ's Markdown renderer does not reliably honor backslash escapes. HTML
-	// numeric entities are decoded after Markdown parsing, so punctuation is
-	// displayed literally without changing copied text or adding hidden chars.
-	return strings.NewReplacer(
-		"&", "&#38;",
-		"\\", "&#92;",
-		"`", "&#96;",
-		"*", "&#42;",
-		"_", "&#95;",
-		"~", "&#126;",
-		"{", "&#123;",
-		"}", "&#125;",
-		"[", "&#91;",
-		"]", "&#93;",
-		"(", "&#40;",
-		")", "&#41;",
-		"#", "&#35;",
-		"!", "&#33;",
-		"|", "&#124;",
-		"<", "&#60;",
-		">", "&#62;",
-		"+", "&#43;",
-		"-", "&#45;",
-		".", "&#46;",
-	).Replace(text)
+	matches := qqOfficePlainTextURLRegexp.FindAllStringIndex(text, -1)
+	if len(matches) == 0 {
+		return qqOfficePlainTextMarkdownEscaper.Replace(text)
+	}
+	var builder strings.Builder
+	last := 0
+	for _, match := range matches {
+		builder.WriteString(qqOfficePlainTextMarkdownEscaper.Replace(text[last:match[0]]))
+		builder.WriteString(text[match[0]:match[1]])
+		last = match[1]
+	}
+	builder.WriteString(qqOfficePlainTextMarkdownEscaper.Replace(text[last:]))
+	return builder.String()
 }
 
 func parseQQOfficeDMSTarget(target string) (string, string, error) {

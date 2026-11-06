@@ -368,7 +368,7 @@ func formatDownloadProgress(downloaded, total int64) string {
 			percent = 100
 		}
 	}
-	return fmt.Sprintf("正在下载升级包(%.2f%%/100%%)", percent)
+	return fmt.Sprintf("正在下载升级包(%.2f%%/100.00%%)", percent)
 }
 
 func (s *Service) startProgressNotifier(ctx context.Context) func() {
