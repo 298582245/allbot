@@ -73,6 +73,7 @@ type SystemSettings struct {
 	UnregisteredPromptLimit   int                       `json:"unregistered_prompt_limit"`
 	GitHubProxyURL            string                    `json:"github_proxy_url"`
 	PublicBaseURL             string                    `json:"public_base_url"`
+	MentionGroupReplies       bool                      `json:"mention_group_replies"`
 	AccessControl             types.AccessControlConfig `json:"access_control"`
 	// 安全访问码：开启后访问登录页需在 URL 携带访问码，否则返回 404
 	AccessCodeEnabled bool   `json:"access_code_enabled"`
@@ -155,6 +156,7 @@ func (d *Database) GetSystemSettings() (*SystemSettings, error) {
 		UnregisteredPromptLimit:   intValueAllowZeroOrDefault(items, unregisteredPromptLimitKey, 10),
 		GitHubProxyURL:            strings.TrimSpace(items[githubProxyURLKey]),
 		PublicBaseURL:             publicBaseURL,
+		MentionGroupReplies:       valueOrDefault(items, "messages.mention_group_replies", "true") == "true",
 		AccessControl:             ParseAccessControlConfig(items["access_control"]),
 
 		AccessCodeEnabled: valueOrDefault(items, "security.access_code_enabled", "false") == "true",
@@ -323,18 +325,19 @@ func (d *Database) SaveSystemSettings(settings *SystemSettings) error {
 		value       string
 		description string
 	}{
-		"admin.username":                {settings.AdminUsername, "管理员用户名"},
-		"admin.platform_users":          {marshalPlatformAdmins(settings.PlatformAdmins), "平台管理员用户列表"},
-		"web.auto_refresh":              {boolString(settings.AutoRefresh), "是否自动刷新"},
-		"web.refresh_interval":          {fmt.Sprintf("%d", settings.RefreshInterval), "刷新间隔秒数"},
-		"plugin.dir":                    {settings.PluginDir, "插件目录"},
-		"plugin.auto_load":              {boolString(settings.AutoLoadPlugins), "启动时自动加载插件"},
-		"script_tasks.concurrent_limit": {fmt.Sprintf("%d", settings.ScriptTaskConcurrentLimit), "脚本任务全局并发上限"},
-		"user.points_unit":              {settings.PointsUnit, "用户积分单位"},
-		unregisteredPromptLimitKey:      {fmt.Sprintf("%d", settings.UnregisteredPromptLimit), unregisteredPromptLimitDescription},
-		githubProxyURLKey:               {githubProxyURL, githubProxyURLDescription},
-		publicBaseURLKey:                {publicBaseURL, publicBaseURLDescription},
-		"access_control":                {MarshalAccessControlConfig(settings.AccessControl), "系统访问控制配置"},
+		"admin.username":                 {settings.AdminUsername, "管理员用户名"},
+		"admin.platform_users":           {marshalPlatformAdmins(settings.PlatformAdmins), "平台管理员用户列表"},
+		"web.auto_refresh":               {boolString(settings.AutoRefresh), "是否自动刷新"},
+		"web.refresh_interval":           {fmt.Sprintf("%d", settings.RefreshInterval), "刷新间隔秒数"},
+		"plugin.dir":                     {settings.PluginDir, "插件目录"},
+		"plugin.auto_load":               {boolString(settings.AutoLoadPlugins), "启动时自动加载插件"},
+		"script_tasks.concurrent_limit":  {fmt.Sprintf("%d", settings.ScriptTaskConcurrentLimit), "脚本任务全局并发上限"},
+		"user.points_unit":               {settings.PointsUnit, "用户积分单位"},
+		unregisteredPromptLimitKey:       {fmt.Sprintf("%d", settings.UnregisteredPromptLimit), unregisteredPromptLimitDescription},
+		githubProxyURLKey:                {githubProxyURL, githubProxyURLDescription},
+		publicBaseURLKey:                 {publicBaseURL, publicBaseURLDescription},
+		"messages.mention_group_replies": {boolString(settings.MentionGroupReplies), "群聊回复时是否自动 @ 消息发送者"},
+		"access_control":                 {MarshalAccessControlConfig(settings.AccessControl), "系统访问控制配置"},
 
 		"security.access_code_enabled": {boolString(settings.AccessCodeEnabled), "是否开启安全访问入口"},
 		"security.access_code":         {strings.TrimSpace(settings.AccessCode), "登录页安全访问码"},

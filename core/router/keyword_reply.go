@@ -174,7 +174,7 @@ func (m *KeywordReplyManager) reply(item *config.KeywordReply, msg *types.Messag
 		}
 		return err
 	default:
-		return adp.SendMessage(target, formatReplyText(adp, msg, item.Content))
+		return adp.SendMessage(target, m.formatReplyText(adp, msg, item.Content))
 	}
 }
 
@@ -211,7 +211,7 @@ func (m *KeywordReplyManager) replyBuiltin(keyword string, msg *types.Message) e
 			return m.sendText(adp, userTarget, msg, text)
 		},
 		ReplyButtons: func(text string, buttons [][]types.ButtonOption) error {
-			return sendReplyButtonsWithFallback(adp, msg, target, text, buttons)
+			return sendReplyButtonsWithFallback(adp, msg, target, text, buttons, func(text string) string { return m.formatReplyText(adp, msg, text) })
 		},
 		SendImage: func(imageURL string) error {
 			resolved, cleanup := m.prepareMedia(imageURL)
@@ -232,7 +232,7 @@ func (m *KeywordReplyManager) replyBuiltin(keyword string, msg *types.Message) e
 					}
 				}
 			}
-			err := sendReplyRichWithFallback(adp, msg, target, message)
+			err := sendReplyRichWithFallback(adp, msg, target, message, func(text string) string { return m.formatReplyText(adp, msg, text) })
 			if err == nil {
 				for _, cleanup := range cleanups {
 					cleanup()
@@ -269,7 +269,17 @@ func (m *KeywordReplyManager) releaseRestart() {
 }
 
 func (m *KeywordReplyManager) sendText(adp adapter.Adapter, target string, msg *types.Message, text string) error {
-	return adp.SendMessage(target, formatReplyText(adp, msg, text))
+	return adp.SendMessage(target, m.formatReplyText(adp, msg, text))
+}
+
+func (m *KeywordReplyManager) formatReplyText(adp adapter.Adapter, msg *types.Message, text string) string {
+	if msg != nil && msg.GroupID != "" && m.database != nil {
+		settings, err := m.database.GetSystemSettings()
+		if err == nil && !settings.MentionGroupReplies {
+			return text
+		}
+	}
+	return formatReplyText(adp, msg, text)
 }
 
 func (m *KeywordReplyManager) adapterAndTarget(msg *types.Message) (adapter.Adapter, string) {
@@ -277,7 +287,13 @@ func (m *KeywordReplyManager) adapterAndTarget(msg *types.Message) (adapter.Adap
 		return nil, ""
 	}
 	adp := m.adapterFor(msg)
-	return adp, resolveReplyTarget(adp, msg)
+	target := resolveReplyTarget(adp, msg)
+	if msg.GroupID != "" && adp != nil && adp.GetPlatform() == "qq_office" && m.database != nil {
+		if settings, err := m.database.GetSystemSettings(); err == nil && !settings.MentionGroupReplies {
+			target = stripQQOfficeReplyMention(target)
+		}
+	}
+	return adp, target
 }
 
 func (m *KeywordReplyManager) systemInfo() string {

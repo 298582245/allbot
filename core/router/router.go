@@ -482,7 +482,7 @@ func (r *Router) requireRegisteredUser(msg *types.Message, database *config.Data
 	if !allowed {
 		return false
 	}
-	_ = adp.SendMessage(resolveReplyTarget(adp, msg), formatReplyText(adp, msg, userRegisterGuide()))
+	_ = adp.SendMessage(r.resolveReplyTarget(adp, msg), r.formatReplyText(adp, msg, userRegisterGuide()))
 	return false
 }
 
@@ -511,7 +511,7 @@ func (r *Router) rejectDisabledUser(msg *types.Message, database *config.Databas
 	}
 	adp := r.getAdapterForMessage(msg)
 	if adp != nil {
-		_ = adp.SendMessage(resolveReplyTarget(adp, msg), formatReplyText(adp, msg, "账号已被封禁，请联系管理员"))
+		_ = adp.SendMessage(r.resolveReplyTarget(adp, msg), r.formatReplyText(adp, msg, "账号已被封禁，请联系管理员"))
 	}
 	log.Printf("[SYSTEM] Message blocked for banned user: platform=%s user=%s", msg.Platform, msg.UserID)
 	return true
@@ -873,7 +873,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 	}
 
 	adp := r.getAdapterForMessage(msg)
-	target := resolveReplyTarget(adp, msg)
+	target := r.resolveReplyTarget(adp, msg)
 	pluginPath := r.pluginManager.PluginPath(plugin.ID)
 
 	responseLogID := pluginResponseLogMessageID(msg)
@@ -883,7 +883,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 			log.Printf("[SYSTEM] Adapter not found for platform: %s, reply skipped", msg.Platform)
 			return nil
 		}
-		return adp.SendMessage(target, formatReplyText(adp, msg, text))
+		return adp.SendMessage(target, r.formatReplyText(adp, msg, text))
 	}
 	replyMarkdownFunc := func(markdown string) error {
 		log.Printf("%s：[Markdown] 消息ID=%s", pluginResponseLogPrefix(msg, plugin), responseLogID)
@@ -892,7 +892,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 			return nil
 		}
 		prepared, cleanup := r.prepareMarkdownMedia(markdown, pluginPath)
-		err := sendReplyMarkdownWithFallback(adp, msg, target, prepared)
+		err := sendReplyMarkdownWithFallback(adp, msg, target, prepared, func(text string) string { return r.formatReplyText(adp, msg, text) })
 		if err == nil && cleanup != nil {
 			cleanup()
 		}
@@ -961,7 +961,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 			log.Printf("[SYSTEM] Adapter not found for platform: %s, buttons skipped", msg.Platform)
 			return nil
 		}
-		return sendReplyButtonsWithFallback(adp, msg, target, text, buttons)
+		return sendReplyButtonsWithFallback(adp, msg, target, text, buttons, func(text string) string { return r.formatReplyText(adp, msg, text) })
 	}
 	replyRichFunc := func(message types.RichMessage) error {
 		log.Printf("%s：[富文本] 消息ID=%s", pluginResponseLogPrefix(msg, plugin), responseLogID)
@@ -970,7 +970,7 @@ func (r *Router) callPlugin(plugin *types.Plugin, msg *types.Message) error {
 			return nil
 		}
 		message, cleanup := r.prepareRichMedia(message)
-		err := sendReplyRichWithFallback(adp, msg, target, message)
+		err := sendReplyRichWithFallback(adp, msg, target, message, func(text string) string { return r.formatReplyText(adp, msg, text) })
 		if err == nil && cleanup != nil {
 			cleanup()
 		}
@@ -1334,11 +1334,41 @@ func defaultReplyTarget(msg *types.Message) string {
 	return msg.UserID
 }
 
-func formatReplyText(adp adapter.Adapter, msg *types.Message, text string) string {
+func (r *Router) resolveReplyTarget(adp adapter.Adapter, msg *types.Message) string {
+	target := resolveReplyTarget(adp, msg)
+	if msg != nil && msg.GroupID != "" && adp != nil && adp.GetPlatform() == "qq_office" && r.groupReplyMentionDisabled() {
+		return stripQQOfficeReplyMention(target)
+	}
+	return target
+}
+
+func (r *Router) formatReplyText(adp adapter.Adapter, msg *types.Message, text string) string {
+	if msg != nil && msg.GroupID != "" && r.groupReplyMentionDisabled() {
+		return text
+	}
 	if formatter, ok := adp.(adapter.ReplyTextFormatter); ok {
 		return formatter.FormatReplyText(msg, text)
 	}
 	return text
+}
+
+func (r *Router) groupReplyMentionDisabled() bool {
+	if r.database == nil {
+		return false
+	}
+	settings, err := r.database.GetSystemSettings()
+	return err == nil && !settings.MentionGroupReplies
+}
+
+func stripQQOfficeReplyMention(target string) string {
+	parts := strings.Split(target, "|")
+	kept := parts[:0]
+	for _, part := range parts {
+		if !strings.HasPrefix(part, "at_") {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, "|")
 }
 
 var markdownImagePattern = regexp.MustCompile(`!\[([^\]]*)\]\((<[^>]+>|[^)\s]+)([^)]*)\)`)
@@ -1403,7 +1433,7 @@ func sendMarkdownWithFallback(adp adapter.Adapter, target string, markdown strin
 	return adp.SendMessage(target, utils.MarkdownToPlainText(markdown))
 }
 
-func sendReplyMarkdownWithFallback(adp adapter.Adapter, msg *types.Message, target string, markdown string) error {
+func sendReplyMarkdownWithFallback(adp adapter.Adapter, msg *types.Message, target string, markdown string, formatters ...func(string) string) error {
 	markdown = strings.TrimSpace(markdown)
 	if markdown == "" {
 		return fmt.Errorf("消息内容不能为空")
@@ -1411,10 +1441,10 @@ func sendReplyMarkdownWithFallback(adp adapter.Adapter, msg *types.Message, targ
 	if sender, ok := adp.(adapter.MarkdownSender); ok {
 		return sender.SendMarkdown(target, markdown)
 	}
-	return adp.SendMessage(target, formatReplyText(adp, msg, utils.MarkdownToPlainText(markdown)))
+	return adp.SendMessage(target, replyTextFormatter(adp, msg, utils.MarkdownToPlainText(markdown), formatters...))
 }
 
-func sendReplyButtonsWithFallback(adp adapter.Adapter, msg *types.Message, target string, text string, buttons [][]types.ButtonOption) error {
+func sendReplyButtonsWithFallback(adp adapter.Adapter, msg *types.Message, target string, text string, buttons [][]types.ButtonOption, formatters ...func(string) string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return fmt.Errorf("消息内容不能为空")
@@ -1422,7 +1452,7 @@ func sendReplyButtonsWithFallback(adp adapter.Adapter, msg *types.Message, targe
 	if sender, ok := adp.(adapter.ButtonSender); ok {
 		return sender.SendButtons(target, text, buttons)
 	}
-	return adp.SendMessage(target, formatReplyText(adp, msg, text))
+	return adp.SendMessage(target, replyTextFormatter(adp, msg, text, formatters...))
 }
 
 func sendRichWithFallback(adp adapter.Adapter, target string, message types.RichMessage) error {
@@ -1455,7 +1485,8 @@ func sendRichWithFallback(adp adapter.Adapter, target string, message types.Rich
 	return sendRichSplitFallback(adp, target, message, nil)
 }
 
-func sendReplyRichWithFallback(adp adapter.Adapter, msg *types.Message, target string, message types.RichMessage) error {
+func sendReplyRichWithFallback(adp adapter.Adapter, msg *types.Message, target string, message types.RichMessage, formatters ...func(string) string) error {
+	formatter := func(text string) string { return replyTextFormatter(adp, msg, text, formatters...) }
 	message.Parts = utils.RichMessageParts(message)
 	if strings.TrimSpace(message.FallbackText) == "" && len(message.Parts) == 0 {
 		return fmt.Errorf("消息内容不能为空")
@@ -1472,7 +1503,7 @@ func sendReplyRichWithFallback(adp adapter.Adapter, msg *types.Message, target s
 	if platform == "qq" && strings.TrimSpace(message.Prefer) != "markdown" && strings.TrimSpace(message.Prefer) != "split" {
 		text := utils.RichMessageToCQ(message)
 		if text != "" {
-			return adp.SendMessage(target, formatReplyText(adp, msg, text))
+			return adp.SendMessage(target, formatter(text))
 		}
 	}
 	if markdownSender, ok := adp.(adapter.MarkdownSender); ok && strings.TrimSpace(message.Prefer) != "split" && !isPlainRichFallbackPlatform(platform) && !isSplitRichFallbackPlatform(platform) {
@@ -1482,7 +1513,21 @@ func sendReplyRichWithFallback(adp adapter.Adapter, msg *types.Message, target s
 			}
 		}
 	}
-	return sendRichSplitFallback(adp, target, message, func(text string) string { return formatReplyText(adp, msg, text) })
+	return sendRichSplitFallback(adp, target, message, formatter)
+}
+
+func replyTextFormatter(adp adapter.Adapter, msg *types.Message, text string, formatters ...func(string) string) string {
+	if len(formatters) > 0 && formatters[0] != nil {
+		return formatters[0](text)
+	}
+	return formatReplyText(adp, msg, text)
+}
+
+func formatReplyText(adp adapter.Adapter, msg *types.Message, text string) string {
+	if formatter, ok := adp.(adapter.ReplyTextFormatter); ok {
+		return formatter.FormatReplyText(msg, text)
+	}
+	return text
 }
 
 func sendRichSplitFallback(adp adapter.Adapter, target string, message types.RichMessage, textFormatter func(string) string) error {

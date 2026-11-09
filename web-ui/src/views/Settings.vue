@@ -39,6 +39,10 @@
             <el-input v-model.trim="form.public_base_url" clearable placeholder="例如：https://bot.example.com" />
             <span class="hint">用于生成本地图片、音频、视频和文件的临时公开链接，留空则直接交给适配器发送。</span>
           </el-form-item>
+          <el-form-item label="群聊自动 @">
+            <el-switch v-model="form.mention_group_replies" />
+            <span class="hint">{{ form.mention_group_replies ? '群聊回复时 @ 消息发送者' : '群聊回复时不自动 @ 消息发送者' }}</span>
+          </el-form-item>
           <el-form-item label="自动刷新">
             <el-switch v-model="form.auto_refresh" />
             <span class="hint">{{ form.auto_refresh ? '启用' : '禁用' }}</span>
@@ -205,6 +209,7 @@ const form = reactive({
   unregistered_prompt_limit: 10,
   github_proxy_url: '',
   public_base_url: '',
+  mention_group_replies: true,
   access_control: createAccessControl()
 })
 
@@ -302,6 +307,7 @@ const loadSettings = async () => {
       unregistered_prompt_limit: Math.max(0, Number(data.unregistered_prompt_limit ?? 10)),
       github_proxy_url: data.github_proxy_url || '',
       public_base_url: data.public_base_url || '',
+      mention_group_replies: data.mention_group_replies !== false,
       access_control: normalizeAccessControl(data.access_control)
     })
   } finally {
@@ -431,7 +437,8 @@ const handleSave = async () => {
       points_unit: form.points_unit,
       unregistered_prompt_limit: form.unregistered_prompt_limit,
       github_proxy_url: form.github_proxy_url,
-      public_base_url: form.public_base_url
+      public_base_url: form.public_base_url,
+      mention_group_replies: form.mention_group_replies
     })
     authStore.username = form.admin_username
     localStorage.setItem('username', form.admin_username)
