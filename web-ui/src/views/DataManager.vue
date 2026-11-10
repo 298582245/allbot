@@ -33,8 +33,8 @@
             <el-collapse-item v-for="group in groupedTables" :key="group.name" :title="`${group.name}（${group.tables.length}）`" :name="group.name">
               <el-menu :default-active="selectedTable" @select="selectTable">
                 <el-menu-item v-for="table in group.tables" :key="table.name" :index="table.name">
-                  <span>{{ table.view_name || table.name }}</span>
-                  <el-tag size="small" type="info">{{ table.count }}</el-tag>
+                  <span class="table-name" :title="table.view_name || table.name">{{ table.view_name || table.name }}</span>
+                  <el-tag class="table-count" size="small" type="info">{{ formatTableCount(table.count) }}</el-tag>
                 </el-menu-item>
               </el-menu>
             </el-collapse-item>
@@ -97,7 +97,7 @@
               <el-option
                 v-for="table in group.tables"
                 :key="table.name"
-                :label="`${table.view_name || table.name}（${table.count}）`"
+                :label="`${table.view_name || table.name}（${formatTableCount(table.count)}）`"
                 :value="table.name"
               />
             </el-option-group>
@@ -408,6 +408,14 @@ const displayValue = (value) => {
   return String(value)
 }
 
+const formatTableCount = (value) => {
+  const count = Number(value) || 0
+  if (count < 1000) return String(count)
+  if (count < 10000) return `${(count / 1000).toFixed(1)}k`
+  if (count < 100000) return `${(count / 10000).toFixed(1)}w`
+  return '9w+'
+}
+
 const normalizeEditValue = (value) => {
   if (value === null || value === undefined) return ''
   if (typeof value === 'object') return JSON.stringify(value)
@@ -550,6 +558,21 @@ onMounted(loadTables)
 .table-list :deep(.el-menu-item) {
   display: flex;
   justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.table-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-count {
+  flex: 0 0 auto;
 }
 
 .table-toolbar {
