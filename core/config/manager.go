@@ -173,6 +173,9 @@ func (m *AdapterManager) startAdapterLocked(config *AdapterConfig) error {
 	if err != nil {
 		return fmt.Errorf("创建 %s 适配器失败: %w", desc.DisplayName, err)
 	}
+	if remarkAware, ok := adp.(interface{ SetRemark(string) }); ok {
+		remarkAware.SetRemark(config.Remark)
+	}
 	if databaseAware, ok := adp.(interface{ SetDatabase(*Database) }); ok {
 		databaseAware.SetDatabase(m.db)
 	}

@@ -61,6 +61,14 @@
           <el-option label="ERROR" value="error" />
           <el-option label="DEBUG" value="debug" />
         </el-select>
+        <el-select v-model="adapterRemark" placeholder="全部机器人" clearable filterable @change="handleFilterChange">
+          <el-option
+            v-for="item in adapterOptions"
+            :key="item.id"
+            :label="`${item.platform} - ${item.remark}`"
+            :value="item.remark"
+          />
+        </el-select>
         <el-input
           v-model="keyword"
           clearable
@@ -124,7 +132,7 @@ defineOptions({ name: 'Logs' })
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Download, InfoFilled, Refresh } from '@element-plus/icons-vue'
-import { cleanupLogs, clearLogs, downloadLogs, getLogSettings, getLogs, saveLogSettings } from '@/api'
+import { cleanupLogs, clearLogs, downloadLogs, getAdapters, getLogSettings, getLogs, saveLogSettings } from '@/api'
 import StdPagination from '@/components/StdPagination.vue'
 
 const logs = ref([])
@@ -132,6 +140,8 @@ const logDates = ref([])
 const selectedDate = ref('')
 const keyword = ref('')
 const level = ref('')
+const adapterRemark = ref('')
+const adapterOptions = ref([])
 const retentionDays = ref(0)
 const loading = ref(false)
 const downloading = ref(false)
@@ -208,7 +218,8 @@ const loadLogs = async (showMessage = false) => {
       page: pagination.value.page,
       page_size: pagination.value.pageSize,
       keyword: keyword.value.trim(),
-      level: level.value
+      level: level.value,
+      adapter_remark: adapterRemark.value
     }
     const data = await getLogs(params)
     logs.value = Array.isArray(data.items) ? data.items : []
@@ -353,6 +364,17 @@ const handleSaveSettings = async () => {
   }
 }
 
+const loadAdapters = async () => {
+  try {
+    const data = await getAdapters()
+    adapterOptions.value = (Array.isArray(data) ? data : [])
+      .filter((item) => String(item.remark || '').trim())
+      .map((item) => ({ id: item.id, platform: item.platform, remark: String(item.remark).trim() }))
+  } catch (error) {
+    console.error('加载机器人备注失败:', error)
+  }
+}
+
 const handleCleanupNow = async () => {
   try {
     const data = await cleanupLogs({ retention_days: Number(retentionDays.value) || 0 })
@@ -365,7 +387,7 @@ const handleCleanupNow = async () => {
 }
 
 onMounted(async () => {
-  await loadSettings()
+  await Promise.all([loadSettings(), loadAdapters()])
   await loadLogs()
   logInterval = setInterval(() => {
     if (!pauseScroll.value && isTodaySelected.value && pagination.value.page === 1) loadLogs()
@@ -396,7 +418,7 @@ onUnmounted(() => {
 
 .log-toolbar {
   display: grid;
-  grid-template-columns: 180px 130px minmax(220px, 1fr) auto;
+  grid-template-columns: 180px 130px 180px minmax(220px, 1fr) auto;
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;

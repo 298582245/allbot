@@ -39,6 +39,7 @@ const (
 )
 
 type FeishuAdapter struct {
+	remark            string
 	appID             string
 	appSecret         string
 	verificationToken string
@@ -169,6 +170,9 @@ func NewFeishuAdapter(appID, appSecret, verificationToken, encryptKey, callbackP
 func (a *FeishuAdapter) GetPlatform() string {
 	return platformName
 }
+
+func (a *FeishuAdapter) SetRemark(remark string) { a.remark = strings.TrimSpace(remark) }
+func (a *FeishuAdapter) remarkTag() string       { return contract.RemarkTag(a.remark) }
 
 func (a *FeishuAdapter) GetBotIdentity(msg *types.Message) contract.BotIdentity {
 	return contract.BotIdentity{Label: "机器人 App ID", Value: strings.TrimSpace(a.appID)}
@@ -311,12 +315,12 @@ func (a *FeishuAdapter) SendMessage(target string, text string) error {
 	}
 	parts := contract.SplitTextMessage(text, contract.DefaultTextMessageLimit)
 	if len(parts) > 1 {
-		log.Printf("[WARN][飞书][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
+		log.Printf("[WARN][飞书]%s[%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", a.remarkTag(), target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
 	}
 	for index, part := range parts {
 		if err := a.sendMessagePart(target, part); err != nil {
 			sendErr := fmt.Errorf("飞书第 %d/%d 段发送失败: %w", index+1, len(parts), err)
-			log.Printf("[ERROR][飞书][%s]：%v", target, sendErr)
+			log.Printf("[ERROR][飞书]%s[%s]：%v", a.remarkTag(), target, sendErr)
 			return sendErr
 		}
 	}
@@ -331,7 +335,7 @@ func (a *FeishuAdapter) sendMessagePart(target string, text string) error {
 	if err := a.sendFeishuMessage(target, "text", string(content)); err != nil {
 		return err
 	}
-	log.Printf("[INFO][发送][飞书][%s]：%s", target, text)
+	log.Printf("[INFO][发送][飞书]%s[%s]：%s", a.remarkTag(), target, text)
 	return nil
 }
 
@@ -342,7 +346,7 @@ func (a *FeishuAdapter) SendMarkdown(target string, markdown string) error {
 	}
 	parts := contract.SplitMarkdownMessage(markdown, contract.DefaultRichMessageLimit)
 	if len(parts) > 1 {
-		log.Printf("[WARN][飞书][%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(markdown), contract.DefaultRichMessageLimit, len(parts))
+		log.Printf("[WARN][飞书]%s[%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", a.remarkTag(), target, contract.TextRuneCount(markdown), contract.DefaultRichMessageLimit, len(parts))
 	}
 	for index, part := range parts {
 		content, err := json.Marshal(map[string]interface{}{
@@ -359,7 +363,7 @@ func (a *FeishuAdapter) SendMarkdown(target string, markdown string) error {
 		if err != nil {
 			return err
 		}
-		log.Printf("[发送][飞书][%s]：[Markdown] %s", target, part)
+		log.Printf("[发送][飞书]%s[%s]：[Markdown] %s", a.remarkTag(), target, part)
 		if err := a.sendFeishuMessage(target, "interactive", string(content)); err != nil {
 			return fmt.Errorf("飞书 Markdown 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
 		}
@@ -375,7 +379,7 @@ func (a *FeishuAdapter) SendImage(target string, imageURL string) error {
 	if imageURL == "" {
 		return fmt.Errorf("飞书图片地址不能为空")
 	}
-	log.Printf("[发送][飞书][%s]：[图片] %s", target, imageURL)
+	log.Printf("[发送][飞书]%s[%s]：[图片] %s", a.remarkTag(), target, imageURL)
 	imageKey, err := a.uploadImage(imageURL)
 	if err != nil {
 		return err
@@ -451,9 +455,9 @@ func (a *FeishuAdapter) handleP2MessageReceiveV1(event *larkim.P2MessageReceiveV
 	callback := callbackPayloadFromP2MessageReceiveV1(event)
 	if msg := a.buildMessage(callback); msg != nil {
 		if msg.GroupID == "" {
-			log.Printf("[接收][飞书][%s(私聊)]：%s", msg.UserID, msg.Content)
+			log.Printf("[接收][飞书]%s[%s(私聊)]：%s", a.remarkTag(), msg.UserID, msg.Content)
 		} else {
-			log.Printf("[接收][飞书][%s(群 %s)]：%s", msg.UserID, msg.GroupID, msg.Content)
+			log.Printf("[接收][飞书]%s[%s(群 %s)]：%s", a.remarkTag(), msg.UserID, msg.GroupID, msg.Content)
 		}
 		a.dispatchMessage(msg)
 	}

@@ -43,6 +43,7 @@ type QQAdapterConfig struct {
 
 // QQAdapter QQ 平台适配器，连接 OneBot 11 正向通用 WebSocket 服务。
 type QQAdapter struct {
+	remark             string
 	framework          string
 	serverURL          string
 	httpAPIURL         string
@@ -108,6 +109,9 @@ func NewQQAdapter(config QQAdapterConfig) *QQAdapter {
 func (a *QQAdapter) GetPlatform() string {
 	return "qq"
 }
+
+func (a *QQAdapter) SetRemark(remark string) { a.remark = strings.TrimSpace(remark) }
+func (a *QQAdapter) remarkTag() string       { return contract.RemarkTag(a.remark) }
 
 func (a *QQAdapter) IsHealthy() bool {
 	a.mu.Lock()
@@ -354,7 +358,7 @@ func (a *QQAdapter) handleMessageEvent(event map[string]interface{}) {
 	if a.isRecentSent(messageType, targetID, content) {
 		return
 	}
-	log.Printf("[接收][QQ][%s%s(%s)]：%s", userID, qqNicknameSuffix(nickname), chatInfo, content)
+	log.Printf("[接收][QQ]%s[%s%s(%s)]：%s", a.remarkTag(), userID, qqNicknameSuffix(nickname), chatInfo, content)
 	if a.messageHandler != nil {
 		a.messageHandler(msg)
 	}
@@ -371,12 +375,12 @@ func qqNicknameSuffix(nickname string) string {
 func (a *QQAdapter) SendMessage(target string, text string) error {
 	parts := contract.SplitTextMessagePreserveCQ(text, contract.DefaultTextMessageLimit)
 	if len(parts) > 1 {
-		log.Printf("[WARN][QQ][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
+		log.Printf("[WARN][QQ]%s[%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", a.remarkTag(), target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
 	}
 	for index, part := range parts {
 		if err := a.sendMessagePart(target, part); err != nil {
 			sendErr := fmt.Errorf("QQ 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
-			log.Printf("[ERROR][QQ][%s]：%v", target, sendErr)
+			log.Printf("[ERROR][QQ]%s[%s]：%v", a.remarkTag(), target, sendErr)
 			return sendErr
 		}
 	}
@@ -400,7 +404,7 @@ func (a *QQAdapter) sendMessagePart(target string, text string) error {
 		return err
 	}
 	a.markRecentSent(messageType, targetID, text)
-	log.Printf("[INFO][发送][QQ][%s]：%s", target, text)
+	log.Printf("[INFO][发送][QQ]%s[%s]：%s", a.remarkTag(), target, text)
 	return nil
 }
 

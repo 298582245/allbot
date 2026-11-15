@@ -21,6 +21,7 @@ const DefaultSMTPSubject = "AllBot Web 聊天室验证码"
 const DefaultMessageLimitPerMinute = 60
 
 type Adapter struct {
+	remark         string
 	database       *config.Database
 	messageHandler func(*types.Message)
 	mu             sync.RWMutex
@@ -77,6 +78,18 @@ func (a *Adapter) SetDatabase(database *config.Database) {
 
 func (a *Adapter) GetPlatform() string { return platformName }
 
+func (a *Adapter) SetRemark(remark string) {
+	a.mu.Lock()
+	a.remark = strings.TrimSpace(remark)
+	a.mu.Unlock()
+}
+
+func (a *Adapter) remarkTag() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return contract.RemarkTag(a.remark)
+}
+
 func (a *Adapter) SetMessageHandler(handler func(*types.Message)) {
 	a.mu.Lock()
 	a.messageHandler = handler
@@ -106,12 +119,12 @@ func (a *Adapter) Stop() error {
 func (a *Adapter) SendMessage(target string, text string) error {
 	parts := contract.SplitTextMessage(text, contract.DefaultTextMessageLimit)
 	if len(parts) > 1 {
-		log.Printf("[WARN][web][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
+		log.Printf("[WARN][web]%s[%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", a.remarkTag(), target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
 	}
 	for index, part := range parts {
 		if err := a.saveOutbound(target, &config.WebChatMessage{MessageType: "text", Content: part, Target: target, PluginID: webChatPluginIDFromTarget(target)}); err != nil {
 			sendErr := fmt.Errorf("web 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
-			log.Printf("[ERROR][web][%s]：%v", target, sendErr)
+			log.Printf("[ERROR][web]%s[%s]：%v", a.remarkTag(), target, sendErr)
 			return sendErr
 		}
 	}
@@ -121,7 +134,7 @@ func (a *Adapter) SendMessage(target string, text string) error {
 func (a *Adapter) SendMarkdown(target string, markdown string) error {
 	parts := contract.SplitMarkdownMessage(markdown, contract.DefaultRichMessageLimit)
 	if len(parts) > 1 {
-		log.Printf("[WARN][web][%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(markdown), contract.DefaultRichMessageLimit, len(parts))
+		log.Printf("[WARN][web]%s[%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", a.remarkTag(), target, contract.TextRuneCount(markdown), contract.DefaultRichMessageLimit, len(parts))
 	}
 	for index, part := range parts {
 		if err := a.saveOutbound(target, &config.WebChatMessage{MessageType: "markdown", Content: part, Target: target, PluginID: webChatPluginIDFromTarget(target)}); err != nil {
@@ -210,7 +223,7 @@ func (a *Adapter) SendRichMessage(target string, message types.RichMessage) erro
 			})
 		}
 	}
-	log.Printf("[WARN][web][%s] 富文本长度 %d 超过 %d，拆分为 %d 段发送", target, total, contract.DefaultRichMessageLimit, len(chunks))
+	log.Printf("[WARN][web]%s[%s] 富文本长度 %d 超过 %d，拆分为 %d 段发送", a.remarkTag(), target, total, contract.DefaultRichMessageLimit, len(chunks))
 	for index, chunk := range chunks {
 		data, err := json.Marshal(chunk)
 		if err != nil {
@@ -304,7 +317,7 @@ func (a *Adapter) ReceiveMessage(userID, content, messageType, imageURL, richJSO
 			nickname = user.DisplayName
 		}
 	}
-	log.Printf("[接收][web][%s%s(私聊)]：%s", userID, webNicknameSuffix(nickname), content)
+	log.Printf("[接收][web]%s[%s%s(私聊)]：%s", a.remarkTag(), userID, webNicknameSuffix(nickname), content)
 	handler(&types.Message{ID: fmt.Sprintf("web_%d", time.Now().UnixNano()), Platform: platformName, UserID: userID, Nickname: nickname, Content: content, Metadata: metadata})
 }
 
@@ -359,7 +372,7 @@ func (a *Adapter) saveOutbound(target string, message *config.WebChatMessage) er
 		message = saved
 	}
 	a.broadcast(userID, message)
-	log.Printf("[INFO][发送][web][%s]：%s", target, webChatLogContent(message))
+	log.Printf("[INFO][发送][web]%s[%s]：%s", a.remarkTag(), target, webChatLogContent(message))
 	return nil
 }
 

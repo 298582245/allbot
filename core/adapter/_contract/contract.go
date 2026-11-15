@@ -3,9 +3,19 @@ package contract
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/allbot/allbot/core/types"
 )
+
+// RemarkTag formats an adapter account remark for message logs.
+func RemarkTag(remark string) string {
+	remark = strings.TrimSpace(remark)
+	if remark == "" {
+		return ""
+	}
+	return "[" + remark + "]"
+}
 
 // ErrUnsupported 表示适配器明确不支持当前操作，调用方应跳过而不是阻塞流程。
 var ErrUnsupported = errors.New("adapter capability unsupported")

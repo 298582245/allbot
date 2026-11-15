@@ -49,6 +49,7 @@ const (
 )
 
 type QQOfficeAdapter struct {
+	remark       string
 	appID        string
 	clientSecret string
 	apiBaseURL   string
@@ -123,6 +124,9 @@ func NewQQOfficeAdapter(appID, clientSecret, apiBaseURL, tokenURL string, botTyp
 func (a *QQOfficeAdapter) GetPlatform() string {
 	return qqOfficePlatform
 }
+
+func (a *QQOfficeAdapter) SetRemark(remark string) { a.remark = strings.TrimSpace(remark) }
+func (a *QQOfficeAdapter) remarkTag() string       { return contract.RemarkTag(a.remark) }
 
 func (a *QQOfficeAdapter) IsHealthy() bool {
 	select {
@@ -244,7 +248,7 @@ func (a *QQOfficeAdapter) SendMessageWithSequence(target string, text string, se
 func (a *QQOfficeAdapter) sendTextMessage(target string, text string, sequence int) error {
 	parts := contract.SplitTextMessage(text, contract.DefaultTextMessageLimit)
 	if len(parts) > 1 {
-		log.Printf("[WARN][QQ官方][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
+		log.Printf("[WARN][QQ官方]%s[%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", a.remarkTag(), target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
 	}
 	for index, part := range parts {
 		partSequence := sequence
@@ -253,7 +257,7 @@ func (a *QQOfficeAdapter) sendTextMessage(target string, text string, sequence i
 		}
 		if err := a.sendMessagePart(target, part, partSequence); err != nil {
 			sendErr := fmt.Errorf("QQ 官方第 %d/%d 段发送失败: %w", index+1, len(parts), err)
-			log.Printf("[ERROR][QQ官方][%s]：%v", target, sendErr)
+			log.Printf("[ERROR][QQ官方]%s[%s]：%v", a.remarkTag(), target, sendErr)
 			return sendErr
 		}
 	}
@@ -293,7 +297,7 @@ func (a *QQOfficeAdapter) sendMessagePart(target string, text string, sequence i
 	if err := a.callAPIWithPassiveFallback(path, body, targetInfo); err != nil {
 		return err
 	}
-	log.Printf("[INFO][发送][QQ官方][%s]：%s", target, text)
+	log.Printf("[INFO][发送][QQ官方]%s[%s]：%s", a.remarkTag(), target, text)
 	return nil
 }
 
@@ -331,7 +335,7 @@ func (a *QQOfficeAdapter) SendButtons(target string, text string, buttons [][]ty
 	default:
 		return fmt.Errorf("QQ 官方按钮目标类型无效: %s", targetInfo.kind)
 	}
-	log.Printf("[发送][QQ官方][%s]：[Buttons] %s", target, text)
+	log.Printf("[发送][QQ官方]%s[%s]：[Buttons] %s", a.remarkTag(), target, text)
 	return a.callAPIWithPassiveFallback(path, body, targetInfo)
 }
 
@@ -433,7 +437,7 @@ func (a *QQOfficeAdapter) sendMarkdownMessage(target string, markdown string, se
 		parts = contract.SplitTextMessage(markdown, splitLimit)
 	}
 	if len(parts) > 1 {
-		log.Printf("[WARN][QQ官方][%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(markdown), splitLimit, len(parts))
+		log.Printf("[WARN][QQ官方]%s[%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", a.remarkTag(), target, contract.TextRuneCount(markdown), splitLimit, len(parts))
 	}
 	for index, part := range parts {
 		content := part
@@ -468,7 +472,7 @@ func (a *QQOfficeAdapter) sendMarkdownMessage(target string, markdown string, se
 		if err := a.callAPIWithPassiveFallback(path, body, targetInfo); err != nil {
 			return fmt.Errorf("QQ 官方 Markdown 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
 		}
-		log.Printf("[发送][QQ官方][%s]：[Markdown] %s", target, content)
+		log.Printf("[发送][QQ官方]%s[%s]：[Markdown] %s", a.remarkTag(), target, content)
 	}
 	return nil
 }
@@ -549,7 +553,7 @@ func (a *QQOfficeAdapter) sendMedia(target string, mediaURL string, fileType int
 	default:
 		return fmt.Errorf("QQ 官方图片目标类型无效: %s", targetInfo.kind)
 	}
-	log.Printf("[发送][QQ官方][%s]：[%s] %s", target, mediaName, mediaURL)
+	log.Printf("[发送][QQ官方]%s[%s]：[%s] %s", a.remarkTag(), target, mediaName, mediaURL)
 	return a.callAPIWithPassiveFallback(path, body, targetInfo)
 }
 
@@ -1182,7 +1186,7 @@ func (a *QQOfficeAdapter) handleDirectMessage(data map[string]interface{}) {
 		},
 	}
 	a.setQQOfficeBotMetadata(msg.Metadata, authorBot, userID)
-	log.Printf("[接收][QQ官方][%s%s(DMS %s)]：%s", userID, qqOfficeNicknameSuffix(authorName), guildID, content)
+	log.Printf("[接收][QQ官方]%s[%s%s(DMS %s)]：%s", a.remarkTag(), userID, qqOfficeNicknameSuffix(authorName), guildID, content)
 	a.dispatchMessage(msg)
 }
 
@@ -1221,7 +1225,7 @@ func (a *QQOfficeAdapter) handleC2CMessage(data map[string]interface{}) {
 		},
 	}
 	a.setQQOfficeBotMetadata(msg.Metadata, authorBot, userOpenID)
-	log.Printf("[接收][QQ官方][%s%s(C2C)]：%s", userOpenID, qqOfficeNicknameSuffix(authorName), content)
+	log.Printf("[接收][QQ官方]%s[%s%s(C2C)]：%s", a.remarkTag(), userOpenID, qqOfficeNicknameSuffix(authorName), content)
 	a.dispatchMessage(msg)
 }
 
@@ -1275,7 +1279,7 @@ func (a *QQOfficeAdapter) handleGroupMessage(eventType string, data map[string]i
 		},
 	}
 	a.setQQOfficeBotMetadata(msg.Metadata, qqOfficeAuthorIsBot(author), memberOpenID)
-	log.Printf("[接收][QQ官方][%s%s(群 %s)]：%s", memberOpenID, qqOfficeNicknameSuffix(authorName), groupOpenID, content)
+	log.Printf("[接收][QQ官方]%s[%s%s(群 %s)]：%s", a.remarkTag(), memberOpenID, qqOfficeNicknameSuffix(authorName), groupOpenID, content)
 	a.dispatchMessage(msg)
 }
 
@@ -1317,7 +1321,7 @@ func (a *QQOfficeAdapter) handleChannelMessage(eventType string, data map[string
 		},
 	}
 	a.setQQOfficeBotMetadata(msg.Metadata, authorBot, userID)
-	log.Printf("[接收][QQ官方][%s%s(频道 %s)]：%s", userID, qqOfficeNicknameSuffix(authorName), channelID, content)
+	log.Printf("[接收][QQ官方]%s[%s%s(频道 %s)]：%s", a.remarkTag(), userID, qqOfficeNicknameSuffix(authorName), channelID, content)
 	a.dispatchMessage(msg)
 }
 

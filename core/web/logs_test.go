@@ -148,7 +148,7 @@ func TestLogManagerQueryLogFileReadsHistoryByDate(t *testing.T) {
 		lm := newTestLogManager(t, 10)
 		writeTestLogFile(t, "2026-06-25", "10:00:00 INFO first\n10:00:01 ERROR second\n10:00:02 WARN keyword third\n")
 
-		result, err := lm.QueryLogFile("2026-06-25", 1, 2, "keyword", "warn")
+		result, err := lm.QueryLogFile("2026-06-25", 1, 2, "keyword", "warn", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -161,12 +161,27 @@ func TestLogManagerQueryLogFileReadsHistoryByDate(t *testing.T) {
 	})
 }
 
+func TestLogManagerQueryLogFileFiltersAdapterRemark(t *testing.T) {
+	withTempWorkdirForLogTests(t, func() {
+		lm := newTestLogManager(t, 10)
+		writeTestLogFile(t, "2026-06-25", "10:00:00 INFO [发送][QQ官方][主机器人][group_one]：hello\n10:00:01 INFO [发送][QQ官方][备用机器人][group_one]：hello\n")
+
+		result, err := lm.QueryLogFile("2026-06-25", 1, 10, "", "", "主机器人")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Total != 1 || len(result.Items) != 1 || !strings.Contains(result.Items[0].Message, "[主机器人]") {
+			t.Fatalf("unexpected adapter remark filter result: %#v", result)
+		}
+	})
+}
+
 func TestLogManagerQueryLogFileKeepsMultilineMessageTogether(t *testing.T) {
 	withTempWorkdirForLogTests(t, func() {
 		lm := newTestLogManager(t, 10)
 		writeTestLogFile(t, "2026-06-25", "10:00:00 INFO sendMessage 第一行\n第二行\n最后一行\n10:00:01 ERROR next\n")
 
-		result, err := lm.QueryLogFile("2026-06-25", 1, 10, "", "")
+		result, err := lm.QueryLogFile("2026-06-25", 1, 10, "", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}

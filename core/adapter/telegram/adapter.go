@@ -30,6 +30,7 @@ type GroupInfo = contract.GroupInfo
 
 // TelegramAdapter Telegram 平台适配器
 type TelegramAdapter struct {
+	remark         string
 	botToken       string
 	apiURL         string
 	database       *config.Database
@@ -88,6 +89,9 @@ func NewTelegramAdapter(botToken string, proxyURL string) *TelegramAdapter {
 func (a *TelegramAdapter) GetPlatform() string {
 	return "telegram"
 }
+
+func (a *TelegramAdapter) SetRemark(remark string) { a.remark = strings.TrimSpace(remark) }
+func (a *TelegramAdapter) remarkTag() string       { return contract.RemarkTag(a.remark) }
 
 func (a *TelegramAdapter) GetBotIdentity(msg *types.Message) contract.BotIdentity {
 	a.identityMu.RLock()
@@ -281,7 +285,7 @@ func (a *TelegramAdapter) handleCallbackQuery(callbackQuery map[string]interface
 		return
 	}
 
-	log.Printf("[接收][Telegram][%s%s(回调%s)]：%s", userID, telegramNicknameSuffix(fromName), chatID, content)
+	log.Printf("[接收][Telegram]%s[%s%s(回调%s)]：%s", a.remarkTag(), userID, telegramNicknameSuffix(fromName), chatID, content)
 	msg := &types.Message{
 		ID:       "callback_" + messageID,
 		Platform: "telegram",
@@ -461,7 +465,7 @@ func (a *TelegramAdapter) handleUpdate(update map[string]interface{}) {
 		chatInfo = fmt.Sprintf("群组%s", chatID)
 	}
 
-	log.Printf("[接收][Telegram][%s%s(%s)]：%s", userID, telegramNicknameSuffix(fromName), chatInfo, content)
+	log.Printf("[接收][Telegram]%s[%s%s(%s)]：%s", a.remarkTag(), userID, telegramNicknameSuffix(fromName), chatInfo, content)
 
 	msg := &types.Message{
 		ID:        messageID,
@@ -734,12 +738,12 @@ func htmlEscape(value string) string {
 func (a *TelegramAdapter) SendMessage(target string, text string) error {
 	parts := contract.SplitTextMessage(text, contract.DefaultTextMessageLimit)
 	if len(parts) > 1 {
-		log.Printf("[WARN][Telegram][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
+		log.Printf("[WARN][Telegram]%s[%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", a.remarkTag(), target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
 	}
 	for index, part := range parts {
 		if err := a.sendMessagePart(target, part); err != nil {
 			sendErr := fmt.Errorf("Telegram 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
-			log.Printf("[ERROR][Telegram][%s]：%v", target, sendErr)
+			log.Printf("[ERROR][Telegram]%s[%s]：%v", a.remarkTag(), target, sendErr)
 			return sendErr
 		}
 	}
@@ -757,7 +761,7 @@ func (a *TelegramAdapter) sendMessagePart(target string, text string) error {
 	if err := a.callAPI("/sendMessage", data); err != nil {
 		return err
 	}
-	log.Printf("[INFO][发送][Telegram][%s]：%s", target, text)
+	log.Printf("[INFO][发送][Telegram]%s[%s]：%s", a.remarkTag(), target, text)
 	return nil
 }
 
@@ -833,7 +837,7 @@ func (a *TelegramAdapter) SendMarkdown(target string, markdown string) error {
 	}
 	parts := contract.SplitMarkdownMessage(markdown, contract.DefaultTextMessageLimit)
 	if len(parts) > 1 {
-		log.Printf("[WARN][Telegram][%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(markdown), contract.DefaultTextMessageLimit, len(parts))
+		log.Printf("[WARN][Telegram]%s[%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", a.remarkTag(), target, contract.TextRuneCount(markdown), contract.DefaultTextMessageLimit, len(parts))
 	}
 	for index, part := range parts {
 		data := map[string]interface{}{
@@ -841,7 +845,7 @@ func (a *TelegramAdapter) SendMarkdown(target string, markdown string) error {
 			"text":       part,
 			"parse_mode": "Markdown",
 		}
-		log.Printf("[发送][Telegram][%s]：[Markdown] %s", target, part)
+		log.Printf("[发送][Telegram]%s[%s]：[Markdown] %s", a.remarkTag(), target, part)
 		if err := a.callAPI("/sendMessage", data); err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "can't parse entities") {
 				if fallbackErr := a.SendMessage(target, utils.MarkdownToPlainText(part)); fallbackErr != nil {
@@ -866,7 +870,7 @@ func (a *TelegramAdapter) SendButtons(target string, text string, buttons [][]ty
 		"text":         text,
 		"reply_markup": markup,
 	}
-	log.Printf("[发送][Telegram][%s]：[Buttons] %s", target, text)
+	log.Printf("[发送][Telegram]%s[%s]：[Buttons] %s", a.remarkTag(), target, text)
 	return a.callAPI("/sendMessage", data)
 }
 

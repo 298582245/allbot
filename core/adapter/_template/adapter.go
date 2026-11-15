@@ -16,6 +16,7 @@ type GroupInfo = contract.GroupInfo
 const platformName = "template"
 
 type ExampleAdapter struct {
+	remark         string
 	token          string
 	messageHandler func(*types.Message)
 	stopChan       chan struct{}
@@ -32,6 +33,9 @@ func NewExampleAdapter(token string) *ExampleAdapter {
 func (a *ExampleAdapter) GetPlatform() string {
 	return platformName
 }
+
+func (a *ExampleAdapter) SetRemark(remark string) { a.remark = strings.TrimSpace(remark) }
+func (a *ExampleAdapter) remarkTag() string       { return contract.RemarkTag(a.remark) }
 
 func (a *ExampleAdapter) SetMessageHandler(handler func(*types.Message)) {
 	a.messageHandler = handler
@@ -122,7 +126,7 @@ func (a *ExampleAdapter) SendMessage(target string, text string) error {
 	if strings.TrimSpace(target) == "" {
 		return fmt.Errorf("Example 发送目标不能为空")
 	}
-	log.Printf("[发送][Example][%s]：%s", target, text)
+	log.Printf("[发送][Example]%s[%s]：%s", a.remarkTag(), target, text)
 	return nil
 }
 

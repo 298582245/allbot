@@ -40,6 +40,7 @@ const (
 var wechatOfficialPassiveReplyWait = wechatOfficialPassiveReplyDefault
 
 type WeChatOfficialAdapter struct {
+	remark       string
 	appID        string
 	originalID   string
 	appSecret    string
@@ -135,6 +136,9 @@ func (a *WeChatOfficialAdapter) GetPlatform() string {
 	return platformName
 }
 
+func (a *WeChatOfficialAdapter) SetRemark(remark string) { a.remark = strings.TrimSpace(remark) }
+func (a *WeChatOfficialAdapter) remarkTag() string       { return contract.RemarkTag(a.remark) }
+
 func (a *WeChatOfficialAdapter) GetBotIdentity(msg *types.Message) contract.BotIdentity {
 	if msg != nil && msg.Metadata != nil {
 		if originalID := strings.TrimSpace(msg.Metadata["wechat_to_user_name"]); originalID != "" {
@@ -199,11 +203,11 @@ func (a *WeChatOfficialAdapter) SendMessage(target string, text string) error {
 		return fmt.Errorf("微信公众号发送目标不能为空")
 	}
 	if contract.TextRuneCount(text) > contract.DefaultTextMessageLimit {
-		log.Printf("[WARN][微信公众号][%s] 文本长度 %d 超过 %d，按平台限制跳过发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit)
+		log.Printf("[WARN][微信公众号]%s[%s] 文本长度 %d 超过 %d，按平台限制跳过发送", a.remarkTag(), target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit)
 		return nil
 	}
 	if a.sendPassiveReply(target, text) {
-		log.Printf("[发送][微信公众号][%s][被动回复]：%s", target, text)
+		log.Printf("[发送][微信公众号]%s[%s][被动回复]：%s", a.remarkTag(), target, text)
 		return nil
 	}
 	body := map[string]interface{}{
@@ -214,10 +218,10 @@ func (a *WeChatOfficialAdapter) SendMessage(target string, text string) error {
 		},
 	}
 	if err := a.callAPI(http.MethodPost, "/cgi-bin/message/custom/send", body, nil); err != nil {
-		log.Printf("[ERROR][发送失败][微信公众号][%s][客服消息]：%v", target, err)
+		log.Printf("[ERROR][发送失败][微信公众号]%s[%s][客服消息]：%v", a.remarkTag(), target, err)
 		return err
 	}
-	log.Printf("[发送][微信公众号][%s][客服消息]：%s", target, text)
+	log.Printf("[发送][微信公众号]%s[%s][客服消息]：%s", a.remarkTag(), target, text)
 	return nil
 }
 
@@ -258,7 +262,7 @@ func (a *WeChatOfficialAdapter) SendRichMessage(target string, message types.Ric
 	text := strings.Join(parts, "\n\n")
 	chunks := contract.SplitTextMessage(text, contract.DefaultTextMessageLimit)
 	if len(chunks) > 1 {
-		log.Printf("[WARN][微信公众号][%s] 富文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(chunks))
+		log.Printf("[WARN][微信公众号]%s[%s] 富文本长度 %d 超过 %d，拆分为 %d 段发送", a.remarkTag(), target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(chunks))
 	}
 	for index, chunk := range chunks {
 		if err := a.SendMessage(target, chunk); err != nil {
@@ -479,6 +483,7 @@ func wechatEventContent(event, eventKey string) string {
 }
 
 func (a *WeChatOfficialAdapter) dispatchMessage(msg *types.Message) {
+	log.Printf("[接收][微信公众号]%s[%s]：%s", a.remarkTag(), msg.UserID, msg.Content)
 	if a.messageHandler != nil {
 		a.messageHandler(msg)
 	}
@@ -542,7 +547,7 @@ func (a *WeChatOfficialAdapter) writePassiveTextReply(w http.ResponseWriter, msg
 	}
 	payload, err := xml.Marshal(reply)
 	if err != nil {
-		log.Printf("[ERROR][发送失败][微信公众号][%s][被动回复]：%v", msg.UserID, err)
+		log.Printf("[ERROR][发送失败][微信公众号]%s[%s][被动回复]：%v", a.remarkTag(), msg.UserID, err)
 		writeWeChatOfficialSuccess(w)
 		return
 	}

@@ -40,6 +40,7 @@ type dingTalkReplier interface {
 }
 
 type DingTalkAdapter struct {
+	remark       string
 	clientID     string
 	clientSecret string
 	robotCode    string
@@ -75,6 +76,9 @@ func NewDingTalkAdapter(clientID, clientSecret, robotCode, openAPIHost, proxyURL
 func (a *DingTalkAdapter) GetPlatform() string {
 	return platformName
 }
+
+func (a *DingTalkAdapter) SetRemark(remark string) { a.remark = strings.TrimSpace(remark) }
+func (a *DingTalkAdapter) remarkTag() string       { return contract.RemarkTag(a.remark) }
 
 func (a *DingTalkAdapter) GetBotIdentity(msg *types.Message) contract.BotIdentity {
 	if msg != nil && msg.Metadata != nil {
@@ -207,12 +211,12 @@ func (a *DingTalkAdapter) SendMessage(target string, text string) error {
 	}
 	parts := contract.SplitTextMessagePreserveCQ(text, contract.DefaultTextMessageLimit)
 	if len(parts) > 1 {
-		log.Printf("[WARN][钉钉][%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
+		log.Printf("[WARN][钉钉]%s[%s] 文本长度 %d 超过 %d，拆分为 %d 段发送", a.remarkTag(), target, contract.TextRuneCount(text), contract.DefaultTextMessageLimit, len(parts))
 	}
 	for index, part := range parts {
 		if err := a.sendMessagePart(targetInfo, target, part); err != nil {
 			sendErr := fmt.Errorf("钉钉第 %d/%d 段发送失败: %w", index+1, len(parts), err)
-			log.Printf("[ERROR][钉钉][%s]：%v", target, sendErr)
+			log.Printf("[ERROR][钉钉]%s[%s]：%v", a.remarkTag(), target, sendErr)
 			return sendErr
 		}
 	}
@@ -242,7 +246,7 @@ func (a *DingTalkAdapter) sendMessagePart(targetInfo dingTalkMessageTarget, targ
 			})
 		}
 		if err == nil {
-			log.Printf("[INFO][发送][钉钉][%s]：%s", target, text)
+			log.Printf("[INFO][发送][钉钉]%s[%s]：%s", a.remarkTag(), target, text)
 		}
 		return err
 	case dingTalkTargetConversation:
@@ -270,10 +274,10 @@ func (a *DingTalkAdapter) SendMarkdown(target string, markdown string) error {
 		}
 		parts := contract.SplitMarkdownMessage(markdown, contract.DefaultRichMessageLimit)
 		if len(parts) > 1 {
-			log.Printf("[WARN][钉钉][%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", target, contract.TextRuneCount(markdown), contract.DefaultRichMessageLimit, len(parts))
+			log.Printf("[WARN][钉钉]%s[%s] Markdown 长度 %d 超过 %d，拆分为 %d 段发送", a.remarkTag(), target, contract.TextRuneCount(markdown), contract.DefaultRichMessageLimit, len(parts))
 		}
 		for index, part := range parts {
-			log.Printf("[发送][钉钉][%s]：[Markdown] %s", target, part)
+			log.Printf("[发送][钉钉]%s[%s]：[Markdown] %s", a.remarkTag(), target, part)
 			if err := a.replier.SimpleReplyMarkdown(context.Background(), targetInfo.id, []byte(dingTalkMarkdownTitle(part)), []byte(part)); err != nil {
 				return fmt.Errorf("钉钉 Markdown 第 %d/%d 段发送失败: %w", index+1, len(parts), err)
 			}
@@ -303,7 +307,7 @@ func (a *DingTalkAdapter) SendImage(target string, imageURL string) error {
 			a.replier = chatbot.NewChatbotReplier()
 		}
 		markdown := fmt.Sprintf("![图片](%s)", imageURL)
-		log.Printf("[发送][钉钉][%s]：[图片]%s", target, imageURL)
+		log.Printf("[发送][钉钉]%s[%s]：[图片]%s", a.remarkTag(), target, imageURL)
 		return a.replier.SimpleReplyMarkdown(context.Background(), targetInfo.id, []byte("图片"), []byte(markdown))
 	case dingTalkTargetConversation:
 		return fmt.Errorf("钉钉 Stream 适配器暂未实现会话主动发送图片，请使用最近消息的 session webhook 回复目标")
@@ -353,7 +357,7 @@ func (a *DingTalkAdapter) handleChatBotMessage(ctx context.Context, data *chatbo
 	if msg.GroupID != "" {
 		chatInfo = "群 " + msg.GroupID
 	}
-	log.Printf("[接收][钉钉][%s%s(%s)]：%s", msg.UserID, dingtalkNicknameSuffix(msg.Nickname), chatInfo, msg.Content)
+	log.Printf("[接收][钉钉]%s[%s%s(%s)]：%s", a.remarkTag(), msg.UserID, dingtalkNicknameSuffix(msg.Nickname), chatInfo, msg.Content)
 	go a.dispatchMessage(msg)
 	return nil, nil
 }

@@ -263,7 +263,7 @@ func (lm *LogManager) GetLogs(limit int) []LogEntry {
 }
 
 // QueryLogFile 按日期读取磁盘日志，并在服务端完成筛选与分页。
-func (lm *LogManager) QueryLogFile(date string, page, pageSize int, keyword, level string) (LogQueryResult, error) {
+func (lm *LogManager) QueryLogFile(date string, page, pageSize int, keyword, level, adapterRemark string) (LogQueryResult, error) {
 	page, pageSize = normalizeLogPage(page, pageSize)
 	dates, err := lm.ListLogFiles()
 	if err != nil {
@@ -279,7 +279,7 @@ func (lm *LogManager) QueryLogFile(date string, page, pageSize int, keyword, lev
 		}
 	}
 
-	items, err := readLogEntriesFromFile(date, keyword, level)
+	items, err := readLogEntriesFromFile(date, keyword, level, adapterRemark)
 	if err != nil {
 		return LogQueryResult{}, err
 	}
@@ -710,7 +710,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		page, _ := strconv.Atoi(query.Get("page"))
 		pageSize, _ := strconv.Atoi(query.Get("page_size"))
-		result, err := s.logManager.QueryLogFile(query.Get("date"), page, pageSize, query.Get("keyword"), query.Get("level"))
+		result, err := s.logManager.QueryLogFile(query.Get("date"), page, pageSize, query.Get("keyword"), query.Get("level"), query.Get("adapter_remark"))
 		if err != nil {
 			s.jsonError(w, "查询日志失败: "+err.Error(), http.StatusBadRequest)
 			return
@@ -820,7 +820,7 @@ func (s *Server) logSettingsDatabase() interface {
 	return s.adapterManager.GetDatabase()
 }
 
-func readLogEntriesFromFile(date, keyword, level string) ([]LogEntry, error) {
+func readLogEntriesFromFile(date, keyword, level, adapterRemark string) ([]LogEntry, error) {
 	if date == "" {
 		return []LogEntry{}, nil
 	}
@@ -836,6 +836,7 @@ func readLogEntriesFromFile(date, keyword, level string) ([]LogEntry, error) {
 
 	keyword = strings.ToLower(strings.TrimSpace(keyword))
 	level = strings.ToLower(strings.TrimSpace(level))
+	adapterRemark = strings.TrimSpace(adapterRemark)
 	items := make([]LogEntry, 0)
 	var current *LogEntry
 	appendCurrent := func() {
@@ -848,6 +849,10 @@ func readLogEntriesFromFile(date, keyword, level string) ([]LogEntry, error) {
 			return
 		}
 		if keyword != "" && !logEntryContainsKeyword(entry, keyword) {
+			current = nil
+			return
+		}
+		if adapterRemark != "" && !strings.Contains(entry.Message, "["+adapterRemark+"]") {
 			current = nil
 			return
 		}
