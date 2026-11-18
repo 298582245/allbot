@@ -53,12 +53,12 @@ func TestAccountQLCreatePersistsCompleteTemplateSourceAndHashes(t *testing.T) {
 				t.Fatalf("hash mismatch for %s: %#v", pathValue, file)
 			}
 		}
-		stored, err := server.pluginTemplateMetadataDatabase().GetPluginTemplateMetadata("ql_demo")
+		stored, err := server.currentTemplateMetadata("ql_demo")
 		if err != nil {
 			t.Fatal(err)
 		}
 		if stored == nil || stored.TemplateSource["template"] != "nodejs_account_ql" {
-			t.Fatalf("database template source missing: %#v", stored)
+			t.Fatalf("qinglong.data template source missing: %#v", stored)
 		}
 	})
 }
@@ -270,7 +270,7 @@ func TestTemplateEditorValidationFailureDoesNotChangeState(t *testing.T) {
 		pluginRoot := filepath.Join("plugins", "ql_demo")
 		originalConfig := readTextFile(t, filepath.Join(pluginRoot, "plugin.json"))
 		originalEntry := readTextFile(t, filepath.Join(pluginRoot, "main.js"))
-		originalMetadata, err := server.pluginTemplateMetadataDatabase().GetPluginTemplateMetadata("ql_demo")
+		originalMetadata, err := server.currentTemplateMetadata("ql_demo")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -285,14 +285,14 @@ func TestTemplateEditorValidationFailureDoesNotChangeState(t *testing.T) {
 		if readTextFile(t, filepath.Join(pluginRoot, "plugin.json")) != originalConfig || readTextFile(t, filepath.Join(pluginRoot, "main.js")) != originalEntry {
 			t.Fatal("validation failure changed generated files")
 		}
-		currentMetadata, err := server.pluginTemplateMetadataDatabase().GetPluginTemplateMetadata("ql_demo")
+		currentMetadata, err := server.currentTemplateMetadata("ql_demo")
 		if err != nil {
 			t.Fatal(err)
 		}
 		beforeJSON, _ := json.Marshal(originalMetadata.TemplateSource)
 		afterJSON, _ := json.Marshal(currentMetadata.TemplateSource)
 		if string(beforeJSON) != string(afterJSON) {
-			t.Fatal("validation failure changed database metadata")
+			t.Fatal("validation failure changed template metadata")
 		}
 	})
 }

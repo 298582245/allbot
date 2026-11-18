@@ -452,7 +452,8 @@ func TestCreatePluginValidateRejectsInvalidTaskScript(t *testing.T) {
 
 func TestCreatePluginReturnsDiagnosticsAndMetadata(t *testing.T) {
 	withTempWorkdir(t, func() {
-		recorder := performCreatePlugin(t, validAccountQLCreateRequest())
+		server := testServer(t)
+		recorder := performPluginCreateRequest(t, server, http.MethodPost, "/api/plugins", validAccountQLCreateRequest(), server.handleCreatePlugin)
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("expected ok, got %d: %s", recorder.Code, recorder.Body.String())
 		}
@@ -471,6 +472,13 @@ func TestCreatePluginReturnsDiagnosticsAndMetadata(t *testing.T) {
 		config := readPluginJSON(t, filepath.Join("plugins", "ql_demo"))
 		if config["template"] != "nodejs_account_ql" || config["template_version"] == "" || config["template_metadata"] == nil {
 			t.Fatalf("plugin.json missing template metadata: %#v", config)
+		}
+		stored, err := server.currentTemplateMetadata("ql_demo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored == nil || stored.TemplateSource["template"] != "nodejs_account_ql" {
+			t.Fatalf("qinglong.data missing template source: %#v", stored)
 		}
 	})
 }

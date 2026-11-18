@@ -178,9 +178,11 @@ import { InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getUpdateInfo, getUpdateStatus, startSystemUpgrade } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { useUiSettingsStore } from '@/stores/uiSettings'
 import request from '@/utils/request'
 
 const authStore = useAuthStore()
+const uiSettingsStore = useUiSettingsStore()
 const loading = ref(false)
 const saving = ref(false)
 const checkingUpdate = ref(false)
@@ -293,6 +295,7 @@ const loadSettings = async () => {
   loading.value = true
   try {
     const data = await request.get('/settings')
+    uiSettingsStore.applySettings(data)
     Object.assign(form, {
       admin_username: data.admin_username,
       platform_admins: Array.isArray(data.platform_admins) ? data.platform_admins : [],
@@ -439,6 +442,10 @@ const handleSave = async () => {
       github_proxy_url: form.github_proxy_url,
       public_base_url: form.public_base_url,
       mention_group_replies: form.mention_group_replies
+    })
+    uiSettingsStore.applySettings({
+      auto_refresh: form.auto_refresh,
+      refresh_interval: form.refresh_interval
     })
     authStore.username = form.admin_username
     localStorage.setItem('username', form.admin_username)

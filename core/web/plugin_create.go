@@ -596,19 +596,11 @@ func createPlanStructure(plan *createPluginPlan) string {
 }
 
 func (s *Server) savePlanTemplateMetadata(plan *createPluginPlan) error {
-	database := s.pluginTemplateMetadataDatabase()
-	if database == nil {
-		return fmt.Errorf("数据库不可用，无法保存模板元数据")
-	}
-	return database.SavePluginTemplateMetadata(&config.PluginTemplateMetadata{PluginID: plan.PluginID, Template: plan.Template, TemplateVersion: plan.TemplateVersion, Runtime: plan.Runtime, Structure: createPlanStructure(plan), Metadata: plan.Metadata, TemplateSource: plan.Config.TemplateSource})
+	return s.saveTemplateMetadata(&config.PluginTemplateMetadata{PluginID: plan.PluginID, Template: plan.Template, TemplateVersion: plan.TemplateVersion, Runtime: plan.Runtime, Structure: createPlanStructure(plan), Metadata: plan.Metadata, TemplateSource: plan.Config.TemplateSource})
 }
 
 func (s *Server) deletePlanTemplateMetadata(pluginID string) error {
-	database := s.pluginTemplateMetadataDatabase()
-	if database == nil {
-		return nil
-	}
-	return database.DeletePluginTemplateMetadata(pluginID)
+	return s.deleteTemplateMetadata(pluginID)
 }
 
 func (s *Server) pluginTemplateMetadataDatabase() *config.Database {

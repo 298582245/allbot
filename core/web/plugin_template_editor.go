@@ -828,18 +828,34 @@ func (s *Server) reloadAndRegisterPlugin(pluginID string) error {
 }
 
 func (s *Server) currentTemplateMetadata(pluginID string) (*config.PluginTemplateMetadata, error) {
-	database := s.pluginTemplateMetadataDatabase()
-	if database == nil {
-		return nil, fmt.Errorf("数据库不可用，无法保存模板元数据")
+	path, err := s.templateMetadataPath(pluginID)
+	if err == nil {
+		data, readErr := os.ReadFile(path)
+		if readErr == nil {
+			var metadata config.PluginTemplateMetadata
+			if err := json.Unmarshal(data, &metadata); err != nil {
+				return nil, fmt.Errorf("%s 无效: %w", qinglongDataFileName, err)
+			}
+			if strings.TrimSpace(metadata.PluginID) != strings.TrimSpace(pluginID) {
+				return nil, fmt.Errorf("%s 中的插件 ID 不匹配", qinglongDataFileName)
+			}
+			return &metadata, nil
+		}
+		if !os.IsNotExist(readErr) {
+			return nil, readErr
+		}
 	}
-	return database.GetPluginTemplateMetadata(pluginID)
+	if database := s.pluginTemplateMetadataDatabase(); database != nil {
+		return database.GetPluginTemplateMetadata(pluginID)
+	}
+	return nil, nil
 }
 
 func (s *Server) restoreTemplateMetadata(pluginID string, previous *config.PluginTemplateMetadata) error {
 	if previous == nil {
 		return s.deletePlanTemplateMetadata(pluginID)
 	}
-	return s.pluginTemplateMetadataDatabase().SavePluginTemplateMetadata(previous)
+	return s.saveTemplateMetadata(previous)
 }
 
 func generatedFilePaths(files []createGeneratedFile) []string {

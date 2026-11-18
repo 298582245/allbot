@@ -452,7 +452,7 @@ func (s *Server) updateHybridTemplateEditor(pluginID string, currentConfig types
 		return nil, errors.Join(err, wrapTemplateRestoreError("文件", restoreTemplateFiles(pluginRoot, snapshots)))
 	}
 	metadata := &config.PluginTemplateMetadata{PluginID: pluginID, Template: registration.Template, TemplateVersion: registration.TemplateVersion, Runtime: registration.Runtime, Structure: "account_ql", Metadata: registration.Metadata, TemplateSource: sourceMap}
-	if err := s.pluginTemplateMetadataDatabase().SavePluginTemplateMetadata(metadata); err != nil {
+	if err := s.saveTemplateMetadata(metadata); err != nil {
 		return nil, errors.Join(
 			err,
 			wrapTemplateRestoreError("文件", restoreTemplateFiles(pluginRoot, snapshots)),

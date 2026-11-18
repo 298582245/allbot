@@ -106,6 +106,7 @@ import {
   ChatLineRound
 } from '@element-plus/icons-vue'
 import { getSystemStatus, getMessageStats } from '@/api'
+import { useAutoRefresh } from '@/utils/useAutoRefresh'
 
 const stats = ref([
   { title: '当前运行', value: '--', subtext: '', icon: TrendCharts, color: 'var(--brand-500)' },
@@ -150,7 +151,6 @@ let memoryChart = null
 let echarts = null
 let chartsReady = false
 let chartsLoadPromise = null
-let refreshTimer = null
 let uptimeTimer = null
 let totalUptimeBaseSeconds = null
 let currentUptimeBaseSeconds = null
@@ -573,18 +573,16 @@ watch(chartDimension, () => {
   renderMessageChart()
 })
 
+useAutoRefresh(loadData)
+
 onMounted(() => {
   loadData()
   loadCharts()
-  refreshTimer = setInterval(loadData, 5000)
   uptimeTimer = setInterval(updateUptimeDisplay, 1000)
   window.addEventListener('resize', resizeCharts)
 })
 
 onUnmounted(() => {
-  if (refreshTimer) {
-    clearInterval(refreshTimer)
-  }
   if (uptimeTimer) {
     clearInterval(uptimeTimer)
   }

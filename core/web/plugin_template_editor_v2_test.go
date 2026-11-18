@@ -125,7 +125,7 @@ func TestHybridTemplateEditorSupportsRegisteredSourceWithoutPluginTemplateFields
 			t.Fatalf("put status=%d body=%s", put.Code, put.Body.String())
 		}
 		assertContains(t, readTextFile(t, filepath.Join(root, "main.js")), `prefix: "兼容"`)
-		stored, err := server.pluginTemplateMetadataDatabase().GetPluginTemplateMetadata("ql_demo")
+		stored, err := server.currentTemplateMetadata("ql_demo")
 		if err != nil {
 			t.Fatal(err)
 		}

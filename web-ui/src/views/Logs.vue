@@ -129,11 +129,12 @@
 
 <script setup>
 defineOptions({ name: 'Logs' })
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Download, InfoFilled, Refresh } from '@element-plus/icons-vue'
 import { cleanupLogs, clearLogs, downloadLogs, getAdapters, getLogSettings, getLogs, saveLogSettings } from '@/api'
 import StdPagination from '@/components/StdPagination.vue'
+import { useAutoRefresh } from '@/utils/useAutoRefresh'
 
 const logs = ref([])
 const logDates = ref([])
@@ -149,7 +150,6 @@ const logContainerRef = ref(null)
 const pauseScroll = ref(false)
 const mergeRepeatLogs = ref(true)
 const pagination = ref({ page: 1, pageSize: 100, total: 0 })
-let logInterval = null
 
 const pageDescription = '按日期查看、下载和删除系统运行日志，支持下载或清空全部历史日志。'
 const showPageDescription = () => {
@@ -238,6 +238,10 @@ const loadLogs = async (showMessage = false) => {
     loading.value = false
   }
 }
+
+useAutoRefresh(() => {
+  if (!pauseScroll.value && isTodaySelected.value && pagination.value.page === 1) loadLogs()
+})
 
 const scrollToLatest = () => {
   requestAnimationFrame(() => {
@@ -389,13 +393,6 @@ const handleCleanupNow = async () => {
 onMounted(async () => {
   await Promise.all([loadSettings(), loadAdapters()])
   await loadLogs()
-  logInterval = setInterval(() => {
-    if (!pauseScroll.value && isTodaySelected.value && pagination.value.page === 1) loadLogs()
-  }, 3000)
-})
-
-onUnmounted(() => {
-  if (logInterval) clearInterval(logInterval)
 })
 </script>
 
