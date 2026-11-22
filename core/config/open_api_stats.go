@@ -52,16 +52,20 @@ type OpenAPICallStatDelta struct {
 }
 
 type OpenAPICallLog struct {
-	ID           int64     `json:"id"`
-	EndpointID   string    `json:"endpoint_id"`
-	EndpointName string    `json:"endpoint_name"`
-	Method       string    `json:"method"`
-	RequestPath  string    `json:"request_path"`
-	ClientIP     string    `json:"client_ip"`
-	StatusCode   int       `json:"status_code"`
-	Outcome      string    `json:"outcome"`
-	DurationMS   int64     `json:"duration_ms"`
-	StartedAt    time.Time `json:"started_at"`
+	ID              int64     `json:"id"`
+	EndpointID      string    `json:"endpoint_id"`
+	EndpointName    string    `json:"endpoint_name"`
+	Method          string    `json:"method"`
+	RequestPath     string    `json:"request_path"`
+	RequestHeaders  string    `json:"request_headers"`
+	RequestBody     string    `json:"request_body"`
+	ResponseHeaders string    `json:"response_headers"`
+	ResponseBody    string    `json:"response_body"`
+	ClientIP        string    `json:"client_ip"`
+	StatusCode      int       `json:"status_code"`
+	Outcome         string    `json:"outcome"`
+	DurationMS      int64     `json:"duration_ms"`
+	StartedAt       time.Time `json:"started_at"`
 }
 
 type OpenAPICallLogFilter struct {
@@ -196,10 +200,10 @@ func insertOpenAPICallLog(tx *sql.Tx, item OpenAPICallLog) error {
 	}
 	_, err := tx.Exec(`
 		INSERT INTO open_api_call_logs (
-			endpoint_id, endpoint_name, method, request_path, client_ip,
-			status_code, outcome, duration_ms, started_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, endpointID, strings.TrimSpace(item.EndpointName), strings.ToUpper(strings.TrimSpace(item.Method)), item.RequestPath, strings.TrimSpace(item.ClientIP), item.StatusCode, strings.TrimSpace(item.Outcome), durationMS, startedAt)
+			endpoint_id, endpoint_name, method, request_path, request_headers, request_body,
+			response_headers, response_body, client_ip, status_code, outcome, duration_ms, started_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, endpointID, strings.TrimSpace(item.EndpointName), strings.ToUpper(strings.TrimSpace(item.Method)), item.RequestPath, item.RequestHeaders, item.RequestBody, item.ResponseHeaders, item.ResponseBody, strings.TrimSpace(item.ClientIP), item.StatusCode, strings.TrimSpace(item.Outcome), durationMS, startedAt)
 	return err
 }
 
@@ -305,7 +309,8 @@ func (d *Database) ListOpenAPICallLogs(filter OpenAPICallLogFilter) ([]OpenAPICa
 		offset = 0
 	}
 	rows, err := d.db.Query(`
-		SELECT id, endpoint_id, endpoint_name, method, request_path, client_ip,
+		SELECT id, endpoint_id, endpoint_name, method, request_path, request_headers, request_body,
+			response_headers, response_body, client_ip,
 			status_code, outcome, duration_ms, started_at
 		FROM open_api_call_logs`+where+`
 		ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?
@@ -317,7 +322,7 @@ func (d *Database) ListOpenAPICallLogs(filter OpenAPICallLogFilter) ([]OpenAPICa
 	items := make([]OpenAPICallLog, 0)
 	for rows.Next() {
 		var item OpenAPICallLog
-		if err := rows.Scan(&item.ID, &item.EndpointID, &item.EndpointName, &item.Method, &item.RequestPath, &item.ClientIP, &item.StatusCode, &item.Outcome, &item.DurationMS, &item.StartedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.EndpointID, &item.EndpointName, &item.Method, &item.RequestPath, &item.RequestHeaders, &item.RequestBody, &item.ResponseHeaders, &item.ResponseBody, &item.ClientIP, &item.StatusCode, &item.Outcome, &item.DurationMS, &item.StartedAt); err != nil {
 			return nil, 0, err
 		}
 		items = append(items, item)

@@ -47,6 +47,7 @@ type openAPIAdminRequest struct {
 type openAPIStatusWriter struct {
 	http.ResponseWriter
 	status int
+	body   bytes.Buffer
 }
 
 func (w *openAPIStatusWriter) WriteHeader(status int) {
@@ -60,6 +61,13 @@ func (w *openAPIStatusWriter) WriteHeader(status int) {
 func (w *openAPIStatusWriter) Write(data []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
+	}
+	if w.body.Len() < maxPluginWebRequestBody {
+		remaining := maxPluginWebRequestBody - w.body.Len()
+		if len(data) < remaining {
+			remaining = len(data)
+		}
+		_, _ = w.body.Write(data[:remaining])
 	}
 	return w.ResponseWriter.Write(data)
 }
@@ -89,6 +97,8 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	if clientAddr.IsValid() {
 		clientIP = clientAddr.String()
 	}
+	var requestHeaders, requestBody string
+	var tokenSources map[string]string
 	outcome := config.OpenAPICallOutcomeFailed
 	defer func() {
 		status := statusWriter.status
@@ -104,6 +114,8 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		s.recordOpenAPICall(config.OpenAPICallLog{
 			EndpointID: endpoint.ID, EndpointName: endpoint.Name, Method: r.Method, RequestPath: r.URL.Path,
+			RequestHeaders: requestHeaders, RequestBody: requestBody,
+			ResponseHeaders: sanitizeOpenAPIRaw(marshalHeaderMap(statusWriter.Header()), tokenSources), ResponseBody: sanitizeOpenAPIRaw(string(statusWriter.body.Bytes()), tokenSources),
 			ClientIP: clientIP, StatusCode: status, Outcome: outcome, DurationMS: time.Since(startedAt).Milliseconds(), StartedAt: startedAt,
 		})
 	}()
@@ -122,13 +134,15 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	requestData, tokenSources := buildOpenAPIRequest(r, openPath, body, clientAddr)
+	requestData = sanitizeOpenAPIRequest(requestData, tokenSources)
+	requestHeaders = marshalHeaderMap(requestData.Headers)
+	requestBody = sanitizeOpenAPIRaw(string(body), tokenSources)
 	if !openAPITokenMatched(endpoint.Token, tokenSources) {
 		outcome = config.OpenAPICallOutcomeTokenDenied
 		logOpenAPICall("WARN", endpoint.ID, r.Method, requestData.RawPath, clientIP, http.StatusUnauthorized, startedAt, "token 无效")
 		s.rawJSONError(statusWriter, "Open API token 无效", http.StatusUnauthorized)
 		return
 	}
-	requestData = sanitizeOpenAPIRequest(requestData, tokenSources)
 	if endpoint.Builtin != "" {
 		s.handleBuiltinOpenAPI(statusWriter, r, endpoint, requestData, startedAt)
 		return
@@ -437,6 +451,8 @@ func (s *Server) handleOpenAPICalls(w http.ResponseWriter, r *http.Request, id s
 		mapped = append(mapped, map[string]interface{}{
 			"id": item.ID, "endpoint_id": item.EndpointID, "endpoint_name": item.EndpointName,
 			"method": item.Method, "request_path": item.RequestPath, "endpoint_path": item.RequestPath,
+			"request_headers": item.RequestHeaders, "request_body": item.RequestBody,
+			"response_headers": item.ResponseHeaders, "response_body": item.ResponseBody,
 			"client_ip": item.ClientIP, "status_code": item.StatusCode, "outcome": item.Outcome,
 			"duration_ms": item.DurationMS, "started_at": item.StartedAt,
 		})
@@ -1273,6 +1289,20 @@ func sanitizeOpenAPIRequest(request types.OpenAPIRequest, tokens map[string]stri
 	}
 	request.Body = body
 	return request
+}
+
+func sanitizeOpenAPIRaw(value string, tokens map[string]string) string {
+	for _, token := range tokens {
+		if token != "" {
+			value = strings.ReplaceAll(value, token, "***")
+		}
+	}
+	return value
+}
+
+func marshalHeaderMap(headers map[string][]string) string {
+	data, _ := json.Marshal(headers)
+	return string(data)
 }
 
 func sanitizeOpenAPIValues(values map[string][]string, keys ...string) map[string][]string {

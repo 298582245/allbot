@@ -340,6 +340,16 @@
 
         <div class="calls-table-wrap" v-loading="callsLoading">
           <el-table :data="callItems" border stripe height="100%" empty-text="暂无调用数据">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div class="call-detail-grid">
+                  <section><strong>请求头</strong><pre>{{ formatCallDetail(row.request_headers) }}</pre></section>
+                  <section><strong>请求体</strong><pre>{{ formatCallDetail(row.request_body) }}</pre></section>
+                  <section><strong>响应头</strong><pre>{{ formatCallDetail(row.response_headers) }}</pre></section>
+                  <section><strong>响应内容</strong><pre>{{ formatCallDetail(row.response_body) }}</pre></section>
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column label="调用时间" min-width="180"><template #default="{ row }">{{ formatTime(row.started_at || row.startedAt) }}</template></el-table-column>
             <el-table-column prop="method" label="方法" width="85" />
             <el-table-column label="路径" min-width="170" show-overflow-tooltip>
@@ -757,6 +767,11 @@ const buildCallParams = () => {
     params.end = toApiTime(callsFilters.timeRange[1])
   }
   return params
+}
+
+const formatCallDetail = (value) => {
+  if (!value) return '-'
+  try { return JSON.stringify(JSON.parse(value), null, 2) } catch { return value }
 }
 
 const searchCalls = () => {
@@ -1260,6 +1275,25 @@ onMounted(() => {
   min-height: 260px;
 }
 
+.call-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 8px 14px;
+}
+.call-detail-grid section { min-width: 0; }
+.call-detail-grid strong { display: block; margin-bottom: 6px; }
+.call-detail-grid pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-light);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .calls-footer {
   flex-shrink: 0;
   display: flex;
@@ -1436,6 +1470,8 @@ onMounted(() => {
     min-height: 240px;
     overflow-x: auto;
   }
+
+  .call-detail-grid { grid-template-columns: minmax(0, 1fr); }
 
   .calls-table-wrap :deep(.el-table) {
     min-width: 900px;

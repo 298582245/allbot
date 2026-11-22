@@ -793,6 +793,10 @@ func createTables(db *sql.DB) error {
 		endpoint_name TEXT NOT NULL DEFAULT '',
 		method TEXT NOT NULL DEFAULT '',
 		request_path TEXT NOT NULL DEFAULT '',
+		request_headers TEXT NOT NULL DEFAULT '',
+		request_body TEXT NOT NULL DEFAULT '',
+		response_headers TEXT NOT NULL DEFAULT '',
+		response_body TEXT NOT NULL DEFAULT '',
 		client_ip TEXT NOT NULL DEFAULT '',
 		status_code INTEGER NOT NULL DEFAULT 0,
 		outcome TEXT NOT NULL DEFAULT '',
@@ -827,6 +831,9 @@ func createTables(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_image_assets_sha256 ON image_assets(sha256);
 	`
 	if _, err := db.Exec(settingsSchema); err != nil {
+		return err
+	}
+	if err := ensureOpenAPICallLogDetailColumns(db); err != nil {
 		return err
 	}
 	if err := migratePluginTemplateMetadataTable(db); err != nil {
@@ -883,6 +890,35 @@ func backfillUserPoints(db *sql.DB) error {
 			GROUP BY union_id
 	`)
 	return err
+}
+
+func ensureOpenAPICallLogDetailColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(open_api_call_logs)`)
+	if err != nil {
+		return err
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue interface{}
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		columns[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, column := range []string{"request_headers", "request_body", "response_headers", "response_body"} {
+		if !columns[column] {
+			if _, err := db.Exec(`ALTER TABLE open_api_call_logs ADD COLUMN ` + column + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func ensureBuiltinKeywordReplies(db *sql.DB) error {
