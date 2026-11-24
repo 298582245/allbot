@@ -37,11 +37,18 @@ type Capabilities struct {
 
 // Descriptor 描述一个可注册的平台适配器。
 type Descriptor struct {
-	Platform     string        `json:"platform"`
-	DisplayName  string        `json:"display_name"`
-	Description  string        `json:"description"`
-	ConfigSchema []ConfigField `json:"config_schema"`
-	Capabilities Capabilities  `json:"capabilities"`
+	Platform             string        `json:"platform"`
+	DisplayName          string        `json:"display_name"`
+	Version              string        `json:"version,omitempty"`
+	Author               string        `json:"author,omitempty"`
+	Runtime              string        `json:"runtime,omitempty"`
+	Custom               bool          `json:"custom,omitempty"`
+	Pinned               bool          `json:"pinned"`
+	Entry                string        `json:"entry,omitempty"`
+	Description          string        `json:"description"`
+	ConfigSchema         []ConfigField `json:"config_schema"`
+	Capabilities         Capabilities  `json:"capabilities"`
+	DeclaredCapabilities []string      `json:"declared_capabilities"`
 
 	ParseConfig func(raw string) (interface{}, error)              `json:"-"`
 	NewAdapter  func(config interface{}) (contract.Adapter, error) `json:"-"`

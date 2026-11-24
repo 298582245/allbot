@@ -12,6 +12,7 @@ func init() {
 	registry.Register(registry.Descriptor{
 		Platform:    "qq_office",
 		DisplayName: "QQ 官方机器人",
+		Version:     "1.0.0",
 		Description: "腾讯 QQ 官方机器人适配器",
 		ConfigSchema: []registry.ConfigField{
 			{Key: "app_id", Label: "App ID", Type: "text", Required: true, Help: "QQ 开放平台机器人 App ID"},

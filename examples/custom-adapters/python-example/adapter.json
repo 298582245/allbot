@@ -1,0 +1,14 @@
+{
+  "id": "sample_python",
+  "name": "Python 示例适配器",
+  "version": "1.0.0",
+  "author": "AllBot",
+  "description": "演示自定义适配器 stdio 协议",
+  "runtime": "python",
+  "entry": "main.py",
+  "protocol_version": "1",
+  "config_schema": [
+    { "key": "token", "label": "访问令牌", "type": "password", "required": true }
+  ],
+  "capabilities": ["image", "audio", "video", "file", "markdown", "rich", "buttons", "private", "group", "mention"]
+}

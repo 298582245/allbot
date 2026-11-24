@@ -347,7 +347,7 @@ trap terminate_child TERM INT
 cd "${DATA_DIR}"
 
 while true; do
-    "${APP_BIN}" --plugins="${DATA_DIR}/plugins" "$@" &
+    "${APP_BIN}" --plugins="${DATA_DIR}/plugins" --adapters="${DATA_DIR}/adapters" "$@" &
     child_pid=$!
     clear_transient_startup_env
     set +e

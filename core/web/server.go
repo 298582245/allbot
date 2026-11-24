@@ -32,7 +32,6 @@ import (
 	"github.com/allbot/allbot/core/session"
 	"github.com/allbot/allbot/core/types"
 	"github.com/allbot/allbot/core/updater"
-	"github.com/allbot/allbot/core/utils"
 )
 
 type jsonEnvelope struct {
@@ -175,6 +174,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/open/web-chat/", s.handleWebChatAPI)
 	mux.HandleFunc("/api/open/adapters/feishu/", s.handleFeishuAdapterCallback)
 	mux.HandleFunc("/api/open/adapters/wechat-official/", s.handleWechatOfficialAdapterCallback)
+	mux.HandleFunc("/api/open/adapters/custom/", s.handleCustomAdapterCallback)
 	mux.HandleFunc("/api/open/", s.handleOpenAPI)
 	mux.HandleFunc("/api/open-apis", s.handleOpenAPIConfigs)
 	mux.HandleFunc("/api/open-apis/", s.handleOpenAPIConfigDetail)
@@ -214,6 +214,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/images", s.handleImages)
 	mux.HandleFunc("/api/images/", s.handleImageDetail)
 	mux.HandleFunc("/api/adapter-platforms", s.handleAdapterPlatforms)
+	mux.HandleFunc("/api/adapter-definitions", s.handleAdapterDefinitions)
+	mux.HandleFunc("/api/adapter-definitions/", s.handleAdapterDefinitionDetail)
+	mux.HandleFunc("/api/adapter-code/", s.handleAdapterCode)
 	mux.HandleFunc("/api/adapters", s.handleAdapters)
 	mux.HandleFunc("/api/adapters/", s.handleAdapterDetail)
 	mux.HandleFunc("/api/logs/settings", s.handleLogSettings)
@@ -837,7 +840,11 @@ func (s *Server) handleAdapters(w http.ResponseWriter, r *http.Request) {
 		result := make([]map[string]interface{}, 0, len(adapters))
 		for _, item := range adapters {
 			running := s.adapterManager.IsAdapterRunning(item.ID)
-			result = append(result, map[string]interface{}{"id": item.ID, "platform": item.Platform, "remark": item.Remark, "description": item.Description, "enabled": item.Enabled, "pinned": item.Pinned, "config": utils.MaskSensitiveConfig(item.Config), "running": running, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt})
+			configData, configErr := s.adapterManager.AdapterConfigData(item.ID)
+			if configErr != nil {
+				configData = item.Config
+			}
+			result = append(result, map[string]interface{}{"id": item.ID, "platform": item.Platform, "remark": item.Remark, "description": item.Description, "enabled": item.Enabled, "pinned": item.Pinned, "config": s.adapterManager.MaskAdapterConfigData(item.ID, configData), "running": running, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt})
 		}
 		sort.SliceStable(result, func(i, j int) bool {
 			return boolValue(result[i], "pinned", false) && !boolValue(result[j], "pinned", false)
@@ -878,6 +885,10 @@ func (s *Server) handleAdapterDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
 		if idErr == nil {
 			_ = s.adapterManager.StopAdapterByID(id)
+			if err := s.adapterManager.DeleteCustomAdapterData(id); err != nil {
+				s.jsonError(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			if err := s.adapterManager.GetDatabase().DeleteAdapterByID(id); err != nil {
 				s.jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -923,7 +934,11 @@ func (s *Server) handleAdapterDetail(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "配置不存在", http.StatusNotFound)
 			return
 		}
-		s.jsonResponse(w, map[string]interface{}{"id": item.ID, "platform": item.Platform, "remark": item.Remark, "description": item.Description, "enabled": item.Enabled, "pinned": item.Pinned, "config": utils.MaskSensitiveConfig(item.Config), "running": s.adapterManager.IsAdapterRunning(item.ID), "created_at": item.CreatedAt, "updated_at": item.UpdatedAt})
+		configData, configErr := s.adapterManager.AdapterConfigData(item.ID)
+		if configErr != nil {
+			configData = item.Config
+		}
+		s.jsonResponse(w, map[string]interface{}{"id": item.ID, "platform": item.Platform, "remark": item.Remark, "description": item.Description, "enabled": item.Enabled, "pinned": item.Pinned, "config": s.adapterManager.MaskAdapterConfigData(item.ID, configData), "running": s.adapterManager.IsAdapterRunning(item.ID), "created_at": item.CreatedAt, "updated_at": item.UpdatedAt})
 		return
 	}
 	s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -938,6 +953,11 @@ func (s *Server) handleAdapterAction(w http.ResponseWriter, id int64, action str
 		}
 	case "unpin":
 		if err := s.adapterManager.SetAdapterPinned(id, false); err != nil {
+			s.jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	case "reload":
+		if err := s.adapterManager.ReloadAdapterByID(id); err != nil {
 			s.jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

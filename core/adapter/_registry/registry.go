@@ -14,27 +14,64 @@ var (
 
 // Register 注册一个平台适配器描述。
 func Register(desc Descriptor) {
+	if err := RegisterDynamic(desc); err != nil {
+		panic(err)
+	}
+}
+
+// RegisterDynamic registers a descriptor loaded at runtime.
+func RegisterDynamic(desc Descriptor) error {
 	desc.Platform = strings.TrimSpace(desc.Platform)
 	desc.DisplayName = strings.TrimSpace(desc.DisplayName)
 	if desc.Platform == "" {
-		panic("适配器 platform 不能为空")
+		return fmt.Errorf("适配器 platform 不能为空")
 	}
 	if desc.DisplayName == "" {
 		desc.DisplayName = desc.Platform
 	}
 	if desc.ParseConfig == nil {
-		panic(fmt.Sprintf("适配器 %s 缺少配置解析器", desc.Platform))
+		return fmt.Errorf("适配器 %s 缺少配置解析器", desc.Platform)
 	}
 	if desc.NewAdapter == nil {
-		panic(fmt.Sprintf("适配器 %s 缺少构造器", desc.Platform))
+		return fmt.Errorf("适配器 %s 缺少构造器", desc.Platform)
 	}
 
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	if _, exists := descriptors[desc.Platform]; exists {
-		panic(fmt.Sprintf("适配器 platform 重复注册: %s", desc.Platform))
+		return fmt.Errorf("适配器 platform 重复注册: %s", desc.Platform)
 	}
 	descriptors[desc.Platform] = cloneDescriptor(desc)
+	return nil
+}
+
+func ReplaceCustom(desc Descriptor) error {
+	desc.Platform = strings.TrimSpace(desc.Platform)
+	desc.DisplayName = strings.TrimSpace(desc.DisplayName)
+	if !desc.Custom || desc.Platform == "" || desc.ParseConfig == nil || desc.NewAdapter == nil {
+		return fmt.Errorf("自定义适配器定义无效")
+	}
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if existing, ok := descriptors[desc.Platform]; ok && !existing.Custom {
+		return fmt.Errorf("不能替换 Go 内置适配器: %s", desc.Platform)
+	}
+	descriptors[desc.Platform] = cloneDescriptor(desc)
+	return nil
+}
+
+func UnregisterCustom(platform string) error {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	desc, ok := descriptors[strings.TrimSpace(platform)]
+	if !ok {
+		return nil
+	}
+	if !desc.Custom {
+		return fmt.Errorf("不能删除 Go 内置适配器: %s", platform)
+	}
+	delete(descriptors, strings.TrimSpace(platform))
+	return nil
 }
 
 // Get 按平台名获取适配器描述。
@@ -65,6 +102,10 @@ func List() []Descriptor {
 
 func cloneDescriptor(desc Descriptor) Descriptor {
 	cloned := desc
+	if desc.DeclaredCapabilities != nil {
+		cloned.DeclaredCapabilities = make([]string, len(desc.DeclaredCapabilities))
+		copy(cloned.DeclaredCapabilities, desc.DeclaredCapabilities)
+	}
 	if desc.ConfigSchema != nil {
 		cloned.ConfigSchema = append([]ConfigField(nil), desc.ConfigSchema...)
 		for index := range cloned.ConfigSchema {

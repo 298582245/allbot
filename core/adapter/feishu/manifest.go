@@ -23,6 +23,7 @@ func init() {
 	registry.Register(registry.Descriptor{
 		Platform:    platformName,
 		DisplayName: "飞书机器人",
+		Version:     "1.0.0",
 		Description: "飞书长连接事件订阅与消息发送适配器",
 		ConfigSchema: []registry.ConfigField{
 			{Key: "app_id", Label: "App ID", Type: "text", Required: true, Help: "飞书自建应用 App ID"},

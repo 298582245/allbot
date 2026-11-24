@@ -185,6 +185,10 @@
             <el-icon><Connection /></el-icon>
             <span>对接管理</span>
           </el-menu-item>
+          <el-menu-item index="/adapter-management">
+            <el-icon><SetUp /></el-icon>
+            <span>适配器管理</span>
+          </el-menu-item>
           <el-menu-item index="/chat">
             <el-icon><ChatDotRound /></el-icon>
             <span>Web 聊天</span>
@@ -336,6 +340,7 @@ import {
   DataAnalysis,
   Grid,
   Connection,
+  SetUp,
   Document,
   Setting,
   Key,

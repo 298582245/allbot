@@ -71,20 +71,22 @@
                 <el-tag :type="hasToken(row) ? 'success' : 'info'">{{ hasToken(row) ? '已设置' : '未设置' }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="290" fixed="right">
+            <el-table-column label="操作" width="320" fixed="right">
               <template #default="{ row }">
-                <el-button size="small" type="primary" @click="editItem(row)">编辑</el-button>
-                <el-button size="small" type="success" @click="openCalls(row)">调用数据</el-button>
-                <el-dropdown trigger="click" @command="command => handleRowCommand(command, row)">
-                  <el-button size="small">更多</el-button>
-                  <template #dropdown>
-                    <el-dropdown-menu>
-                      <el-dropdown-item v-if="!isBuiltin(row)" command="file">文件</el-dropdown-item>
-                      <el-dropdown-item command="copy">复制地址</el-dropdown-item>
-                      <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
+                <div class="desktop-row-actions">
+                  <el-button size="small" type="primary" @click="editItem(row)">编辑</el-button>
+                  <el-button size="small" type="success" @click="openCalls(row)">调用数据</el-button>
+                  <el-dropdown trigger="click" @command="command => handleRowCommand(command, row)">
+                    <el-button size="small">更多</el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item v-if="!isBuiltin(row)" command="file">文件</el-dropdown-item>
+                        <el-dropdown-item command="copy">复制地址</el-dropdown-item>
+                        <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -1163,6 +1165,18 @@ onMounted(() => {
   color: #1d4ed8;
   background: #eff6ff;
   font-family: var(--font-mono);
+}
+
+.desktop-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.desktop-row-actions > :deep(.el-button),
+.desktop-row-actions :deep(.el-dropdown) {
+  margin-left: 0;
 }
 
 .api-table :deep(.el-tooltip__trigger),

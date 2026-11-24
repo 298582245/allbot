@@ -22,6 +22,7 @@ func init() {
 	registry.Register(registry.Descriptor{
 		Platform:    platformName,
 		DisplayName: "钉钉机器人（Stream）",
+		Version:     "1.0.0",
 		Description: "钉钉机器人 Stream 模式适配器，无需公网回调地址",
 		ConfigSchema: []registry.ConfigField{
 			{Key: "client_id", Label: "Client ID", Type: "text", Required: true, Help: "钉钉应用 appKey 或三方应用 suiteKey"},

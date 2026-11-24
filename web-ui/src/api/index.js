@@ -579,6 +579,52 @@ export const setAdapterPinned = (adapterId, pinned) => {
   })
 }
 
+export const createAdapterDefinition = (manifest, code) => {
+  return request({
+    url: '/adapter-definitions',
+    method: 'post',
+    data: { manifest, code }
+  })
+}
+
+export const saveAdapterDefinition = (platform, manifest) => request({
+  url: `/adapter-definitions/${encodeURIComponent(platform)}`,
+  method: 'put',
+  data: { manifest }
+})
+
+export const reloadAdapterDefinition = (platform) => request({
+  url: `/adapter-definitions/${encodeURIComponent(platform)}`,
+  method: 'post',
+  data: { action: 'reload' }
+})
+
+export const setAdapterPlatformPinned = (platform, pinned) => request({
+  url: `/adapter-definitions/${encodeURIComponent(platform)}`,
+  method: 'post',
+  data: { action: pinned ? 'pin' : 'unpin' }
+})
+
+export const deleteAdapterDefinition = (platform) => request({
+  url: `/adapter-definitions/${encodeURIComponent(platform)}`,
+  method: 'delete'
+})
+
+export const getAdapterCode = (platform) => {
+  return request({
+    url: `/adapter-code/${encodeURIComponent(platform)}`,
+    method: 'get'
+  })
+}
+
+export const saveAdapterCode = (platform, code) => {
+  return request({
+    url: `/adapter-code/${encodeURIComponent(platform)}`,
+    method: 'put',
+    data: { code }
+  })
+}
+
 // 获取适配器详情
 export const getAdapter = (platform) => {
   return request({

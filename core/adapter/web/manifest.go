@@ -12,6 +12,7 @@ func init() {
 	registry.Register(registry.Descriptor{
 		Platform:    platformName,
 		DisplayName: "Web 聊天室",
+		Version:     "1.0.0",
 		Description: "网页聊天室适配器，支持浏览器用户通过 router 调用插件",
 		ConfigSchema: []registry.ConfigField{
 			{Key: "smtp_host", Label: "SMTP 主机", Type: "text", Required: true, Help: "用于发送 Web 聊天室邮箱验证码的 SMTP 主机"},

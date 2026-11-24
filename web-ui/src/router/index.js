@@ -37,6 +37,7 @@ const routes = [
       { path: 'script-envs', name: 'ScriptEnvs', component: () => import('@/views/ScriptEnvs.vue'), meta: { title: '脚本环境变量' } },
       { path: 'replies/keywords', name: 'KeywordReplies', component: () => import('@/views/KeywordReplies.vue'), meta: { title: '关键字回复' } },
       { path: 'adapters', name: 'Adapters', component: () => import('@/views/Adapters.vue'), meta: { title: '对接管理' } },
+      { path: 'adapter-management', name: 'AdapterManagement', component: () => import('@/views/AdapterManagement.vue'), meta: { title: '适配器管理' } },
       { path: 'logs', name: 'Logs', component: () => import('@/views/Logs.vue'), meta: { title: '日志查看' } },
       { path: 'permissions', name: 'PermissionControl', component: () => import('@/views/PermissionControl.vue'), meta: { title: '权限控制' } },
       { path: 'users', name: 'Users', component: () => import('@/views/Users.vue'), meta: { title: '用户管理' } },

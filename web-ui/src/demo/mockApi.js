@@ -89,11 +89,12 @@ const demoState = {
 }
 
 const platformList = [
-  { platform: 'qq', display_name: 'QQ', config_schema: [{ key: 'app_id', label: 'App ID', type: 'text' }, { key: 'app_secret', label: 'App Secret', type: 'password' }] },
-  { platform: 'qq_office', display_name: 'QQ 官方机器人', config_schema: [{ key: 'app_id', label: 'App ID', type: 'text' }, { key: 'callback_path', label: '回调路径', type: 'text' }] },
-  { platform: 'telegram', display_name: 'Telegram', config_schema: [{ key: 'token', label: 'Bot Token', type: 'password' }] },
-  { platform: 'feishu', display_name: '飞书', config_schema: [{ key: 'app_id', label: 'App ID', type: 'text' }] },
-  { platform: 'wechat_official', display_name: '微信公众号', config_schema: [{ key: 'app_id', label: 'App ID', type: 'text' }, { key: 'callback_path', label: '回调路径', type: 'text' }] }
+  { platform: 'qq', display_name: 'QQ', version: '1.0.0', runtime: 'Go', author: 'AllBot', custom: false, pinned: false, config_schema: [{ key: 'app_id', label: 'App ID', type: 'text' }, { key: 'app_secret', label: 'App Secret', type: 'password' }] },
+  { platform: 'qq_office', display_name: 'QQ 官方机器人', version: '1.0.0', runtime: 'Go', author: 'AllBot', custom: false, pinned: false, config_schema: [{ key: 'app_id', label: 'App ID', type: 'text' }, { key: 'callback_path', label: '回调路径', type: 'text' }] },
+  { platform: 'telegram', display_name: 'Telegram', version: '1.0.0', runtime: 'Go', author: 'AllBot', custom: false, pinned: false, config_schema: [{ key: 'token', label: 'Bot Token', type: 'password' }] },
+  { platform: 'feishu', display_name: '飞书', version: '1.0.0', runtime: 'Go', author: 'AllBot', custom: false, pinned: false, config_schema: [{ key: 'app_id', label: 'App ID', type: 'text' }] },
+  { platform: 'wechat_official', display_name: '微信公众号', version: '1.0.0', runtime: 'Go', author: 'AllBot', custom: false, pinned: false, config_schema: [{ key: 'app_id', label: 'App ID', type: 'text' }, { key: 'callback_path', label: '回调路径', type: 'text' }] },
+  { platform: 'demo_custom', display_name: '演示自定义适配器', version: '1.0.0', runtime: 'nodejs', author: 'AllBot Demo', custom: true, entry: 'main.js', pinned: true, description: '演示适配器定义管理操作', config_schema: [{ key: 'token', label: '访问令牌', type: 'password', required: true }], capabilities: { send_text: true, send_image: true, send_file: true }, declared_capabilities: [] }
 ]
 
 const webChatPlugins = demoState.plugins.map((plugin) => ({
@@ -203,6 +204,23 @@ function handleRequest(request) {
   if (path === '/statistics/message-total-trend') return trend()
   if (path === '/statistics/plugin-trigger-trend') return trend()
   if (path === '/adapter-platforms') return clone(platformList)
+  if (path === '/adapter-definitions' && method === 'post') {
+    const item = { ...data.manifest, platform: data.manifest.id, display_name: data.manifest.name, custom: true, pinned: false, entry: data.manifest.entry, config_schema: data.manifest.config_schema || [], capabilities: { send_text: true, send_image: true, send_file: true }, declared_capabilities: data.manifest.capabilities || [] }
+    platformList.push(item)
+    return { ok: true }
+  }
+  if (segments[0] === 'adapter-definitions' && segments.length === 2) {
+    const item = platformList.find((platform) => platform.platform === id)
+    if (!item || !item.custom) return { ok: false }
+    if (method === 'put') Object.assign(item, data.manifest, { display_name: data.manifest.name, capabilities: { send_text: true, send_image: true, send_file: true }, declared_capabilities: data.manifest.capabilities || [] })
+    if (method === 'delete') platformList.splice(platformList.indexOf(item), 1)
+    if (method === 'post') { if (data.action === 'pin') item.pinned = true; if (data.action === 'unpin') item.pinned = false }
+    return { ok: true }
+  }
+  if (segments[0] === 'adapter-code' && segments.length === 2) {
+    if (method === 'get') return { platform: id, filename: 'main.js', code: '// Demo adapter source\n' }
+    return { ok: true, message: '演示代码已保存' }
+  }
   if (path === '/adapters' && method === 'get') return clone(demoState.adapters)
   if (segments[0] === 'adapters' && segments.length === 2) {
     const row = findByID(demoState.adapters, id)

@@ -15,6 +15,7 @@ config.db
 plugins/
 backups/
 others/
+adapter.data
 
 # 缓存与依赖目录
 .gocache/

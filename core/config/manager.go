@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,20 +14,150 @@ import (
 
 	"github.com/allbot/allbot/core/adapter"
 	"github.com/allbot/allbot/core/adapter/_registry"
+	customadapter "github.com/allbot/allbot/core/adapter/custom"
 	"github.com/allbot/allbot/core/types"
 	"github.com/allbot/allbot/core/utils"
 )
 
 type AdapterManager struct {
-	db              *Database
-	adapters        map[int64]adapter.Adapter
-	lifecycleLocks  map[int64]*sync.Mutex
-	restartAttempts map[int64]int
-	restartEligible map[int64]bool
-	messageHandler  func(*types.Message)
-	mu              sync.RWMutex
-	healthStop      chan struct{}
-	healthStopOnce  sync.Once
+	db               *Database
+	customAdapterDir string
+	adapters         map[int64]adapter.Adapter
+	lifecycleLocks   map[int64]*sync.Mutex
+	restartAttempts  map[int64]int
+	restartEligible  map[int64]bool
+	messageHandler   func(*types.Message)
+	mu               sync.RWMutex
+	healthStop       chan struct{}
+	healthStopOnce   sync.Once
+}
+
+func (m *AdapterManager) SetCustomAdapterDir(dir string) error {
+	if strings.TrimSpace(dir) == "" {
+		return fmt.Errorf("自定义适配器目录不能为空")
+	}
+	m.mu.Lock()
+	m.customAdapterDir = dir
+	m.mu.Unlock()
+	return customadapter.Load(dir)
+}
+
+const adapterPlatformPinsKey = "adapter.platform_pins"
+
+func (m *AdapterManager) CustomAdapterDir() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.customAdapterDir
+}
+
+func (m *AdapterManager) SetAdapterPlatformPinned(platform string, pinned bool) error {
+	raw, err := m.db.GetSetting(adapterPlatformPinsKey)
+	pins := map[string]bool{}
+	if err == nil {
+		_ = json.Unmarshal([]byte(raw), &pins)
+	}
+	if pinned {
+		pins[platform] = true
+	} else {
+		delete(pins, platform)
+	}
+	data, err := json.Marshal(pins)
+	if err != nil {
+		return err
+	}
+	return m.db.SetSetting(adapterPlatformPinsKey, string(data), "适配器平台置顶")
+}
+
+func (m *AdapterManager) AdapterPlatformPins() map[string]bool {
+	pins := map[string]bool{}
+	raw, err := m.db.GetSetting(adapterPlatformPinsKey)
+	if err == nil {
+		_ = json.Unmarshal([]byte(raw), &pins)
+	}
+	return pins
+}
+
+func (m *AdapterManager) CreateCustomAdapterDefinition(raw json.RawMessage, code string) error {
+	return customadapter.CreateDefinition(m.CustomAdapterDir(), raw, code)
+}
+
+func (m *AdapterManager) SaveCustomAdapterDefinition(platform string, raw json.RawMessage) error {
+	if err := m.stopCustomPlatformInstances(platform); err != nil {
+		return err
+	}
+	if err := customadapter.SaveDefinition(m.CustomAdapterDir(), platform, raw); err != nil {
+		return err
+	}
+	return m.reloadCustomPlatformInstances(platform)
+}
+
+func (m *AdapterManager) ReloadCustomAdapterDefinition(platform string) error {
+	if err := customadapter.LoadOne(m.CustomAdapterDir(), platform, true); err != nil {
+		return err
+	}
+	return m.reloadCustomPlatformInstances(platform)
+}
+
+func (m *AdapterManager) DeleteCustomAdapterDefinition(platform string) error {
+	desc, ok := registry.Get(platform)
+	if !ok || !desc.Custom {
+		return fmt.Errorf("Go 内置适配器不允许删除")
+	}
+	if err := m.stopCustomPlatformInstances(platform); err != nil {
+		return err
+	}
+	items, err := m.db.GetAllAdapters()
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item != nil && item.Platform == platform {
+			if err := adapter.DeleteCustomAdapterData(filepath.Join(m.CustomAdapterDir(), platform), strconv.FormatInt(item.ID, 10)); err != nil {
+				return err
+			}
+			if err := m.db.DeleteAdapterByID(item.ID); err != nil {
+				return err
+			}
+		}
+	}
+	if err := customadapter.DeleteDefinition(m.CustomAdapterDir(), platform); err != nil {
+		return err
+	}
+	return m.SetAdapterPlatformPinned(platform, false)
+}
+
+func (m *AdapterManager) stopCustomPlatformInstances(platform string) error {
+	items, err := m.db.GetAllAdapters()
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item != nil && item.Platform == platform {
+			if err := m.StopAdapterByID(item.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (m *AdapterManager) reloadCustomPlatformInstances(platform string) error {
+	items, err := m.db.GetAllAdapters()
+	if err != nil {
+		return err
+	}
+	var failures []string
+	for _, item := range items {
+		if item != nil && item.Platform == platform && item.Enabled {
+			if err := m.ReloadAdapterByID(item.ID); err != nil {
+				failures = append(failures, fmt.Sprintf("#%d: %v", item.ID, err))
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("部分实例重载失败: %s", strings.Join(failures, "; "))
+	}
+	return nil
 }
 
 const adapterHealthCheckInterval = 30 * time.Second
@@ -166,6 +298,44 @@ func (m *AdapterManager) startAdapterLocked(config *AdapterConfig) error {
 		return fmt.Errorf("不支持的平台: %s", config.Platform)
 	}
 	parsedConfig, err := desc.ParseConfig(config.Config)
+	if desc.Custom {
+		m.mu.RLock()
+		adapterDir := m.customAdapterDir
+		m.mu.RUnlock()
+		if adapterDir == "" {
+			return fmt.Errorf("自定义适配器目录未配置")
+		}
+		stored, loadErr := adapter.LoadCustomAdapterData(filepath.Join(adapterDir, config.Platform))
+		if loadErr != nil {
+			return loadErr
+		}
+		raw, ok := stored[strconv.FormatInt(config.ID, 10)]
+		if !ok {
+			raw = json.RawMessage(config.Config)
+		}
+		values := map[string]interface{}{}
+		if json.Unmarshal(raw, &values) != nil {
+			return fmt.Errorf("解析自定义适配器配置失败")
+		}
+		if _, exists := values[customadapter.CallbackTokenField]; !exists {
+			token, tokenErr := customadapter.NewCallbackToken()
+			if tokenErr != nil {
+				return fmt.Errorf("生成回调令牌失败: %w", tokenErr)
+			}
+			values[customadapter.CallbackTokenField] = token
+			if saveErr := adapter.SaveCustomAdapterData(filepath.Join(adapterDir, config.Platform), strconv.FormatInt(config.ID, 10), values); saveErr != nil {
+				return fmt.Errorf("保存回调令牌失败: %w", saveErr)
+			}
+		}
+		parsedConfig, err = desc.ParseConfig(string(raw))
+		if err == nil {
+			encoded, marshalErr := json.Marshal(values)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			parsedConfig, err = desc.ParseConfig(string(encoded))
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("解析 %s 配置失败: %w", desc.DisplayName, err)
 	}
@@ -175,6 +345,14 @@ func (m *AdapterManager) startAdapterLocked(config *AdapterConfig) error {
 	}
 	if remarkAware, ok := adp.(interface{ SetRemark(string) }); ok {
 		remarkAware.SetRemark(config.Remark)
+	}
+	if instanceAware, ok := adp.(interface{ SetInstanceID(int64) }); ok {
+		instanceAware.SetInstanceID(config.ID)
+	}
+	if callbackBaseAware, ok := adp.(interface{ SetCallbackBaseURL(string) }); ok {
+		if settings, settingsErr := m.db.GetSystemSettings(); settingsErr == nil {
+			callbackBaseAware.SetCallbackBaseURL(settings.PublicBaseURL)
+		}
 	}
 	if databaseAware, ok := adp.(interface{ SetDatabase(*Database) }); ok {
 		databaseAware.SetDatabase(m.db)
@@ -186,6 +364,10 @@ func (m *AdapterManager) startAdapterLocked(config *AdapterConfig) error {
 		remark := strings.TrimSpace(config.Remark)
 		description := strings.TrimSpace(config.Description)
 		adp.SetMessageHandler(func(msg *types.Message) {
+			if msg == nil {
+				return
+			}
+			msg.Platform = platform
 			if msg.Metadata == nil {
 				msg.Metadata = make(map[string]string)
 			}
@@ -452,8 +634,154 @@ func (m *AdapterManager) SetAdapterPinned(id int64, pinned bool) error {
 	return m.db.SaveAdapter(config)
 }
 
+func (m *AdapterManager) DeleteCustomAdapterData(id int64) error {
+	item, err := m.db.GetAdapterByID(id)
+	if err != nil || item == nil {
+		return err
+	}
+	desc, ok := registry.Get(item.Platform)
+	if !ok || !desc.Custom {
+		return nil
+	}
+	m.mu.RLock()
+	adapterDir := m.customAdapterDir
+	m.mu.RUnlock()
+	if adapterDir == "" {
+		return fmt.Errorf("自定义适配器目录未配置")
+	}
+	return adapter.DeleteCustomAdapterData(filepath.Join(adapterDir, item.Platform), strconv.FormatInt(id, 10))
+}
+
+func (m *AdapterManager) AdapterConfigData(id int64) (string, error) {
+	item, err := m.db.GetAdapterByID(id)
+	if err != nil || item == nil {
+		return "", err
+	}
+	desc, ok := registry.Get(item.Platform)
+	if !ok || !desc.Custom {
+		return item.Config, nil
+	}
+	m.mu.RLock()
+	adapterDir := m.customAdapterDir
+	m.mu.RUnlock()
+	if adapterDir == "" {
+		return "", fmt.Errorf("自定义适配器目录未配置")
+	}
+	stored, err := adapter.LoadCustomAdapterData(filepath.Join(adapterDir, item.Platform))
+	if err != nil {
+		return "", err
+	}
+	data, ok := stored[strconv.FormatInt(id, 10)]
+	if !ok {
+		return "{}", nil
+	}
+	return string(data), nil
+}
+
+func (m *AdapterManager) AdapterCallbackToken(id int64) (string, error) {
+	raw, err := m.AdapterConfigData(id)
+	if err != nil {
+		return "", err
+	}
+	var values map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return "", err
+	}
+	token, _ := values[customadapter.CallbackTokenField].(string)
+	return token, nil
+}
+
+func (m *AdapterManager) GetCustomAdapterCode(platform string) (string, string, error) {
+	desc, ok := registry.Get(platform)
+	if !ok || !desc.Custom {
+		return "", "", fmt.Errorf("仅支持查看自定义适配器代码")
+	}
+	m.mu.RLock()
+	root := m.customAdapterDir
+	m.mu.RUnlock()
+	entry := filepath.Join(root, platform, desc.Entry)
+	code, err := os.ReadFile(entry)
+	if err != nil {
+		return "", "", err
+	}
+	return desc.Entry, string(code), nil
+}
+
+func (m *AdapterManager) SaveCustomAdapterCode(platform, code string) error {
+	desc, ok := registry.Get(platform)
+	if !ok || !desc.Custom {
+		return fmt.Errorf("仅支持修改自定义适配器代码")
+	}
+	m.mu.RLock()
+	root := m.customAdapterDir
+	m.mu.RUnlock()
+	entry := filepath.Join(root, platform, desc.Entry)
+	if err := os.WriteFile(entry, []byte(code), 0644); err != nil {
+		return err
+	}
+	items, err := m.db.GetAllAdapters()
+	if err != nil {
+		return err
+	}
+	var failures []string
+	for _, item := range items {
+		if item != nil && item.Platform == platform && item.Enabled {
+			if err := m.ReloadAdapterByID(item.ID); err != nil {
+				failures = append(failures, fmt.Sprintf("#%d: %v", item.ID, err))
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("代码已保存，部分实例重载失败: %s", strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+func (m *AdapterManager) MaskAdapterConfigData(id int64, raw string) string {
+	item, err := m.db.GetAdapterByID(id)
+	if err != nil || item == nil {
+		return raw
+	}
+	desc, ok := registry.Get(item.Platform)
+	if !ok || !desc.Custom {
+		return utils.MaskSensitiveConfig(raw)
+	}
+	var values map[string]interface{}
+	if json.Unmarshal([]byte(raw), &values) != nil {
+		return "{}"
+	}
+	for _, field := range desc.ConfigSchema {
+		if field.Type == "password" {
+			if value, exists := values[field.Key]; exists && value != nil && fmt.Sprint(value) != "" {
+				values[field.Key] = "****"
+			}
+		}
+	}
+	delete(values, customadapter.CallbackTokenField)
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return "{}"
+	}
+	return utils.MaskSensitiveConfig(string(encoded))
+}
+
 func (m *AdapterManager) SaveAdapterConfig(id int64, platform, remark, description string, enabled bool, configData interface{}) error {
 	platform = strings.TrimSpace(platform)
+	if desc, ok := registry.Get(platform); ok && desc.Custom {
+		values, valueOK := configData.(map[string]interface{})
+		if !valueOK {
+			return fmt.Errorf("自定义适配器配置必须为对象")
+		}
+		for _, field := range desc.ConfigSchema {
+			if !field.Required {
+				continue
+			}
+			value, exists := values[field.Key]
+			if !exists || value == nil || (fmt.Sprint(value) == "") {
+				return fmt.Errorf("配置项 %s 不能为空", field.Label)
+			}
+		}
+	}
 	if platform == WebChatPlatform {
 		existing, err := m.db.GetAdapter(WebChatPlatform)
 		if err != nil {
@@ -467,6 +795,21 @@ func (m *AdapterManager) SaveAdapterConfig(id int64, platform, remark, descripti
 	mergedConfigData, err := m.mergeExistingSensitiveConfig(id, platform, configData)
 	if err != nil {
 		return err
+	}
+	if desc, ok := registry.Get(platform); ok && desc.Custom {
+		values := mergedConfigData.(map[string]interface{})
+		if token, _ := values[customadapter.CallbackTokenField].(string); token == "" {
+			if id > 0 {
+				token, _ = m.AdapterCallbackToken(id)
+			}
+			if token == "" {
+				token, err = customadapter.NewCallbackToken()
+				if err != nil {
+					return fmt.Errorf("生成回调令牌失败: %w", err)
+				}
+			}
+			values[customadapter.CallbackTokenField] = token
+		}
 	}
 
 	existingPinned := false
@@ -492,9 +835,23 @@ func (m *AdapterManager) SaveAdapterConfig(id int64, platform, remark, descripti
 		Pinned:      existingPinned,
 		Config:      string(configJSON),
 	}
+	if desc, ok := registry.Get(platform); ok && desc.Custom {
+		config.Config = "{}"
+	}
 
 	if err := m.db.SaveAdapter(config); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
+	}
+	if desc, ok := registry.Get(platform); ok && desc.Custom {
+		m.mu.RLock()
+		adapterDir := m.customAdapterDir
+		m.mu.RUnlock()
+		if adapterDir == "" {
+			return fmt.Errorf("自定义适配器目录未配置")
+		}
+		if err := adapter.SaveCustomAdapterData(filepath.Join(adapterDir, platform), strconv.FormatInt(config.ID, 10), mergedConfigData); err != nil {
+			return fmt.Errorf("写入 adapter.data 失败: %w", err)
+		}
 	}
 
 	if err := m.ReloadAdapterByID(config.ID); err != nil {
@@ -510,6 +867,11 @@ func (m *AdapterManager) mergeExistingSensitiveConfig(id int64, platform string,
 	if !ok {
 		return configData, nil
 	}
+	if id == 0 {
+		if desc, exists := registry.Get(platform); exists && desc.Custom {
+			return configData, nil
+		}
+	}
 
 	var existingAdapter *AdapterConfig
 	var err error
@@ -524,9 +886,15 @@ func (m *AdapterManager) mergeExistingSensitiveConfig(id int64, platform string,
 	if existingAdapter == nil || existingAdapter.Config == "" {
 		return configData, nil
 	}
+	existingJSON := existingAdapter.Config
+	if desc, ok := registry.Get(platform); ok && desc.Custom {
+		if saved, loadErr := m.AdapterConfigData(existingAdapter.ID); loadErr == nil && saved != "" {
+			existingJSON = saved
+		}
+	}
 
 	var existingConfig map[string]interface{}
-	if err := json.Unmarshal([]byte(existingAdapter.Config), &existingConfig); err != nil {
+	if err := json.Unmarshal([]byte(existingJSON), &existingConfig); err != nil {
 		return configData, nil
 	}
 

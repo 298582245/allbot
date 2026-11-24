@@ -12,6 +12,7 @@ func init() {
 	registry.Register(registry.Descriptor{
 		Platform:    "telegram",
 		DisplayName: "Telegram",
+		Version:     "1.0.0",
 		Description: "Telegram Bot API 适配器",
 		ConfigSchema: []registry.ConfigField{
 			{Key: "bot_token", Label: "Bot Token", Type: "password", Required: true, Placeholder: "123456:ABC-DEF", Help: "Telegram BotFather 分配的 Token"},

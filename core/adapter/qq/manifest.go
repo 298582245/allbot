@@ -12,6 +12,7 @@ func init() {
 	registry.Register(registry.Descriptor{
 		Platform:    "qq",
 		DisplayName: "QQ",
+		Version:     "1.0.0",
 		Description: "基于 OneBot 11 正向通用 WebSocket 的 QQ 第三方适配器",
 		ConfigSchema: []registry.ConfigField{
 			{

@@ -22,6 +22,7 @@ import (
 
 	"github.com/allbot/allbot/core/adapter"
 	_ "github.com/allbot/allbot/core/adapter/_loader"
+	customadapter "github.com/allbot/allbot/core/adapter/custom"
 	"github.com/allbot/allbot/core/backup"
 	"github.com/allbot/allbot/core/config"
 	"github.com/allbot/allbot/core/deps"
@@ -49,6 +50,7 @@ func main() {
 	repairDockerUpdateMarker()
 
 	pluginDir := flag.String("plugins", "./plugins", "插件目录")
+	adapterDir := flag.String("adapters", "./adapters", "用户自定义适配器目录")
 	showAccessCode := flag.Bool("show-access-code", false, "显示当前安全访问码并退出")
 	resetPassword := flag.Bool("reset-password", false, "重置管理员密码并退出")
 	flag.Parse()
@@ -125,6 +127,14 @@ func main() {
 	if err := depsManager.InitNodeEnv(); err != nil {
 		log.Printf("警告：初始化 Node.js 环境失败: %v", err)
 	}
+	nodeExecutable, pythonExecutable := "node", "python"
+	if runtime, err := depsManager.ResolveRuntime("nodejs", ""); err == nil {
+		nodeExecutable = runtime.Executable
+	}
+	if runtime, err := depsManager.ResolveRuntime("python", ""); err == nil {
+		pythonExecutable = runtime.Executable
+	}
+	customadapter.SetRuntimeExecutables(nodeExecutable, pythonExecutable)
 
 	sessionManager := session.NewManager()
 	messageRouter := router.NewRouter(sessionManager)
@@ -146,6 +156,12 @@ func main() {
 	log.Printf("已注册 %d 个插件", len(plugins))
 
 	adapterManager := config.NewAdapterManager(configDB)
+	if err := os.MkdirAll(*adapterDir, 0755); err != nil {
+		log.Fatalf("创建自定义适配器目录失败: %v", err)
+	}
+	if err := adapterManager.SetCustomAdapterDir(*adapterDir); err != nil {
+		log.Printf("警告：加载自定义适配器失败: %v", err)
+	}
 	adapterManager.SetMessageHandler(func(msg *types.Message) {
 		messageRouter.HandleMessage(msg)
 	})

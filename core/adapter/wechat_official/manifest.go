@@ -23,6 +23,7 @@ func init() {
 	registry.Register(registry.Descriptor{
 		Platform:    platformName,
 		DisplayName: "微信公众号",
+		Version:     "1.0.0",
 		Description: "微信公众号明文模式回调与客服消息适配器",
 		ConfigSchema: []registry.ConfigField{
 			{Key: "app_id", Label: "AppID", Type: "text", Required: true, Help: "微信公众号 AppID"},

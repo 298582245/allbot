@@ -12,5 +12,13 @@ func (s *Server) handleAdapterPlatforms(w http.ResponseWriter, r *http.Request) 
 		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	s.jsonResponse(w, registry.List())
+	platforms := registry.List()
+	pins := map[string]bool{}
+	if s.adapterManager != nil {
+		pins = s.adapterManager.AdapterPlatformPins()
+	}
+	for i := range platforms {
+		platforms[i].Pinned = pins[platforms[i].Platform]
+	}
+	s.jsonResponse(w, platforms)
 }
