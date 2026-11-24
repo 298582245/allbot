@@ -204,6 +204,15 @@ function handleRequest(request) {
   if (path === '/statistics/message-total-trend') return trend()
   if (path === '/statistics/plugin-trigger-trend') return trend()
   if (path === '/adapter-platforms') return clone(platformList)
+  if (path === '/adapter-definitions/import' && method === 'post') {
+    let manifest = {}
+    try { manifest = JSON.parse(data.get('adapter_manifest') || '{}') } catch {}
+    const id = manifest.id || `demo-import-${Date.now()}`
+    if (!platformList.some((item) => item.platform === id)) {
+      platformList.push({ ...manifest, platform: id, display_name: manifest.name || id, custom: true, pinned: false, entry: manifest.entry || 'main.js', config_schema: manifest.config_schema || [], capabilities: { send_text: true, send_image: true, send_file: true }, declared_capabilities: manifest.capabilities || [] })
+    }
+    return { message: '适配器导入成功', id }
+  }
   if (path === '/adapter-definitions' && method === 'post') {
     const item = { ...data.manifest, platform: data.manifest.id, display_name: data.manifest.name, custom: true, pinned: false, entry: data.manifest.entry, config_schema: data.manifest.config_schema || [], capabilities: { send_text: true, send_image: true, send_file: true }, declared_capabilities: data.manifest.capabilities || [] }
     platformList.push(item)

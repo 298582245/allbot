@@ -214,6 +214,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/images", s.handleImages)
 	mux.HandleFunc("/api/images/", s.handleImageDetail)
 	mux.HandleFunc("/api/adapter-platforms", s.handleAdapterPlatforms)
+	mux.HandleFunc("/api/adapter-definitions/import", s.handleAdapterImport)
 	mux.HandleFunc("/api/adapter-definitions", s.handleAdapterDefinitions)
 	mux.HandleFunc("/api/adapter-definitions/", s.handleAdapterDefinitionDetail)
 	mux.HandleFunc("/api/adapter-code/", s.handleAdapterCode)

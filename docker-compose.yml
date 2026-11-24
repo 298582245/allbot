@@ -12,16 +12,14 @@ services:
       - "0.0.0.0:${ALLBOT_WEB_PORT:-3000}:${ALLBOT_WEB_PORT:-3000}"
     volumes:
       - allbot_data:/data
+      - ./adapters:/data/adapters
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${ALLBOT_WEB_PORT:-3000}/login >/dev/null || curl -fsS http://127.0.0.1:$${ALLBOT_WEB_PORT:-3000}/ >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 30s
-    # 如需直接在宿主机编辑插件或 OpenAPI，可把上面的命名卷改成 bind mount，例如：
-    # volumes:
-    #   - ./data:/data
-    # 默认推荐命名卷，避免 config.db 首次不存在时被 Docker 创建成目录。
+    # 适配器代码从仓库目录挂载；其余运行数据使用命名卷，避免 config.db 首次不存在时被创建成目录。
 
 volumes:
   allbot_data:

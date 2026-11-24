@@ -587,6 +587,14 @@ export const createAdapterDefinition = (manifest, code) => {
   })
 }
 
+export const importAdapterDefinition = (data) => request({
+  url: '/adapter-definitions/import',
+  method: 'post',
+  data,
+  timeout: 10 * 60 * 1000,
+  silent: true
+})
+
 export const saveAdapterDefinition = (platform, manifest) => request({
   url: `/adapter-definitions/${encodeURIComponent(platform)}`,
   method: 'put',

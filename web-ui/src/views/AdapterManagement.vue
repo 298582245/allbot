@@ -9,6 +9,7 @@
           </div>
           <div class="header-actions">
             <el-input v-model="keyword" class="search-input" clearable placeholder="搜索名称、ID、运行时或作者" />
+            <el-button @click="importVisible = true"><el-icon><Upload /></el-icon>导入适配器</el-button>
             <el-button type="primary" @click="openCreate">
               <el-icon><Plus /></el-icon>新增适配器
             </el-button>
@@ -106,6 +107,36 @@
         <el-button type="primary" :loading="codeSaving" @click="saveCode">保存并重载</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="importVisible" title="导入适配器" width="720px" @closed="clearImportSelection">
+      <input ref="importDirectoryInput" type="file" multiple webkitdirectory directory hidden @change="handleDirectorySelected" />
+      <input ref="importArchiveInput" type="file" accept=".zip,application/zip" hidden @change="handleArchiveSelected" />
+      <div class="import-actions">
+        <el-button type="primary" @click="importDirectoryInput?.click()">选择适配器文件夹</el-button>
+        <el-button @click="importArchiveInput?.click()">选择 ZIP 压缩包</el-button>
+      </div>
+      <div class="field-help">导入内容需包含 adapter.json 和其中声明的入口文件。</div>
+      <div v-if="importState.sourceName" class="import-summary">
+        <div><span class="meta-label">来源</span>{{ importState.sourceName }}</div>
+        <div v-if="importState.manifest?.id"><span class="meta-label">适配器 ID</span>{{ importState.manifest.id }}</div>
+        <div v-if="importState.files.length"><span class="meta-label">文件数</span>{{ importState.files.length }}　<span class="meta-label">总大小</span>{{ formatSize(importState.totalSize) }}</div>
+      </div>
+      <div v-if="importState.diagnostics.length" class="import-diagnostics">
+        <div v-for="(item, index) in importState.diagnostics" :key="index" class="import-diagnostic">
+          <el-tag size="small" :type="item.level === 'error' ? 'danger' : item.level === 'success' ? 'success' : 'info'">{{ item.level === 'error' ? '错误' : item.level === 'success' ? '通过' : '提示' }}</el-tag>
+          <span>{{ item.message }}</span><code v-if="item.path">{{ item.path }}</code>
+        </div>
+      </div>
+      <el-table v-if="importState.files.length" :data="importState.files" size="small" border max-height="260">
+        <el-table-column prop="path" label="文件路径" min-width="260" show-overflow-tooltip />
+        <el-table-column label="大小" width="110"><template #default="{ row }">{{ formatSize(row.size) }}</template></el-table-column>
+      </el-table>
+      <el-empty v-else-if="!importState.sourceName" description="请选择适配器文件夹或 ZIP 压缩包" />
+      <template #footer>
+        <el-button @click="importVisible = false">取消</el-button>
+        <el-button type="primary" :loading="importSaving" :disabled="!importState.valid" @click="submitAdapterImport">导入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -113,18 +144,24 @@
 defineOptions({ name: 'AdapterManagement' })
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Document, Plus, Refresh, Setting, Star, StarFilled } from '@element-plus/icons-vue'
-import { createAdapterDefinition, deleteAdapterDefinition, getAdapterCode, getAdapterPlatforms, reloadAdapterDefinition, saveAdapterCode, saveAdapterDefinition, setAdapterPlatformPinned } from '@/api'
+import { Delete, Document, Plus, Refresh, Setting, Star, StarFilled, Upload } from '@element-plus/icons-vue'
+import { createAdapterDefinition, deleteAdapterDefinition, getAdapterCode, getAdapterPlatforms, importAdapterDefinition, reloadAdapterDefinition, saveAdapterCode, saveAdapterDefinition, setAdapterPlatformPinned } from '@/api'
 import StdPagination from '@/components/StdPagination.vue'
+import { inspectAdapterArchive, inspectAdapterDirectory } from '@/utils/adapterImport'
 
 const loading = ref(false)
 const saving = ref(false)
+const importSaving = ref(false)
 const codeLoading = ref(false)
 const codeSaving = ref(false)
 const keyword = ref('')
 const currentPage = ref(1)
 const pageSize = 9
 const platforms = ref([])
+const importVisible = ref(false)
+const importDirectoryInput = ref(null)
+const importArchiveInput = ref(null)
+const importState = ref(createEmptyImportState())
 const capabilityOptions = [
   { value: 'text', label: '发送文本' },
   { value: 'image', label: '发送图片' },
@@ -186,6 +223,69 @@ async function loadPlatforms() {
   loading.value = true
   try { const result = await getAdapterPlatforms(); platforms.value = Array.isArray(result) ? result : [] }
   finally { loading.value = false }
+}
+
+function createEmptyImportState() {
+  return { sourceType: '', sourceName: '', files: [], archive: null, totalSize: 0, manifest: null, diagnostics: [], valid: false }
+}
+
+function formatSize(size) {
+  const value = Number(size || 0)
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`
+}
+
+async function handleDirectorySelected(event) {
+  const files = Array.from(event.target?.files || [])
+  importState.value = { ...createEmptyImportState(), sourceType: 'directory' }
+  try {
+    importState.value = { ...await inspectAdapterDirectory(files), sourceType: 'directory', archive: null }
+  } catch (error) {
+    importState.value.diagnostics = [{ level: 'error', message: error.message || '读取适配器文件夹失败' }]
+  } finally {
+    if (event.target) event.target.value = ''
+  }
+}
+
+function handleArchiveSelected(event) {
+  const archive = event.target?.files?.[0] || null
+  importState.value = { ...inspectAdapterArchive(archive), sourceType: 'archive', archive }
+  if (event.target) event.target.value = ''
+}
+
+function clearImportSelection() {
+  importState.value = createEmptyImportState()
+}
+
+async function submitAdapterImport() {
+  if (!importState.value.valid || importSaving.value) return
+  const state = importState.value
+  const formData = new FormData()
+  formData.append('source_type', state.sourceType)
+  if (state.manifest?.id) formData.append('adapter_id', state.manifest.id)
+  if (state.manifest) formData.append('adapter_manifest', JSON.stringify(state.manifest))
+  try {
+    if (state.sourceType === 'directory') {
+      formData.append('paths', JSON.stringify(state.files.map(item => item.path)))
+      state.files.forEach(item => formData.append('files', item.file, item.file.name))
+    } else if (state.sourceType === 'archive' && state.archive) {
+      formData.append('archive', state.archive, state.archive.name)
+    } else return
+    importSaving.value = true
+    await importAdapterDefinition(formData)
+    ElMessage.success('适配器导入成功')
+    importVisible.value = false
+    await loadPlatforms()
+  } catch (error) {
+    const data = error?.response?.data
+    const message = data?.msg || data?.error || data?.message || error?.message || '适配器导入失败'
+    importState.value.diagnostics = [...importState.value.diagnostics.filter(item => item.level !== 'error'), { level: 'error', message }]
+    importState.value.valid = false
+    ElMessage.error(message)
+  } finally {
+    importSaving.value = false
+  }
 }
 
 function openCreate() {
@@ -290,5 +390,5 @@ onMounted(loadPlatforms)
 </script>
 
 <style scoped>
-.adapter-management,.page-shell{width:100%;height:100%;min-height:0;display:flex;flex-direction:column}.page-card{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}.page-card :deep(.el-card__body){flex:1;min-height:0;display:flex;flex-direction:column;gap:12px;overflow:hidden}.page-header{display:flex;justify-content:space-between;align-items:center;gap:16px}.title{font-size:18px;font-weight:600}.subtitle{margin-top:6px;color:#909399;font-size:13px}.header-actions{display:flex;align-items:center;gap:10px}.search-input{width:280px}.adapter-content{flex:1;min-height:0;overflow:auto;padding-right:2px}.adapter-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}.adapter-card{min-height:204px}.adapter-card.pinned{border-color:#e6a23c}.card-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.identity{min-width:0}.adapter-name{overflow-wrap:anywhere;font-size:16px;font-weight:600;color:#303133}.adapter-id{margin-top:5px;color:#909399;font-size:12px;overflow-wrap:anywhere}.metadata-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:18px}.metadata-grid>div{min-width:0;display:flex;flex-direction:column;gap:4px;font-size:13px;overflow-wrap:anywhere}.meta-label{color:#909399;font-size:12px}.meta-value{overflow-wrap:anywhere}.description{min-height:20px;margin-top:12px;color:#606266;font-size:13px;line-height:1.45;overflow-wrap:anywhere}.capabilities-block{display:flex;flex-direction:column;gap:6px;margin-top:12px}.capability-tags{display:flex;flex-wrap:wrap;gap:6px}.empty-capabilities{color:#909399;font-size:13px}.capability-editor{width:100%;min-width:0}.capability-editor :deep(.el-checkbox-group){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 8px}.card-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:16px;padding-top:10px;border-top:1px solid #ebeef5}.card-actions .el-button{margin-left:0}.readonly-tag{margin-left:auto}.field-help{margin-top:4px;color:#909399;font-size:12px;line-height:1.45}.code-editor{display:flex;flex-direction:column;gap:8px}.code-file{color:#606266;font-size:13px}.code-editor :deep(textarea){min-height:min(62vh,720px)!important;font-family:Consolas,'Courier New',monospace;font-size:13px;line-height:1.55;tab-size:2}@media(max-width:768px){.page-shell{height:calc(100dvh - 52px - 76px - 24px);overflow:hidden}.page-card{height:100%;border-radius:10px}.page-header{align-items:stretch;flex-direction:column;gap:10px}.title{font-size:16px}.subtitle{display:none}.header-actions{width:100%;align-items:stretch;flex-direction:column}.search-input,.header-actions .el-button{width:100%;margin-left:0}.adapter-grid{grid-template-columns:minmax(0,1fr);gap:12px}.adapter-card{min-height:auto}.metadata-grid{margin-top:14px}.capability-editor :deep(.el-checkbox-group){grid-template-columns:minmax(0,1fr)}}
+.adapter-management,.page-shell{width:100%;height:100%;min-height:0;display:flex;flex-direction:column}.page-card{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}.page-card :deep(.el-card__body){flex:1;min-height:0;display:flex;flex-direction:column;gap:12px;overflow:hidden}.page-header{display:flex;justify-content:space-between;align-items:center;gap:16px}.title{font-size:18px;font-weight:600}.subtitle{margin-top:6px;color:#909399;font-size:13px}.header-actions{display:flex;align-items:center;gap:10px}.search-input{width:280px}.adapter-content{flex:1;min-height:0;overflow:auto;padding-right:2px}.adapter-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}.adapter-card{min-height:204px}.adapter-card.pinned{border-color:#e6a23c}.card-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.identity{min-width:0}.adapter-name{overflow-wrap:anywhere;font-size:16px;font-weight:600;color:#303133}.adapter-id{margin-top:5px;color:#909399;font-size:12px;overflow-wrap:anywhere}.metadata-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:18px}.metadata-grid>div{min-width:0;display:flex;flex-direction:column;gap:4px;font-size:13px;overflow-wrap:anywhere}.meta-label{color:#909399;font-size:12px}.meta-value{overflow-wrap:anywhere}.description{min-height:20px;margin-top:12px;color:#606266;font-size:13px;line-height:1.45;overflow-wrap:anywhere}.capabilities-block{display:flex;flex-direction:column;gap:6px;margin-top:12px}.capability-tags{display:flex;flex-wrap:wrap;gap:6px}.empty-capabilities{color:#909399;font-size:13px}.capability-editor{width:100%;min-width:0}.capability-editor :deep(.el-checkbox-group){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 8px}.card-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:16px;padding-top:10px;border-top:1px solid #ebeef5}.card-actions .el-button{margin-left:0}.readonly-tag{margin-left:auto}.field-help{margin-top:4px;color:#909399;font-size:12px;line-height:1.45}.import-actions{display:flex;flex-wrap:wrap;gap:8px}.import-summary{display:grid;gap:8px;margin:14px 0}.import-summary>div{display:flex;gap:12px;align-items:center;overflow-wrap:anywhere}.import-diagnostics{display:grid;gap:8px;margin:12px 0}.import-diagnostic{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}.import-diagnostic code{color:#909399;overflow-wrap:anywhere}.code-editor{display:flex;flex-direction:column;gap:8px}.code-file{color:#606266;font-size:13px}.code-editor :deep(textarea){min-height:min(62vh,720px)!important;font-family:Consolas,'Courier New',monospace;font-size:13px;line-height:1.55;tab-size:2}@media(max-width:768px){.page-shell{height:calc(100dvh - 52px - 76px - 24px);overflow:hidden}.page-card{height:100%;border-radius:10px}.page-header{align-items:stretch;flex-direction:column;gap:10px}.title{font-size:16px}.subtitle{display:none}.header-actions{width:100%;align-items:stretch;flex-direction:column}.search-input,.header-actions .el-button{width:100%;margin-left:0}.adapter-grid{grid-template-columns:minmax(0,1fr);gap:12px}.adapter-card{min-height:auto}.metadata-grid{margin-top:14px}.capability-editor :deep(.el-checkbox-group){grid-template-columns:minmax(0,1fr)}}
 </style>
