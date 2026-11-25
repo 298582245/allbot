@@ -18,6 +18,8 @@ if (!sdkPath) throw new Error('找不到 sdk/nodejs/allbot_adapter.js，请在 A
 const { runAdapter } = require(sdkPath);
 
 const DEFAULT_API_BASE = 'https://www.kookapp.cn/api/v3';
+const API_TIMEOUT_MS = 3500;
+const API_MAX_RETRIES = 3;
 
 class KookAdapter {
   constructor() {
@@ -230,19 +232,32 @@ class KookAdapter {
   }
 
   async api(endpoint, options = {}) {
-    const response = await fetch(`${this.config.apiBase}${endpoint}`, {
-      ...options,
-      headers: {
-        Authorization: `Bot ${this.config.token}`,
-        ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
-        ...options.headers,
-      },
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok || result.code !== 0) {
-      throw new Error(result.message || `KOOK API 请求失败 (${response.status})`);
+    for (let attempt = 0; attempt <= API_MAX_RETRIES; attempt += 1) {
+      let retryable = true;
+      try {
+        const response = await fetch(`${this.config.apiBase}${endpoint}`, {
+          ...options,
+          signal: AbortSignal.timeout(API_TIMEOUT_MS),
+          headers: {
+            Authorization: `Bot ${this.config.token}`,
+            ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+            ...options.headers,
+          },
+        });
+        const transientStatus = response.status === 408 || response.status === 429 || response.status >= 500;
+        retryable = response.ok || transientStatus;
+        const result = await response.json();
+        retryable = transientStatus;
+        if (!response.ok || result.code !== 0) {
+          throw new Error(result.message || `KOOK API 请求失败 (${response.status})`);
+        }
+        return result.data || {};
+      } catch (error) {
+        if (!retryable || attempt === API_MAX_RETRIES) throw error;
+        console.error(`KOOK API ${endpoint} 请求失败，重试 ${attempt + 1}/${API_MAX_RETRIES}: ${error.message}`);
+        await new Promise((resolve) => setTimeout(resolve, 300 * (2 ** attempt)));
+      }
     }
-    return result.data || {};
   }
 
   parseTarget(target) {

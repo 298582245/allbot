@@ -1450,7 +1450,9 @@ func sendReplyButtonsWithFallback(adp adapter.Adapter, msg *types.Message, targe
 		return fmt.Errorf("消息内容不能为空")
 	}
 	if sender, ok := adp.(adapter.ButtonSender); ok {
-		return sender.SendButtons(target, text, buttons)
+		if err := sender.SendButtons(target, text, buttons); !errors.Is(err, adapter.ErrUnsupported) {
+			return err
+		}
 	}
 	return adp.SendMessage(target, replyTextFormatter(adp, msg, text, formatters...))
 }

@@ -383,7 +383,9 @@ type processAdapter struct {
 func newProcessAdapter(cfg launchConfig) *processAdapter {
 	capabilities := make(map[string]bool, len(cfg.Manifest.Capabilities))
 	for _, capability := range cfg.Manifest.Capabilities {
-		capabilities[strings.ToLower(capability)] = true
+		capability = strings.ToLower(strings.TrimSpace(capability))
+		capabilities[capability] = true
+		capabilities[strings.TrimPrefix(capability, "send_")] = true
 	}
 	return &processAdapter{cfg: cfg, capabilities: capabilities, waiters: make(map[string]chan wire)}
 }
@@ -518,7 +520,8 @@ func (a *processAdapter) readLoop(reader io.Reader) {
 			h := a.handler
 			a.mu.Unlock()
 			if h != nil {
-				h(incoming)
+				// Replies wait for responses read by this loop, so dispatch separately.
+				go h(incoming)
 			}
 			continue
 		}
