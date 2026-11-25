@@ -135,6 +135,13 @@ func main() {
 		pythonExecutable = runtime.Executable
 	}
 	customadapter.SetRuntimeExecutables(nodeExecutable, pythonExecutable)
+	customadapter.SetRuntimeResolver(func(runtimeName, profileID string) (string, string, error) {
+		resolved, err := depsManager.ResolveRuntime(runtimeName, profileID)
+		if err != nil {
+			return "", "", err
+		}
+		return resolved.Executable, resolved.NodePath, nil
+	})
 
 	sessionManager := session.NewManager()
 	messageRouter := router.NewRouter(sessionManager)

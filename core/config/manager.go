@@ -39,7 +39,63 @@ func (m *AdapterManager) SetCustomAdapterDir(dir string) error {
 	m.mu.Lock()
 	m.customAdapterDir = dir
 	m.mu.Unlock()
+	if err := migrateLegacyCustomAdapterRuntimeProfiles(dir); err != nil {
+		return err
+	}
 	return customadapter.Load(dir)
+}
+
+func migrateLegacyCustomAdapterRuntimeProfiles(root string) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		manifestPath := filepath.Join(root, entry.Name(), "adapter.json")
+		data, err := os.ReadFile(manifestPath)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var manifest map[string]json.RawMessage
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			return fmt.Errorf("读取适配器 %s 的 adapter.json 失败: %w", entry.Name(), err)
+		}
+		rawProfile, exists := manifest["runtime_profile"]
+		if !exists {
+			continue
+		}
+		var profileID string
+		if err := json.Unmarshal(rawProfile, &profileID); err != nil {
+			return fmt.Errorf("读取适配器 %s 的运行环境 Profile 失败: %w", entry.Name(), err)
+		}
+		adapterDir := filepath.Join(root, entry.Name())
+		if strings.TrimSpace(profileID) != "" {
+			current, err := adapter.LoadCustomAdapterRuntimeProfile(adapterDir)
+			if err != nil {
+				return err
+			}
+			if current == "" {
+				if err := adapter.SaveCustomAdapterRuntimeProfile(adapterDir, profileID); err != nil {
+					return err
+				}
+			}
+		}
+		delete(manifest, "runtime_profile")
+		cleanData, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(manifestPath, cleanData, 0644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const adapterPlatformPinsKey = "adapter.platform_pins"
@@ -77,18 +133,53 @@ func (m *AdapterManager) AdapterPlatformPins() map[string]bool {
 	return pins
 }
 
-func (m *AdapterManager) CreateCustomAdapterDefinition(raw json.RawMessage, code string) error {
-	return customadapter.CreateDefinition(m.CustomAdapterDir(), raw, code)
+func (m *AdapterManager) CreateCustomAdapterDefinition(raw json.RawMessage, code, runtimeProfile string) error {
+	root := m.CustomAdapterDir()
+	if err := customadapter.CreateDefinition(root, raw, code); err != nil {
+		return err
+	}
+	var definition struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &definition); err != nil {
+		return err
+	}
+	if err := adapter.SaveCustomAdapterRuntimeProfile(filepath.Join(root, strings.TrimSpace(definition.ID)), runtimeProfile); err != nil {
+		_ = customadapter.DeleteDefinition(root, definition.ID)
+		return err
+	}
+	return nil
 }
 
-func (m *AdapterManager) SaveCustomAdapterDefinition(platform string, raw json.RawMessage) error {
+func (m *AdapterManager) SaveCustomAdapterDefinition(platform string, raw json.RawMessage, runtimeProfile string) error {
 	if err := m.stopCustomPlatformInstances(platform); err != nil {
 		return err
 	}
 	if err := customadapter.SaveDefinition(m.CustomAdapterDir(), platform, raw); err != nil {
 		return err
 	}
+	if err := adapter.SaveCustomAdapterRuntimeProfile(filepath.Join(m.CustomAdapterDir(), platform), runtimeProfile); err != nil {
+		return err
+	}
 	return m.reloadCustomPlatformInstances(platform)
+}
+
+func (m *AdapterManager) AdapterPlatformRuntimeProfiles() map[string]string {
+	profiles := map[string]string{}
+	root := m.CustomAdapterDir()
+	if root == "" {
+		return profiles
+	}
+	for _, desc := range registry.List() {
+		if !desc.Custom {
+			continue
+		}
+		profileID, err := adapter.LoadCustomAdapterRuntimeProfile(filepath.Join(root, desc.Platform))
+		if err == nil && profileID != "" {
+			profiles[desc.Platform] = profileID
+		}
+	}
+	return profiles
 }
 
 func (m *AdapterManager) ReloadCustomAdapterDefinition(platform string) error {
@@ -298,6 +389,7 @@ func (m *AdapterManager) startAdapterLocked(config *AdapterConfig) error {
 		return fmt.Errorf("不支持的平台: %s", config.Platform)
 	}
 	parsedConfig, err := desc.ParseConfig(config.Config)
+	customRuntimeProfile := ""
 	if desc.Custom {
 		m.mu.RLock()
 		adapterDir := m.customAdapterDir
@@ -306,6 +398,10 @@ func (m *AdapterManager) startAdapterLocked(config *AdapterConfig) error {
 			return fmt.Errorf("自定义适配器目录未配置")
 		}
 		stored, loadErr := adapter.LoadCustomAdapterData(filepath.Join(adapterDir, config.Platform))
+		if loadErr != nil {
+			return loadErr
+		}
+		customRuntimeProfile, loadErr = adapter.LoadCustomAdapterRuntimeProfile(filepath.Join(adapterDir, config.Platform))
 		if loadErr != nil {
 			return loadErr
 		}
@@ -342,6 +438,9 @@ func (m *AdapterManager) startAdapterLocked(config *AdapterConfig) error {
 	adp, err := desc.NewAdapter(parsedConfig)
 	if err != nil {
 		return fmt.Errorf("创建 %s 适配器失败: %w", desc.DisplayName, err)
+	}
+	if runtimeProfileAware, ok := adp.(interface{ SetRuntimeProfile(string) }); ok {
+		runtimeProfileAware.SetRuntimeProfile(customRuntimeProfile)
 	}
 	if remarkAware, ok := adp.(interface{ SetRemark(string) }); ok {
 		remarkAware.SetRemark(config.Remark)

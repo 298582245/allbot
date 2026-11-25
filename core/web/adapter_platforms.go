@@ -14,11 +14,14 @@ func (s *Server) handleAdapterPlatforms(w http.ResponseWriter, r *http.Request) 
 	}
 	platforms := registry.List()
 	pins := map[string]bool{}
+	runtimeProfiles := map[string]string{}
 	if s.adapterManager != nil {
 		pins = s.adapterManager.AdapterPlatformPins()
+		runtimeProfiles = s.adapterManager.AdapterPlatformRuntimeProfiles()
 	}
 	for i := range platforms {
 		platforms[i].Pinned = pins[platforms[i].Platform]
+		platforms[i].RuntimeProfile = runtimeProfiles[platforms[i].Platform]
 	}
 	s.jsonResponse(w, platforms)
 }

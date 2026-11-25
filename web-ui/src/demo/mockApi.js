@@ -214,14 +214,14 @@ function handleRequest(request) {
     return { message: '适配器导入成功', id }
   }
   if (path === '/adapter-definitions' && method === 'post') {
-    const item = { ...data.manifest, platform: data.manifest.id, display_name: data.manifest.name, custom: true, pinned: false, entry: data.manifest.entry, config_schema: data.manifest.config_schema || [], capabilities: { send_text: true, send_image: true, send_file: true }, declared_capabilities: data.manifest.capabilities || [] }
+    const item = { ...data.manifest, runtime_profile: data.runtime_profile || '', platform: data.manifest.id, display_name: data.manifest.name, custom: true, pinned: false, entry: data.manifest.entry, config_schema: data.manifest.config_schema || [], capabilities: { send_text: true, send_image: true, send_file: true }, declared_capabilities: data.manifest.capabilities || [] }
     platformList.push(item)
     return { ok: true }
   }
   if (segments[0] === 'adapter-definitions' && segments.length === 2) {
     const item = platformList.find((platform) => platform.platform === id)
     if (!item || !item.custom) return { ok: false }
-    if (method === 'put') Object.assign(item, data.manifest, { display_name: data.manifest.name, capabilities: { send_text: true, send_image: true, send_file: true }, declared_capabilities: data.manifest.capabilities || [] })
+    if (method === 'put') Object.assign(item, data.manifest, { runtime_profile: data.runtime_profile || '', display_name: data.manifest.name, capabilities: { send_text: true, send_image: true, send_file: true }, declared_capabilities: data.manifest.capabilities || [] })
     if (method === 'delete') platformList.splice(platformList.indexOf(item), 1)
     if (method === 'post') { if (data.action === 'pin') item.pinned = true; if (data.action === 'unpin') item.pinned = false }
     return { ok: true }

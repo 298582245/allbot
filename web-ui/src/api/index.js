@@ -579,11 +579,11 @@ export const setAdapterPinned = (adapterId, pinned) => {
   })
 }
 
-export const createAdapterDefinition = (manifest, code) => {
+export const createAdapterDefinition = (manifest, code, runtimeProfile = '') => {
   return request({
     url: '/adapter-definitions',
     method: 'post',
-    data: { manifest, code }
+    data: { manifest, code, runtime_profile: runtimeProfile }
   })
 }
 
@@ -595,10 +595,10 @@ export const importAdapterDefinition = (data) => request({
   silent: true
 })
 
-export const saveAdapterDefinition = (platform, manifest) => request({
+export const saveAdapterDefinition = (platform, manifest, runtimeProfile = '') => request({
   url: `/adapter-definitions/${encodeURIComponent(platform)}`,
   method: 'put',
-  data: { manifest }
+  data: { manifest, runtime_profile: runtimeProfile }
 })
 
 export const reloadAdapterDefinition = (platform) => request({

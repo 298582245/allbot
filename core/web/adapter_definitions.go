@@ -12,14 +12,15 @@ func (s *Server) handleAdapterDefinitions(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var request struct {
-		Manifest json.RawMessage `json:"manifest"`
-		Code     string          `json:"code"`
+		Manifest       json.RawMessage `json:"manifest"`
+		Code           string          `json:"code"`
+		RuntimeProfile string          `json:"runtime_profile"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		s.jsonError(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
-	if err := s.adapterManager.CreateCustomAdapterDefinition(request.Manifest, request.Code); err != nil {
+	if err := s.adapterManager.CreateCustomAdapterDefinition(request.Manifest, request.Code, request.RuntimeProfile); err != nil {
 		s.jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -35,13 +36,14 @@ func (s *Server) handleAdapterDefinitionDetail(w http.ResponseWriter, r *http.Re
 	switch r.Method {
 	case http.MethodPut:
 		var request struct {
-			Manifest json.RawMessage `json:"manifest"`
+			Manifest       json.RawMessage `json:"manifest"`
+			RuntimeProfile string          `json:"runtime_profile"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			s.jsonError(w, "Invalid request", http.StatusBadRequest)
 			return
 		}
-		if err := s.adapterManager.SaveCustomAdapterDefinition(platform, request.Manifest); err != nil {
+		if err := s.adapterManager.SaveCustomAdapterDefinition(platform, request.Manifest, request.RuntimeProfile); err != nil {
 			s.jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}

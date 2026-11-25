@@ -32,7 +32,7 @@
 
             <div class="metadata-grid">
               <div><span class="meta-label">版本</span><span>{{ item.version || '1.0.0' }}</span></div>
-              <div><span class="meta-label">运行时</span><span>{{ item.runtime || 'Go' }}</span></div>
+              <div><span class="meta-label">运行时</span><span>{{ runtimeLabel(item) }}</span></div>
               <div><span class="meta-label">作者</span><span class="meta-value">{{ item.author || (item.custom ? '—' : 'AllBot') }}</span></div>
             </div>
             <div class="description">{{ item.description || '暂无介绍' }}</div>
@@ -74,6 +74,16 @@
             <el-radio-button value="nodejs">Node.js</el-radio-button>
             <el-radio-button value="python">Python</el-radio-button>
           </el-radio-group>
+        </el-form-item>
+        <el-form-item label="运行环境">
+          <el-select v-model="form.runtime_profile" clearable placeholder="使用默认运行环境" style="width: 100%">
+            <el-option
+              v-for="profile in runtimeProfilesBy(form.runtime)"
+              :key="profile.id"
+              :label="runtimeProfileLabel(profile)"
+              :value="profile.id"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="入口文件" prop="entry"><el-input v-model="form.entry" /></el-form-item>
         <el-form-item label="作者"><el-input v-model="form.author" /></el-form-item>
@@ -145,7 +155,7 @@ defineOptions({ name: 'AdapterManagement' })
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Document, Plus, Refresh, Setting, Star, StarFilled, Upload } from '@element-plus/icons-vue'
-import { createAdapterDefinition, deleteAdapterDefinition, getAdapterCode, getAdapterPlatforms, importAdapterDefinition, reloadAdapterDefinition, saveAdapterCode, saveAdapterDefinition, setAdapterPlatformPinned } from '@/api'
+import { createAdapterDefinition, deleteAdapterDefinition, getAdapterCode, getAdapterPlatforms, getRuntimeProfiles, importAdapterDefinition, reloadAdapterDefinition, saveAdapterCode, saveAdapterDefinition, setAdapterPlatformPinned } from '@/api'
 import StdPagination from '@/components/StdPagination.vue'
 import { inspectAdapterArchive, inspectAdapterDirectory } from '@/utils/adapterImport'
 
@@ -158,6 +168,7 @@ const keyword = ref('')
 const currentPage = ref(1)
 const pageSize = 9
 const platforms = ref([])
+const runtimeProfiles = ref([])
 const importVisible = ref(false)
 const importDirectoryInput = ref(null)
 const importArchiveInput = ref(null)
@@ -195,7 +206,7 @@ const configVisible = ref(false)
 const codeVisible = ref(false)
 const editing = ref(false)
 const formRef = ref(null)
-const form = reactive({ id: '', name: '', version: '1.0.0', runtime: 'nodejs', entry: 'main.js', author: '', description: '', schemaText: '[]', capabilities: [] })
+const form = reactive({ id: '', name: '', version: '1.0.0', runtime: 'nodejs', runtime_profile: '', entry: 'main.js', author: '', description: '', schemaText: '[]', capabilities: [] })
 const codePlatform = ref('')
 const codeTitle = ref('适配器代码')
 const codeFilename = ref('')
@@ -218,11 +229,41 @@ const filteredPlatforms = computed(() => {
 const pageItems = computed(() => filteredPlatforms.value.slice((currentPage.value - 1) * pageSize, currentPage.value * pageSize))
 watch(keyword, () => { currentPage.value = 1 })
 watch(filteredPlatforms, () => { if (currentPage.value > Math.max(1, Math.ceil(filteredPlatforms.value.length / pageSize))) currentPage.value = 1 })
+watch(() => form.runtime, runtime => {
+  if (!form.runtime_profile) return
+  const matched = runtimeProfiles.value.some(profile => profile.id === form.runtime_profile && profile.runtime === runtime)
+  if (!matched) form.runtime_profile = ''
+})
 
 async function loadPlatforms() {
   loading.value = true
   try { const result = await getAdapterPlatforms(); platforms.value = Array.isArray(result) ? result : [] }
   finally { loading.value = false }
+}
+
+async function loadRuntimeProfiles() {
+  try {
+    const result = await getRuntimeProfiles()
+    runtimeProfiles.value = Array.isArray(result) ? result : []
+  } catch {
+    runtimeProfiles.value = []
+  }
+}
+
+function runtimeProfilesBy(runtime) {
+  return runtimeProfiles.value.filter(profile => profile.runtime === runtime && profile.enabled)
+}
+
+function runtimeProfileLabel(profile) {
+  const version = profile.requested_version || profile.version
+  const versionLabel = version ? ` · ${version}` : ''
+  return `${profile.name || profile.id}${versionLabel}${profile.default ? '（默认）' : ''}`
+}
+
+function runtimeLabel(item) {
+  if (!item.runtime) return 'Go'
+  const profile = runtimeProfiles.value.find(value => value.id === item.runtime_profile)
+  return `${item.runtime === 'python' ? 'Python' : 'Node.js'}${profile ? ` · ${runtimeProfileLabel(profile)}` : ''}`
 }
 
 function createEmptyImportState() {
@@ -290,13 +331,13 @@ async function submitAdapterImport() {
 
 function openCreate() {
   editing.value = false
-  Object.assign(form, { id: '', name: '', version: '1.0.0', runtime: 'nodejs', entry: 'main.js', author: '', description: '', schemaText: '[]', capabilities: [] })
+  Object.assign(form, { id: '', name: '', version: '1.0.0', runtime: 'nodejs', runtime_profile: '', entry: 'main.js', author: '', description: '', schemaText: '[]', capabilities: [] })
   configVisible.value = true
 }
 
 function openConfig(item) {
   editing.value = true
-  Object.assign(form, { id: item.platform, name: item.display_name, version: item.version, runtime: item.runtime, entry: item.entry, author: item.author || '', description: item.description || '', schemaText: JSON.stringify(item.config_schema || [], null, 2), capabilities: readDeclaredCapabilities(item) })
+  Object.assign(form, { id: item.platform, name: item.display_name, version: item.version, runtime: item.runtime, runtime_profile: item.runtime_profile || '', entry: item.entry, author: item.author || '', description: item.description || '', schemaText: JSON.stringify(item.config_schema || [], null, 2), capabilities: readDeclaredCapabilities(item) })
   configVisible.value = true
 }
 
@@ -343,8 +384,9 @@ async function saveDefinition() {
   saving.value = true
   try {
     const manifest = manifestFromForm()
-    if (editing.value) await saveAdapterDefinition(form.id, manifest)
-    else await createAdapterDefinition(manifest, defaultCode())
+    const runtimeProfile = String(form.runtime_profile || '').trim()
+    if (editing.value) await saveAdapterDefinition(form.id, manifest, runtimeProfile)
+    else await createAdapterDefinition(manifest, defaultCode(), runtimeProfile)
     ElMessage.success(editing.value ? '适配器配置已保存' : '适配器定义已创建')
     configVisible.value = false
     await loadPlatforms()
@@ -386,7 +428,7 @@ async function saveCode() {
 }
 
 function clearValidation() { formRef.value?.clearValidate() }
-onMounted(loadPlatforms)
+onMounted(() => { loadPlatforms(); loadRuntimeProfiles() })
 </script>
 
 <style scoped>

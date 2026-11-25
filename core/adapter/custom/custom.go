@@ -31,6 +31,7 @@ var safeID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 var runtimeMu sync.RWMutex
 var nodeExecutable = "node"
 var pythonExecutable = "python"
+var runtimeResolver func(runtimeName, profileID string) (string, string, error)
 
 func SetRuntimeExecutables(node, python string) {
 	runtimeMu.Lock()
@@ -41,6 +42,12 @@ func SetRuntimeExecutables(node, python string) {
 	if strings.TrimSpace(python) != "" {
 		pythonExecutable = python
 	}
+}
+
+func SetRuntimeResolver(resolve func(runtimeName, profileID string) (string, string, error)) {
+	runtimeMu.Lock()
+	defer runtimeMu.Unlock()
+	runtimeResolver = resolve
 }
 
 func NewCallbackToken() (string, error) {
@@ -109,6 +116,21 @@ func LoadOne(root, id string, replace bool) error {
 	if err != nil {
 		return err
 	}
+	var manifestFields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &manifestFields); err != nil {
+		return fmt.Errorf("adapter.json 无效: %w", err)
+	}
+	if _, hasLocalProfile := manifestFields["runtime_profile"]; hasLocalProfile {
+		delete(manifestFields, "runtime_profile")
+		cleanData, err := json.MarshalIndent(manifestFields, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, manifestName), cleanData, 0644); err != nil {
+			return err
+		}
+		data = cleanData
+	}
 	var m manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return fmt.Errorf("adapter.json 无效: %w", err)
@@ -162,6 +184,10 @@ func CreateDefinition(root string, raw json.RawMessage, code string) error {
 	if filepath.IsAbs(m.Entry) || filepath.Clean(m.Entry) != m.Entry || strings.HasPrefix(m.Entry, "..") {
 		return fmt.Errorf("entry 必须是适配器目录内的相对路径")
 	}
+	raw, err := manifestWithoutLocalRuntimeProfile(raw)
+	if err != nil {
+		return err
+	}
 	dir := filepath.Join(root, strings.TrimSpace(m.ID))
 	if _, err := os.Stat(dir); err == nil {
 		return fmt.Errorf("适配器 ID 已存在")
@@ -199,6 +225,10 @@ func SaveDefinition(root, id string, raw json.RawMessage) error {
 	}
 	dir := filepath.Join(root, id)
 	if err := validateManifest(&m, dir); err != nil {
+		return err
+	}
+	raw, err := manifestWithoutLocalRuntimeProfile(raw)
+	if err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(dir, manifestName), raw, 0644); err != nil {
@@ -258,6 +288,19 @@ func validateManifest(m *manifest, dir string) error {
 		}
 	}
 	return nil
+}
+
+func manifestWithoutLocalRuntimeProfile(raw json.RawMessage) (json.RawMessage, error) {
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, fmt.Errorf("adapter.json 无效: %w", err)
+	}
+	delete(values, "runtime_profile")
+	encoded, err := json.MarshalIndent(values, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return encoded, nil
 }
 
 func capabilitiesFor(items []string) _registry.Capabilities {
@@ -323,17 +366,18 @@ func fromMessage(msg *types.Message) *messagePayload {
 }
 
 type processAdapter struct {
-	cfg          launchConfig
-	capabilities map[string]bool
-	remark       string
-	cmd          *exec.Cmd
-	stdin        io.WriteCloser
-	mu           sync.Mutex
-	writeMu      sync.Mutex
-	waiters      map[string]chan wire
-	nextID       atomic.Uint64
-	handler      func(*types.Message)
-	stopped      atomic.Bool
+	cfg            launchConfig
+	capabilities   map[string]bool
+	remark         string
+	runtimeProfile string
+	cmd            *exec.Cmd
+	stdin          io.WriteCloser
+	mu             sync.Mutex
+	writeMu        sync.Mutex
+	waiters        map[string]chan wire
+	nextID         atomic.Uint64
+	handler        func(*types.Message)
+	stopped        atomic.Bool
 }
 
 func newProcessAdapter(cfg launchConfig) *processAdapter {
@@ -355,6 +399,9 @@ func (a *processAdapter) SetMessageHandler(handler func(*types.Message)) {
 	a.handler = handler
 	a.mu.Unlock()
 }
+func (a *processAdapter) SetRuntimeProfile(profileID string) {
+	a.runtimeProfile = strings.TrimSpace(profileID)
+}
 func (a *processAdapter) Start() error {
 	dir, err := filepath.Abs(a.cfg.Dir)
 	if err != nil {
@@ -362,9 +409,26 @@ func (a *processAdapter) Start() error {
 	}
 	entry := filepath.Join(dir, a.cfg.Manifest.Entry)
 	var cmd *exec.Cmd
+	var runtimeProfileID, nodePath string
 	runtimeMu.RLock()
 	node, python := nodeExecutable, pythonExecutable
+	resolver := runtimeResolver
 	runtimeMu.RUnlock()
+	if profileID := a.runtimeProfile; profileID != "" {
+		if resolver == nil {
+			return fmt.Errorf("无法解析运行环境 Profile: %s", profileID)
+		}
+		executable, resolvedNodePath, err := resolver(a.cfg.Manifest.Runtime, profileID)
+		if err != nil {
+			return fmt.Errorf("解析运行环境 Profile %s 失败: %w", profileID, err)
+		}
+		runtimeProfileID, nodePath = profileID, resolvedNodePath
+		if a.cfg.Manifest.Runtime == "nodejs" {
+			node = executable
+		} else {
+			python = executable
+		}
+	}
 	if a.cfg.Manifest.Runtime == "nodejs" {
 		cmd = exec.Command(node, entry)
 	} else {
@@ -372,6 +436,12 @@ func (a *processAdapter) Start() error {
 	}
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "ALLBOT_ADAPTER_ID="+a.cfg.Manifest.ID, "ALLBOT_ADAPTER_PROTOCOL=1")
+	if runtimeProfileID != "" {
+		cmd.Env = append(cmd.Env, "ALLBOT_RUNTIME_PROFILE="+runtimeProfileID)
+	}
+	if nodePath != "" && a.cfg.Manifest.Runtime == "nodejs" {
+		cmd.Env = append(cmd.Env, "NODE_PATH="+nodePath)
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -415,6 +485,7 @@ func (a *processAdapter) Start() error {
 	}
 	return nil
 }
+
 func (a *processAdapter) Stop() error {
 	if !a.stopped.CompareAndSwap(false, true) {
 		return nil

@@ -91,3 +91,6 @@ docs/*
 
 # 恢复 docs 根目录下的所有文件
 !docs/*.*
+
+# 忽略 docs 中文件名包含 plan 的文件
+docs/**/*plan*

@@ -42,6 +42,7 @@ type Descriptor struct {
 	Version              string        `json:"version,omitempty"`
 	Author               string        `json:"author,omitempty"`
 	Runtime              string        `json:"runtime,omitempty"`
+	RuntimeProfile       string        `json:"runtime_profile,omitempty"`
 	Custom               bool          `json:"custom,omitempty"`
 	Pinned               bool          `json:"pinned"`
 	Entry                string        `json:"entry,omitempty"`

@@ -1,0 +1,1 @@
+import{u as l}from"./uiSettings-BXrIbVl6.js";import{f as i,a2 as u}from"./vue-vendor-DNGhiyBg.js";const c=r=>{const t=l();let e=null;const o=i(()=>[t.loaded,t.autoRefresh,t.refreshInterval],([s,a,n])=>{e&&clearInterval(e),e=s&&a?window.setInterval(r,n*1e3):null},{immediate:!0});t.loadSettings(),u(()=>{e&&clearInterval(e),o()})};export{c as u};
