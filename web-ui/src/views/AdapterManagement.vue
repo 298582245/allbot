@@ -107,16 +107,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="codeVisible" :title="codeTitle" width="min(960px, 94vw)" top="5vh">
-      <div v-loading="codeLoading" class="code-editor">
-        <div class="code-file">{{ codeFilename }}</div>
-        <el-input v-model="codeText" type="textarea" :rows="24" resize="none" spellcheck="false" />
-      </div>
-      <template #footer>
-        <el-button @click="codeVisible = false">关闭</el-button>
-        <el-button type="primary" :loading="codeSaving" @click="saveCode">保存并重载</el-button>
-      </template>
-    </el-dialog>
+    <AdapterCodeEditor v-if="codeVisible" v-model="codeVisible" :platform="codePlatform" :title="codeTitle" @saved="loadPlatforms" />
 
     <el-dialog v-model="importVisible" title="导入适配器" width="720px" @closed="clearImportSelection">
       <input ref="importDirectoryInput" type="file" multiple webkitdirectory directory hidden @change="handleDirectorySelected" />
@@ -152,18 +143,18 @@
 
 <script setup>
 defineOptions({ name: 'AdapterManagement' })
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Document, Plus, Refresh, Setting, Star, StarFilled, Upload } from '@element-plus/icons-vue'
-import { createAdapterDefinition, deleteAdapterDefinition, getAdapterCode, getAdapterPlatforms, getRuntimeProfiles, importAdapterDefinition, reloadAdapterDefinition, saveAdapterCode, saveAdapterDefinition, setAdapterPlatformPinned } from '@/api'
+import { createAdapterDefinition, deleteAdapterDefinition, getAdapterPlatforms, getRuntimeProfiles, importAdapterDefinition, reloadAdapterDefinition, saveAdapterDefinition, setAdapterPlatformPinned } from '@/api'
 import StdPagination from '@/components/StdPagination.vue'
 import { inspectAdapterArchive, inspectAdapterDirectory } from '@/utils/adapterImport'
+
+const AdapterCodeEditor = defineAsyncComponent(() => import('@/components/AdapterCodeEditor.vue'))
 
 const loading = ref(false)
 const saving = ref(false)
 const importSaving = ref(false)
-const codeLoading = ref(false)
-const codeSaving = ref(false)
 const keyword = ref('')
 const currentPage = ref(1)
 const pageSize = 9
@@ -209,8 +200,6 @@ const formRef = ref(null)
 const form = reactive({ id: '', name: '', version: '1.0.0', runtime: 'nodejs', runtime_profile: '', entry: 'main.js', author: '', description: '', schemaText: '[]', capabilities: [] })
 const codePlatform = ref('')
 const codeTitle = ref('适配器代码')
-const codeFilename = ref('')
-const codeText = ref('')
 
 const rules = {
   id: [{ required: true, message: '请输入适配器 ID', trigger: 'blur' }, { pattern: /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/, message: 'ID 仅支持字母、数字、点、下划线和连字符', trigger: 'blur' }],
@@ -412,19 +401,10 @@ async function removeDefinition(item) {
   await loadPlatforms()
 }
 
-async function openCode(item) {
+function openCode(item) {
   codePlatform.value = item.platform
-  codeTitle.value = `${item.display_name} · 入口代码`
+  codeTitle.value = `${item.display_name} · 适配器文件`
   codeVisible.value = true
-  codeLoading.value = true
-  try { const result = await getAdapterCode(item.platform); codeFilename.value = result.filename; codeText.value = result.code || '' }
-  finally { codeLoading.value = false }
-}
-
-async function saveCode() {
-  codeSaving.value = true
-  try { await saveAdapterCode(codePlatform.value, codeText.value); ElMessage.success('代码已保存并重载'); codeVisible.value = false; await loadPlatforms() }
-  finally { codeSaving.value = false }
 }
 
 function clearValidation() { formRef.value?.clearValidate() }

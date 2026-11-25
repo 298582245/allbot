@@ -8,6 +8,7 @@ const clone = (value) => {
 }
 
 const now = () => new Date().toISOString()
+const adapterFiles = new Map()
 
 const demoState = {
   plugins: [
@@ -227,8 +228,39 @@ function handleRequest(request) {
     return { ok: true }
   }
   if (segments[0] === 'adapter-code' && segments.length === 2) {
-    if (method === 'get') return { platform: id, filename: 'main.js', code: '// Demo adapter source\n' }
-    return { ok: true, message: '演示代码已保存' }
+    const adapter = platformList.find(item => item.platform === id && item.custom)
+    if (!adapter) throw new Error('自定义适配器不存在')
+    const entry = adapter.entry || 'main.js'
+    if (!adapterFiles.has(id)) adapterFiles.set(id, new Map([
+      [entry, entry.endsWith('.py') ? '# Demo adapter source\n' : '// Demo adapter source\n'],
+      ['adapter.json', JSON.stringify({ id, name: adapter.display_name, version: adapter.version, runtime: adapter.runtime, entry, protocol_version: '1', config_schema: adapter.config_schema || [], capabilities: adapter.declared_capabilities || [] }, null, 2)],
+      ['README.md', '# 演示自定义适配器\n']
+    ]))
+    const files = adapterFiles.get(id)
+    if (method === 'get' && params.get('tree') === '1') {
+      const tree = []
+      for (const path of files.keys()) {
+        let children = tree
+        const parts = path.split('/')
+        parts.forEach((name, index) => {
+          const nodePath = parts.slice(0, index + 1).join('/')
+          let node = children.find(item => item.path === nodePath)
+          if (!node) { node = { name, path: nodePath, type: index === parts.length - 1 ? 'file' : 'directory', children: [] }; children.push(node) }
+          children = node.children
+        })
+      }
+      return { entry, tree }
+    }
+    const path = (method === 'get' ? params.get('path') : data.path) || entry
+    if (!files.has(path)) throw new Error('文件不存在')
+    if (method === 'get') return { platform: id, filename: path, code: files.get(path), editable: true }
+    if (path === 'adapter.json') {
+      const manifest = JSON.parse(data.code)
+      if (manifest.id !== id) throw new Error('适配器 ID 不允许修改')
+      Object.assign(adapter, manifest, { display_name: manifest.name, declared_capabilities: manifest.capabilities || [] })
+    }
+    files.set(path, data.code)
+    return { ok: true, message: '文件已保存并重载' }
   }
   if (path === '/adapters' && method === 'get') return clone(demoState.adapters)
   if (segments[0] === 'adapters' && segments.length === 2) {

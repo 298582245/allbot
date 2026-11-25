@@ -618,18 +618,19 @@ export const deleteAdapterDefinition = (platform) => request({
   method: 'delete'
 })
 
-export const getAdapterCode = (platform) => {
+export const getAdapterCode = (platform, params = {}) => {
   return request({
     url: `/adapter-code/${encodeURIComponent(platform)}`,
-    method: 'get'
+    method: 'get',
+    params
   })
 }
 
-export const saveAdapterCode = (platform, code) => {
+export const saveAdapterCode = (platform, code, path = '', expectedSHA256 = '') => {
   return request({
     url: `/adapter-code/${encodeURIComponent(platform)}`,
     method: 'put',
-    data: { code }
+    data: { code, path, expected_sha256: expectedSHA256 }
   })
 }
 

@@ -284,6 +284,31 @@ class KookAdapter {
     await this.sendToTarget(target, markdown, 9);
   }
 
+  async sendRich({ target, message }) {
+    const modules = [];
+    for (const part of message.parts || []) {
+      if (part.type === 'image' && part.url) {
+        modules.push({
+          type: 'container',
+          elements: [{ type: 'image', src: await this.uploadMedia(part.url), alt: part.alt || '' }],
+        });
+      } else if (part.type === 'text' || part.type === 'markdown') {
+        const content = part.type === 'markdown' ? part.markdown : part.text;
+        if (String(content || '').trim()) {
+          modules.push({
+            type: 'section',
+            text: { type: part.type === 'markdown' ? 'kmarkdown' : 'plain-text', content },
+          });
+        }
+      }
+    }
+    if (!modules.length) {
+      if (message.fallback_text) await this.sendText({ target, text: message.fallback_text });
+      return;
+    }
+    await this.sendToTarget(target, JSON.stringify([{ type: 'card', theme: 'secondary', size: 'lg', modules }]), 10);
+  }
+
   async uploadFile(bytes, filename, contentType = 'application/octet-stream') {
     const form = new FormData();
     form.append('file', new Blob([bytes], { type: contentType }), filename);
@@ -300,16 +325,18 @@ class KookAdapter {
     return this.uploadFile(bytes, filename, response.headers.get('content-type') || 'application/octet-stream');
   }
 
-  async sendMedia(target, urlOrPath, type) {
+  async uploadMedia(urlOrPath) {
     const isUrl = /^https?:\/\//i.test(String(urlOrPath));
-    let uploadedUrl;
     if (isUrl) {
-      uploadedUrl = await this.uploadUrl(String(urlOrPath));
-    } else {
-      const fs = require('node:fs/promises');
-      const filePath = path.resolve(String(urlOrPath));
-      uploadedUrl = await this.uploadFile(await fs.readFile(filePath), path.basename(filePath));
+      return this.uploadUrl(String(urlOrPath));
     }
+    const fs = require('node:fs/promises');
+    const filePath = path.resolve(String(urlOrPath));
+    return this.uploadFile(await fs.readFile(filePath), path.basename(filePath));
+  }
+
+  async sendMedia(target, urlOrPath, type) {
+    const uploadedUrl = await this.uploadMedia(urlOrPath);
     await this.sendToTarget(target, uploadedUrl, type);
   }
 
