@@ -149,20 +149,20 @@ func (a *TelegramAdapter) Start() error {
 
 	// 删除 webhook（如果存在），以便使用 long polling
 	if err := a.deleteWebhook(); err != nil {
-		log.Printf("警告：删除 webhook 失败: %v", err)
+		log.Printf("警告：删除 Telegram webhook 失败%s: %v", a.remarkTag(), err)
 	}
 
 	// 启动长轮询
 	go a.pollUpdates()
 
-	log.Printf("Telegram Adapter 已启动")
+	log.Printf("Telegram Adapter 已启动%s", a.remarkTag())
 	return nil
 }
 
 // Stop 停止适配器
 func (a *TelegramAdapter) Stop() error {
 	close(a.stopChan)
-	log.Printf("Telegram Adapter 已停止")
+	log.Printf("Telegram Adapter 已停止%s", a.remarkTag())
 	return nil
 }
 
@@ -220,7 +220,7 @@ func (a *TelegramAdapter) deleteWebhook() error {
 		return fmt.Errorf("删除 webhook 失败 (状态码 %d): %s", resp.StatusCode, string(body))
 	}
 
-	log.Printf("Telegram webhook 已删除，切换到 long polling 模式")
+	log.Printf("Telegram webhook 已删除%s，切换到 long polling 模式", a.remarkTag())
 	return nil
 }
 
@@ -237,9 +237,9 @@ func (a *TelegramAdapter) pollUpdates() {
 				failureCount++
 				maskedError := utils.MaskSensitiveError(err)
 				if failureCount == 1 {
-					log.Printf("[WARN][Telegram] 获取更新异常: %s", maskedError)
+					log.Printf("[WARN][Telegram]%s 获取更新异常: %s", a.remarkTag(), maskedError)
 				} else if failureCount%10 == 0 {
-					log.Printf("[WARN][Telegram] 获取更新持续异常 %d 次，最近一次: %s", failureCount, maskedError)
+					log.Printf("[WARN][Telegram]%s 获取更新持续异常 %d 次，最近一次: %s", a.remarkTag(), failureCount, maskedError)
 				}
 				if !a.waitBeforeRetry(telegramPollRetryDelay(failureCount)) {
 					return
@@ -248,7 +248,7 @@ func (a *TelegramAdapter) pollUpdates() {
 			}
 
 			if failureCount > 0 {
-				log.Printf("[INFO][Telegram] 网络轮询已恢复，之前连续异常 %d 次", failureCount)
+				log.Printf("[INFO][Telegram]%s 网络轮询已恢复，之前连续异常 %d 次", a.remarkTag(), failureCount)
 				failureCount = 0
 			}
 
@@ -567,7 +567,7 @@ func (a *TelegramAdapter) telegramMediaURL(media map[string]interface{}) string 
 	}
 	if err := a.callAPIWithResult("/getFile", map[string]interface{}{"file_id": fileID}, &response); err != nil || !response.OK {
 		if err != nil {
-			log.Printf("[WARN][Telegram] 获取媒体临时链接失败: %v", err)
+			log.Printf("[WARN][Telegram]%s 获取媒体临时链接失败: %v", a.remarkTag(), err)
 		}
 		return ""
 	}
@@ -582,7 +582,7 @@ func (a *TelegramAdapter) telegramMediaURL(media map[string]interface{}) string 
 	}
 	fileResponse, err := a.httpClient.Do(request)
 	if err != nil {
-		log.Printf("[WARN][Telegram] 下载媒体失败: %v", err)
+		log.Printf("[WARN][Telegram]%s 下载媒体失败: %v", a.remarkTag(), err)
 		return ""
 	}
 	defer fileResponse.Body.Close()

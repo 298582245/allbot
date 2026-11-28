@@ -219,7 +219,7 @@ func (a *QQOfficeAdapter) Start() error {
 	}
 	a.running.Store(true)
 	go a.gatewayLoop()
-	log.Printf("QQ 官方机器人 Adapter 已启动")
+	log.Printf("QQ 官方机器人 Adapter 已启动%s", a.remarkTag())
 	return nil
 }
 
@@ -229,7 +229,7 @@ func (a *QQOfficeAdapter) Stop() error {
 		close(a.stopChan)
 	})
 	a.closeCurrentConn()
-	log.Printf("QQ 官方机器人 Adapter 已停止")
+	log.Printf("QQ 官方机器人 Adapter 已停止%s", a.remarkTag())
 	return nil
 }
 
@@ -728,7 +728,7 @@ func (a *QQOfficeAdapter) callAPIWithPassiveFallback(path string, body map[strin
 	}
 	delete(body, "msg_id")
 	delete(body, "msg_seq")
-	log.Printf("[WARN][QQ官方] 被动回复超过限制，改用主动消息重发: target=%s_%s err=%v", target.kind, target.id, err)
+	log.Printf("[WARN][QQ官方]%s 被动回复超过限制，改用主动消息重发: target=%s_%s err=%v", a.remarkTag(), target.kind, target.id, err)
 	return a.callAPI(http.MethodPost, path, body, nil)
 }
 
@@ -801,9 +801,9 @@ func (a *QQOfficeAdapter) gatewayLoop() {
 			}
 			failureCount++
 			if failureCount == 1 {
-				log.Printf("[WARN][QQ官方] Gateway 异常: %v", err)
+				log.Printf("[WARN][QQ官方]%s Gateway 异常: %v", a.remarkTag(), err)
 			} else if failureCount%10 == 0 {
-				log.Printf("[WARN][QQ官方] Gateway 持续异常 %d 次，最近一次: %v", failureCount, err)
+				log.Printf("[WARN][QQ官方]%s Gateway 持续异常 %d 次，最近一次: %v", a.remarkTag(), failureCount, err)
 			}
 			if !a.waitBeforeRetry(qqOfficeRetryDelay(failureCount)) {
 				return
@@ -812,7 +812,7 @@ func (a *QQOfficeAdapter) gatewayLoop() {
 		}
 
 		if failureCount > 0 {
-			log.Printf("[INFO][QQ官方] Gateway 连接已恢复，之前连续异常 %d 次", failureCount)
+			log.Printf("[INFO][QQ官方]%s Gateway 连接已恢复，之前连续异常 %d 次", a.remarkTag(), failureCount)
 			failureCount = 0
 		}
 	}
@@ -850,7 +850,7 @@ func (a *QQOfficeAdapter) connectAndReadGateway() error {
 	if err := a.sendIdentify(); err != nil {
 		return fmt.Errorf("发送 Identify 失败: %w", err)
 	}
-	log.Printf("[INFO][QQ官方] Gateway 已连接，已订阅频道/DMS/C2C/群聊/群成员/群事件")
+	log.Printf("[INFO][QQ官方]%s Gateway 已连接，已订阅频道/DMS/C2C/群聊/群成员/群事件", a.remarkTag())
 
 	heartbeatDone := make(chan struct{})
 	defer close(heartbeatDone)
@@ -894,7 +894,7 @@ func (a *QQOfficeAdapter) heartbeatLoop(interval time.Duration, done <-chan stru
 			return
 		case <-ticker.C:
 			if err := a.sendGatewayPayload(1, atomic.LoadInt64(&a.lastSeq)); err != nil {
-				log.Printf("[WARN][QQ官方] Heartbeat 发送失败: %v", err)
+				log.Printf("[WARN][QQ官方]%s Heartbeat 发送失败: %v", a.remarkTag(), err)
 				return
 			}
 		}
@@ -915,20 +915,20 @@ func (a *QQOfficeAdapter) readGatewayLoop(reader *bufio.Reader) error {
 			var data map[string]interface{}
 			if len(payload.D) > 0 {
 				if err := json.Unmarshal(payload.D, &data); err != nil {
-					log.Printf("[WARN][QQ官方] Dispatch 解析失败: %v", err)
+					log.Printf("[WARN][QQ官方]%s Dispatch 解析失败: %v", a.remarkTag(), err)
 					continue
 				}
 			}
 			a.handleDispatch(payload.T, data)
 		case 7:
-			log.Printf("[WARN][QQ官方] Gateway 要求重连")
+			log.Printf("[WARN][QQ官方]%s Gateway 要求重连", a.remarkTag())
 			return fmt.Errorf("Gateway 要求重连")
 		case 9:
-			log.Printf("[WARN][QQ官方] Gateway 会话无效: %s", qqOfficePayloadSummary(payload.D))
+			log.Printf("[WARN][QQ官方]%s Gateway 会话无效: %s", a.remarkTag(), qqOfficePayloadSummary(payload.D))
 			return fmt.Errorf("Gateway 会话无效")
 		case 10, 11:
 		default:
-			log.Printf("[INFO][QQ官方] Gateway 忽略 op=%d", payload.Op)
+			log.Printf("[INFO][QQ官方]%s Gateway 忽略 op=%d", a.remarkTag(), payload.Op)
 		}
 	}
 }
@@ -957,7 +957,7 @@ func (a *QQOfficeAdapter) readGatewayPayload(reader *bufio.Reader) (qqOfficeGate
 func (a *QQOfficeAdapter) handleDispatch(eventType string, data map[string]interface{}) {
 	switch eventType {
 	case "READY":
-		log.Printf("[INFO][QQ官方] Gateway READY: session_id=%s", stringValue(data["session_id"]))
+		log.Printf("[INFO][QQ官方]%s Gateway READY: session_id=%s", a.remarkTag(), stringValue(data["session_id"]))
 	case "DIRECT_MESSAGE_CREATE":
 		a.handleDirectMessage(data)
 	case "C2C_MESSAGE_CREATE":
@@ -972,7 +972,7 @@ func (a *QQOfficeAdapter) handleDispatch(eventType string, data map[string]inter
 		a.handleInteractionCreate(data)
 	default:
 		if eventType != "" {
-			log.Printf("[INFO][QQ官方] Gateway 收到未处理事件: %s", eventType)
+			log.Printf("[INFO][QQ官方]%s Gateway 收到未处理事件: %s", a.remarkTag(), eventType)
 		}
 	}
 }
@@ -1154,7 +1154,7 @@ func qqOfficeMediaName(data map[string]interface{}, mediaURL string) string {
 func (a *QQOfficeAdapter) handleDirectMessage(data map[string]interface{}) {
 	content, medias, mediaOnly := qqOfficeMessageContent(data)
 	if content == "" {
-		log.Printf("[INFO][QQ官方] 忽略空 DMS 消息: id=%s guild=%s", stringValue(data["id"]), stringValue(data["guild_id"]))
+		log.Printf("[INFO][QQ官方]%s 忽略空 DMS 消息: id=%s guild=%s", a.remarkTag(), stringValue(data["id"]), stringValue(data["guild_id"]))
 		return
 	}
 	messageID := stringValue(data["id"])
@@ -1193,7 +1193,7 @@ func (a *QQOfficeAdapter) handleDirectMessage(data map[string]interface{}) {
 func (a *QQOfficeAdapter) handleC2CMessage(data map[string]interface{}) {
 	content, medias, mediaOnly := qqOfficeMessageContent(data)
 	if content == "" {
-		log.Printf("[INFO][QQ官方] 忽略空 C2C 消息: id=%s", stringValue(data["id"]))
+		log.Printf("[INFO][QQ官方]%s 忽略空 C2C 消息: id=%s", a.remarkTag(), stringValue(data["id"]))
 		return
 	}
 	messageID := stringValue(data["id"])
@@ -1205,7 +1205,7 @@ func (a *QQOfficeAdapter) handleC2CMessage(data map[string]interface{}) {
 		userOpenID = stringValue(author["id"])
 	}
 	if userOpenID == "" {
-		log.Printf("[WARN][QQ官方] 忽略缺少 user_openid 的 C2C 消息: id=%s", messageID)
+		log.Printf("[WARN][QQ官方]%s 忽略缺少 user_openid 的 C2C 消息: id=%s", a.remarkTag(), messageID)
 		return
 	}
 
@@ -1236,13 +1236,13 @@ func (a *QQOfficeAdapter) handleGroupAtMessage(data map[string]interface{}) {
 func (a *QQOfficeAdapter) handleGroupMessage(eventType string, data map[string]interface{}) {
 	content, medias, mediaOnly := qqOfficeMessageContent(data)
 	if content == "" {
-		log.Printf("[INFO][QQ官方] 忽略空群聊消息: id=%s group=%s", stringValue(data["id"]), stringValue(data["group_openid"]))
+		log.Printf("[INFO][QQ官方]%s 忽略空群聊消息: id=%s group=%s", a.remarkTag(), stringValue(data["id"]), stringValue(data["group_openid"]))
 		return
 	}
 	messageID := stringValue(data["id"])
 	groupOpenID := stringValue(data["group_openid"])
 	if groupOpenID == "" {
-		log.Printf("[WARN][QQ官方] 忽略缺少 group_openid 的群聊消息: id=%s", messageID)
+		log.Printf("[WARN][QQ官方]%s 忽略缺少 group_openid 的群聊消息: id=%s", a.remarkTag(), messageID)
 		return
 	}
 	author, _ := data["author"].(map[string]interface{})
@@ -1255,7 +1255,7 @@ func (a *QQOfficeAdapter) handleGroupMessage(eventType string, data map[string]i
 		memberOpenID = stringValue(author["id"])
 	}
 	if memberOpenID == "" {
-		log.Printf("[WARN][QQ官方] 忽略缺少 member_openid 的群聊消息: id=%s group=%s", messageID, groupOpenID)
+		log.Printf("[WARN][QQ官方]%s 忽略缺少 member_openid 的群聊消息: id=%s group=%s", a.remarkTag(), messageID, groupOpenID)
 		return
 	}
 
@@ -1363,11 +1363,11 @@ func (a *QQOfficeAdapter) setQQOfficeBotMetadata(metadata map[string]string, isB
 func (a *QQOfficeAdapter) handleInteractionCreate(data map[string]interface{}) {
 	eventID := stringValue(data["id"])
 	if err := a.ackInteraction(eventID); err != nil {
-		log.Printf("[WARN][QQ官方] 按钮交互 ACK 失败: id=%s err=%v", eventID, err)
+		log.Printf("[WARN][QQ官方]%s 按钮交互 ACK 失败: id=%s err=%v", a.remarkTag(), eventID, err)
 	}
 	content := qqOfficeInteractionData(data)
 	if strings.TrimSpace(content) == "" {
-		log.Printf("[INFO][QQ官方] 忽略空按钮交互: id=%s summary=%s", eventID, qqOfficeMapSummary(data))
+		log.Printf("[INFO][QQ官方]%s 忽略空按钮交互: id=%s summary=%s", a.remarkTag(), eventID, qqOfficeMapSummary(data))
 		return
 	}
 	groupOpenID := stringValue(data["group_openid"])
@@ -1376,7 +1376,7 @@ func (a *QQOfficeAdapter) handleInteractionCreate(data map[string]interface{}) {
 	}
 	userID := qqOfficeInteractionUserID(data)
 	if userID == "" {
-		log.Printf("[WARN][QQ官方] 忽略缺少用户标识的按钮交互: id=%s summary=%s", eventID, qqOfficeMapSummary(data))
+		log.Printf("[WARN][QQ官方]%s 忽略缺少用户标识的按钮交互: id=%s summary=%s", a.remarkTag(), eventID, qqOfficeMapSummary(data))
 		return
 	}
 	metadata := map[string]string{
@@ -1399,7 +1399,7 @@ func (a *QQOfficeAdapter) handleInteractionCreate(data map[string]interface{}) {
 		Content:  strings.TrimSpace(content),
 		Metadata: metadata,
 	}
-	log.Printf("[交互][QQ官方][%s(按钮 %s)]：%s", userID, groupOpenID, msg.Content)
+	log.Printf("[交互][QQ官方]%s[%s(按钮 %s)]：%s", a.remarkTag(), userID, groupOpenID, msg.Content)
 	a.dispatchMessage(msg)
 }
 
@@ -1501,7 +1501,7 @@ func (a *QQOfficeAdapter) handleQQOfficeEvent(eventType string, data map[string]
 		Content:  eventType,
 		Metadata: metadata,
 	}
-	log.Printf("[事件][QQ官方][%s][群 %s][用户 %s]", eventType, groupOpenID, userID)
+	log.Printf("[事件][QQ官方]%s[%s][群 %s][用户 %s]", a.remarkTag(), eventType, groupOpenID, userID)
 	a.dispatchMessage(msg)
 }
 

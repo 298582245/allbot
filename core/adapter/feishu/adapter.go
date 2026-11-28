@@ -195,7 +195,7 @@ func (a *FeishuAdapter) Start() error {
 	if err := a.startLongConnectionFunc(); err != nil {
 		return err
 	}
-	log.Printf("飞书机器人 Adapter 已启动，长连接事件订阅已开启，HTTP 回调路径: %s", a.callbackPath)
+	log.Printf("飞书机器人 Adapter 已启动%s，长连接事件订阅已开启，HTTP 回调路径: %s", a.remarkTag(), a.callbackPath)
 	return nil
 }
 
@@ -204,7 +204,7 @@ func (a *FeishuAdapter) Stop() error {
 		close(a.stopped)
 		a.stopLongConnection()
 	})
-	log.Printf("飞书机器人 Adapter 已停止")
+	log.Printf("飞书机器人 Adapter 已停止%s", a.remarkTag())
 	return nil
 }
 
@@ -219,11 +219,11 @@ func (a *FeishuAdapter) startLongConnection() error {
 		a.appID,
 		a.appSecret,
 		larkws.WithEventHandler(eventHandler),
-		larkws.WithOnReady(func() { log.Printf("飞书长连接已就绪") }),
-		larkws.WithOnError(func(err error) { log.Printf("[WARN][飞书] 长连接异常: %v", err) }),
-		larkws.WithOnReconnecting(func() { log.Printf("[INFO][飞书] 长连接正在重连") }),
-		larkws.WithOnReconnected(func() { log.Printf("[INFO][飞书] 长连接已重连") }),
-		larkws.WithOnDisconnected(func() { log.Printf("[INFO][飞书] 长连接已断开") }),
+		larkws.WithOnReady(func() { log.Printf("飞书长连接已就绪%s", a.remarkTag()) }),
+		larkws.WithOnError(func(err error) { log.Printf("[WARN][飞书]%s 长连接异常: %v", a.remarkTag(), err) }),
+		larkws.WithOnReconnecting(func() { log.Printf("[INFO][飞书]%s 长连接正在重连", a.remarkTag()) }),
+		larkws.WithOnReconnected(func() { log.Printf("[INFO][飞书]%s 长连接已重连", a.remarkTag()) }),
+		larkws.WithOnDisconnected(func() { log.Printf("[INFO][飞书]%s 长连接已断开", a.remarkTag()) }),
 	)
 
 	a.wsMu.Lock()
@@ -239,7 +239,7 @@ func (a *FeishuAdapter) startLongConnection() error {
 
 	go func() {
 		if err := client.Start(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("[WARN][飞书] 长连接启动失败: %v", err)
+			log.Printf("[WARN][飞书]%s 长连接启动失败: %v", a.remarkTag(), err)
 		}
 	}()
 	return nil

@@ -180,7 +180,7 @@ func (a *DingTalkAdapter) Start() error {
 		a.cancel = nil
 		return fmt.Errorf("启动钉钉 Stream 连接失败: %w", err)
 	}
-	log.Printf("钉钉机器人 Stream Adapter 已启动")
+	log.Printf("钉钉机器人 Stream Adapter 已启动%s", a.remarkTag())
 	return nil
 }
 
@@ -199,7 +199,7 @@ func (a *DingTalkAdapter) Stop() error {
 			a.streamClient.Close()
 			a.streamClient = nil
 		}
-		log.Printf("钉钉机器人 Stream Adapter 已停止")
+		log.Printf("钉钉机器人 Stream Adapter 已停止%s", a.remarkTag())
 	})
 	return nil
 }

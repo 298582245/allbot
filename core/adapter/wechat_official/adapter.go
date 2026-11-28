@@ -162,7 +162,7 @@ func (a *WeChatOfficialAdapter) Start() error {
 	if a.token == "" {
 		return fmt.Errorf("微信公众号 Token 不能为空")
 	}
-	log.Printf("微信公众号 Adapter 已启动，回调路径: %s", a.callbackPath)
+	log.Printf("微信公众号 Adapter 已启动%s，回调路径: %s", a.remarkTag(), a.callbackPath)
 	return nil
 }
 
@@ -170,7 +170,7 @@ func (a *WeChatOfficialAdapter) Stop() error {
 	a.stopOnce.Do(func() {
 		close(a.stopped)
 	})
-	log.Printf("微信公众号 Adapter 已停止")
+	log.Printf("微信公众号 Adapter 已停止%s", a.remarkTag())
 	return nil
 }
 

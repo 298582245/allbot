@@ -209,7 +209,7 @@ func (a *QQAdapter) Start() error {
 		return fmt.Errorf("%s OneBot 启动探测期间 WebSocket 已关闭", a.frameworkName())
 	default:
 	}
-	log.Printf("QQ Adapter 已连接 %s OneBot WebSocket: %s，自身账号: %s", a.frameworkName(), a.serverURL, selfID)
+	log.Printf("QQ Adapter 已连接 %s OneBot WebSocket: %s，自身账号: %s%s", a.frameworkName(), a.serverURL, selfID, a.remarkTag())
 	return nil
 }
 
@@ -250,7 +250,7 @@ func (a *QQAdapter) readLoop(conn *websocket.Conn) {
 			case <-a.closed:
 				return
 			default:
-				log.Printf("QQ Adapter 读取 %s OneBot 消息失败: %v", a.frameworkName(), err)
+				log.Printf("QQ Adapter 读取 %s OneBot 消息失败%s: %v", a.frameworkName(), a.remarkTag(), err)
 				_ = a.Stop()
 				return
 			}
@@ -262,7 +262,7 @@ func (a *QQAdapter) readLoop(conn *websocket.Conn) {
 func (a *QQAdapter) handleOneBotPayload(payload []byte) {
 	var event map[string]interface{}
 	if err := json.Unmarshal(payload, &event); err != nil {
-		log.Printf("QQ Adapter 解析 %s OneBot 消息失败: %v", a.frameworkName(), err)
+		log.Printf("QQ Adapter 解析 %s OneBot 消息失败%s: %v", a.frameworkName(), a.remarkTag(), err)
 		return
 	}
 	if echo := stringValue(event["echo"]); echo != "" {
@@ -276,7 +276,7 @@ func (a *QQAdapter) handleOneBotPayload(payload []byte) {
 	case a.eventQueue <- event:
 	case <-a.closed:
 	default:
-		log.Printf("QQ Adapter %s OneBot 消息队列已满，丢弃事件", a.frameworkName())
+		log.Printf("QQ Adapter %s OneBot 消息队列已满，丢弃事件%s", a.frameworkName(), a.remarkTag())
 	}
 }
 
@@ -304,7 +304,7 @@ func (a *QQAdapter) eventLoop() {
 func (a *QQAdapter) resolveAPIResponse(echo string, payload []byte) {
 	var response oneBotAPIResponse
 	if err := json.Unmarshal(payload, &response); err != nil {
-		log.Printf("QQ Adapter 解析 OneBot API 响应失败: %v", err)
+		log.Printf("QQ Adapter 解析 OneBot API 响应失败%s: %v", a.remarkTag(), err)
 		return
 	}
 	a.mu.Lock()

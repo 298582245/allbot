@@ -464,7 +464,7 @@ func (a *processAdapter) Start() error {
 	go a.logLoop(stderr)
 	go func() {
 		if err := cmd.Wait(); err != nil && !a.stopped.Load() {
-			log.Printf("[ADAPTER:%s] 子进程退出: %v", a.GetPlatform(), err)
+			log.Printf("[ADAPTER:%s]%s 子进程退出: %v", a.GetPlatform(), _contract.RemarkTag(a.remark), err)
 		}
 	}()
 	var configured map[string]interface{}
@@ -510,7 +510,7 @@ func (a *processAdapter) readLoop(reader io.Reader) {
 	for scanner.Scan() {
 		var msg wire
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			log.Printf("[ADAPTER:%s] 忽略无效协议行: %v", a.GetPlatform(), err)
+			log.Printf("[ADAPTER:%s]%s 忽略无效协议行: %v", a.GetPlatform(), _contract.RemarkTag(a.remark), err)
 			continue
 		}
 		if msg.Event == "message" && msg.Message != nil {
@@ -536,7 +536,7 @@ func (a *processAdapter) readLoop(reader io.Reader) {
 		}
 	}
 	if err := scanner.Err(); err != nil && !a.stopped.Load() {
-		log.Printf("[ADAPTER:%s] 读取协议失败: %v", a.GetPlatform(), err)
+		log.Printf("[ADAPTER:%s]%s 读取协议失败: %v", a.GetPlatform(), _contract.RemarkTag(a.remark), err)
 	}
 }
 
@@ -570,7 +570,7 @@ func (a *processAdapter) logReceivedMessage(msg *types.Message) {
 func (a *processAdapter) logLoop(reader io.Reader) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
-		log.Printf("[ADAPTER:%s] %s", a.GetPlatform(), scanner.Text())
+		log.Printf("[ADAPTER:%s]%s %s", a.GetPlatform(), _contract.RemarkTag(a.remark), scanner.Text())
 	}
 }
 func (a *processAdapter) request(action string, data interface{}, timeout time.Duration) (json.RawMessage, error) {
